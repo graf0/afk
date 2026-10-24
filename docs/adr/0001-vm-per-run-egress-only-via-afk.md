@@ -1,0 +1,14 @@
+# Sandbox VM per Run, ruch wychodzący tylko przez afk
+
+Każdy Run dostaje świeżą Sandbox VM (overlay na Base image), niszczoną po zakończeniu, we własnej izolowanej sieci libvirt bez NAT. Interfejs VM ma nwfilter z białą listą: nowe połączenia od gościa tylko do innych maszyn tego Run, wszystko inne (w tym każdy adres hosta) odrzucone. `afk` łączy się z VM po ssh i otwiera odwrotny tunel (`ssh -R`), który obsługuje w procesie jako Egress proxy dla tej jednej VM; proxy przepuszcza tylko domeny z `.afk.toml` (domyślnie pusta lista, dla Claude'a domeny Anthropic), a host nie otwiera dla gościa żadnego portu. Odrzuciliśmy bwrap z ralph.sh (wspólne jądro z hostem), vsock (brak wsparcia na Windows, kanał inicjowany z gościa), MITM z własnym CA (pełny podsłuch przy kompromitacji klucza CA) i własną tablicę nftables (działa, ale wymaga roota przy każdym Run i ręcznego sprzątania; nwfilter zakłada i usuwa libvirtd razem z domeną). Instalacja zależności dzieje się w osobnej fazie budowy obrazu, bez sekretów i bez treści ticketów.
+
+## Consequences
+
+Reguły nwfilter muszą być białą listą: wariant „odrzuć nowe połączenia do adresu bridge'a” przepuszcza gościa (agent ma sudo), który ustawi trasę przez host i trafi w inny adres hosta. Obowiązkowy test integracyjny izolacji sprawdza: host przez adres bridge'a, host przez adres LAN po dodaniu trasy, internet, ssh host→gość i tunel.
+Jedyny dozwolony ruch gość→host to DHCP (udp 68→67) z dnsmasq sieci libvirt; adresy maszyn są rezerwacjami po MAC, DNS w sieci wyłączony.
+Dyski maszyn mają `<seclabel model='dac' relabel='no'/>`, a dostęp QEMU zapewnia grupa `kvm`: przy domyślnym relabelingu libvirt zmienia właściciela współdzielonego Base image na `libvirt-qemu` (0640), przez co `afk` nie może tworzyć kolejnych overlayów, i nie zawsze go przywraca. Etykieta na całą domenę odpada — blokuje QEMU dostęp do gniazda swtpm.
+Domeny dozwolone w Egress proxy pozostają potencjalnym kanałem exfiltracji (w tym `api.anthropic.com`, patrz ADR-0003).
+Osobna maszyna przysługuje też każdemu Chat; wspólna maszyna dla wielu Agentów (osobni użytkownicy, bwrap) odpada — różne Base image projektów, wspólny zasięg szkody przy eskalacji w gościu, proxy nie odróżni Agentów na wspólnym loopbacku.
+Firecracker i Cloud Hypervisor odrzucone: brak Windowsa z ekranem i vTPM (i tak potrzebny QEMU — dwa backendy), sieć tap/nftables z rootem zamiast nwfilter, tylko dyski raw i własne jądro gościa; zysk na starcie (ok. 1 s zamiast 9 s) jest pomijalny przy maszynach żyjących minuty i dni, a gęstość ogranicza RAM gości, nie hypervisor.
+Każdy Template musi mieć działający `sshd` z kluczem `afk` wbudowanym w obraz.
+Obrazy i dyski leżą w `/var/lib/afk/` (grupa `kvm`): `libvirt-qemu` nie czyta `$HOME`, a profil AppArmor per VM blokuje QEMU zapis poza ścieżkami dysków. Z tego powodu sukces komendy QMP nie oznacza, że efekt nastąpił (np. `screendump` zwraca sukces, a pliku nie ma); zrzuty ekranu idą przez `DomainScreenshot`.
