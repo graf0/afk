@@ -17,18 +17,18 @@ const packerComma = "%!(PACKER_COMMA)"
 
 var fieldDecoder = strings.NewReplacer(packerComma, ",", `\n`, "\n", `\r`, "\r")
 
-// Event is one line of `packer -machine-readable` output:
+// packerEvent is one line of `packer -machine-readable` output:
 // timestamp,target,type,data...
-type Event struct {
+type packerEvent struct {
 	Time   time.Time
 	Target string
 	Type   string
 	Data   []string
 }
 
-// ParseEvent parses one machine-readable line. Fields are split first and
+// parseEvent parses one machine-readable line. Fields are split first and
 // decoded afterwards, so an encoded comma never splits a field.
-func ParseEvent(line string) (event Event, err error) {
+func parseEvent(line string) (event packerEvent, err error) {
 	fields := strings.Split(line, ",")
 	if len(fields) < 3 {
 		err = fmt.Errorf("parsing machine-readable line %q: want at least 3 fields", line)
@@ -39,7 +39,7 @@ func ParseEvent(line string) (event Event, err error) {
 		err = fmt.Errorf("parsing machine-readable timestamp in %q: %w", line, err)
 		return
 	}
-	event = Event{
+	event = packerEvent{
 		Time:   time.Unix(seconds, 0),
 		Target: fieldDecoder.Replace(fields[1]),
 		Type:   fieldDecoder.Replace(fields[2]),
@@ -50,9 +50,9 @@ func ParseEvent(line string) (event Event, err error) {
 	return
 }
 
-// Text returns the human-readable form of the event, or "" if it has none.
+// text returns the human-readable form of the event, or "" if it has none.
 // Only ui and error events are shown; the rest is bookkeeping.
-func (e Event) Text() (text string) {
+func (e packerEvent) text() (text string) {
 	switch {
 	case e.Type == "ui" && len(e.Data) >= 2:
 		text = strings.Join(e.Data[1:], ",")
@@ -73,10 +73,10 @@ func streamEvents(r io.Reader, out io.Writer) (buildErrors []string, err error) 
 		if line == "" {
 			continue
 		}
-		event, parseErr := ParseEvent(line)
+		event, parseErr := parseEvent(line)
 		if parseErr != nil {
 			_, err = fmt.Fprintln(out, line)
-		} else if text := event.Text(); text != "" {
+		} else if text := event.text(); text != "" {
 			_, err = fmt.Fprintln(out, text)
 			if event.Type == "error" {
 				buildErrors = append(buildErrors, strings.Join(event.Data, ","))

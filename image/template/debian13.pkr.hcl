@@ -11,14 +11,16 @@ variable "ssh_key" { type = string }
 variable "ssh_port" { type = number }
 variable "proxy_port" { type = number }
 variable "seed_files" { type = list(string) }
+variable "disk_name" { type = string }
 variable "provision" { type = list(string) }
+variable "final_provision" { type = list(string) }
 
 source "qemu" "debian" {
   iso_url              = var.base_image
   iso_checksum         = var.base_checksum
   disk_image           = true
   output_directory     = var.output_dir
-  vm_name              = "debian13.qcow2"
+  vm_name              = var.disk_name
   format               = "qcow2"
   disk_size            = "10G"
   accelerator          = "kvm"
@@ -45,8 +47,10 @@ source "qemu" "debian" {
 build {
   sources = ["source.qemu.debian"]
 
+  # afk's steps and the project's ([image].provision). A project step can
+  # `exit` or `exec`; that ends only this script, not the final provisioner.
   provisioner "shell" {
-    inline_shebang   = "/bin/bash -e"
+    inline_shebang = "/bin/bash -e"
     environment_vars = [
       "http_proxy=http://127.0.0.1:3128",
       "https_proxy=http://127.0.0.1:3128",
@@ -54,5 +58,11 @@ build {
       "HTTPS_PROXY=http://127.0.0.1:3128",
     ]
     inline = var.provision
+  }
+
+  # Mandatory last step: always the last provisioner, whatever the project did.
+  provisioner "shell" {
+    inline_shebang = "/bin/bash -e"
+    inline         = var.final_provision
   }
 }

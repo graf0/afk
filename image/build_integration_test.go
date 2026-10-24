@@ -5,6 +5,7 @@ package image
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"net"
 	"os"
 	"os/exec"
@@ -43,9 +44,11 @@ func integrationPaths(t *testing.T) (paths Paths) {
 	return
 }
 
+const integrationProject = "afk-integration-test"
+
 func integrationConfig(provision []string) (cfg config.Config) {
 	cfg.Forge = config.Forge{Kind: "github", Repo: "afk/integration-test"}
-	cfg.Image = config.Image{Template: debian13Name, Provision: provision}
+	cfg.Image = config.Image{Template: "debian13", Provision: provision}
 	return
 }
 
@@ -91,17 +94,18 @@ func TestIntegrationBuildAndIsolationProbe(t *testing.T) {
 	paths := integrationPaths(t)
 	port, accepted := listenAndCount(t)
 	lan := lanAddr(t)
-	imageDir := paths.ImageDir("afk-integration-test")
-	t.Cleanup(func() { _ = os.RemoveAll(imageDir) })
+	projectDir := paths.projectDir(integrationProject)
+	t.Cleanup(func() { _ = os.RemoveAll(projectDir) })
 
 	// docs/isolation.md probe, run in the guest as a project provision step
 	// (the tunnel is up and the apt proxy is still configured).
-	probe := strings.NewReplacer("{PORT}", itoa(port), "{LAN}", lan).Replace(`
+	probe := strings.NewReplacer("{PORT}", strconv.Itoa(port), "{LAN}", lan).Replace(`
 p() { (timeout 4 bash -c "echo > /dev/tcp/$1/$2" 2>/dev/null && echo "PROBE direct $1:$2 REACHABLE") || echo "PROBE direct $1:$2 blocked"; }
 p 10.0.2.2 {PORT}; p {LAN} {PORT}; p 1.1.1.1 443
 echo "PROBE proxy status $(curl -s -m 20 -x http://127.0.0.1:3128 -o /dev/null -w '%{http_code}' https://deb.debian.org/debian/)"
 test "$(git --version | cut -c1-3)" = git
 command -v claude
+exit 0 # must not skip the mandatory final steps
 `)
 	var out syncBuffer
 	start := time.Now()
@@ -111,16 +115,18 @@ command -v claude
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != imageDir {
-		t.Errorf("image dir = %q, want %q", got, imageDir)
+	if latest, err := Latest(paths, integrationProject); err != nil || latest != got || filepath.Dir(got) != projectDir {
+		t.Errorf("Latest = %q, %v; want the built version %q in %s", latest, err, got, projectDir)
 	}
-	if info, err := os.Stat(filepath.Join(imageDir, "debian13.qcow2")); err != nil || info.Size() == 0 {
+	disk := filepath.Join(got, templates["debian13"].DiskName)
+	if info, err := os.Stat(disk); err != nil || info.Size() == 0 {
 		t.Errorf("image missing or empty: %v", err)
 	}
+	assertFinalSteps(t, paths, disk)
 
 	for _, want := range []string{
-		"PROBE direct 10.0.2.2:" + itoa(port) + " blocked",
-		"PROBE direct " + lan + ":" + itoa(port) + " blocked",
+		"PROBE direct 10.0.2.2:" + strconv.Itoa(port) + " blocked",
+		"PROBE direct " + lan + ":" + strconv.Itoa(port) + " blocked",
 		"PROBE direct 1.1.1.1:443 blocked",
 		"PROBE proxy status 200",
 	} {
@@ -139,24 +145,37 @@ command -v claude
 
 func TestIntegrationInterruptLeavesNoQEMU(t *testing.T) {
 	paths := integrationPaths(t)
-	imageDir := paths.ImageDir("afk-integration-test")
-	t.Cleanup(func() { _ = os.RemoveAll(imageDir) })
+	interruptBuildWhenOutputContains(t, paths, nil, "Waiting for SSH")
+}
 
-	ctx, cancel := contextWithCancel(t)
+func TestIntegrationInterruptDuringProvisioningLeavesNoQEMU(t *testing.T) {
+	paths := integrationPaths(t)
+	interruptBuildWhenOutputContains(t, paths, []string{"echo PROVISIONING-NOW; sleep 600"}, "PROVISIONING-NOW")
+}
+
+// interruptBuildWhenOutputContains starts a build, cancels it once its output
+// contains marker, and checks nothing is left behind.
+func interruptBuildWhenOutputContains(t *testing.T, paths Paths, provision []string, marker string) {
+	t.Helper()
+	projectDir := paths.projectDir(integrationProject)
+	t.Cleanup(func() { _ = os.RemoveAll(projectDir) })
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
 	var out syncBuffer
 	done := make(chan error, 1)
 	go func() {
-		_, err := Build(ctx, Options{Paths: paths, Config: integrationConfig(nil), Out: &out})
+		_, err := Build(ctx, Options{Paths: paths, Config: integrationConfig(provision), Out: &out})
 		done <- err
 	}()
 
 	deadline := time.After(10 * time.Minute)
-	for !strings.Contains(out.String(), "Waiting for SSH") {
+	for !strings.Contains(out.String(), marker) {
 		select {
 		case err := <-done:
-			t.Fatalf("build ended before the VM was up: %v\n%s", err, out.String())
+			t.Fatalf("build ended before %q: %v\n%s", marker, err, out.String())
 		case <-deadline:
-			t.Fatalf("VM did not start in time:\n%s", out.String())
+			t.Fatalf("%q did not appear in time:\n%s", marker, out.String())
 		case <-time.After(200 * time.Millisecond):
 		}
 	}
@@ -165,14 +184,12 @@ func TestIntegrationInterruptLeavesNoQEMU(t *testing.T) {
 		t.Error("Build succeeded after interrupt")
 	}
 	assertNoQEMU(t)
-	if _, err := os.Stat(imageDir); err == nil {
+	if _, err := Latest(paths, integrationProject); err == nil {
 		t.Error("interrupted build installed an image")
 	}
-	entries, _ := os.ReadDir(paths.BaseDir)
+	entries, _ := os.ReadDir(projectDir)
 	for _, entry := range entries {
-		if strings.HasPrefix(entry.Name(), ".build-") {
-			t.Errorf("leftover build dir %s", entry.Name())
-		}
+		t.Errorf("leftover in project dir: %s", entry.Name())
 	}
 }
 
@@ -188,11 +205,60 @@ func assertNoQEMU(t *testing.T) {
 	}
 }
 
-func itoa(n int) (s string) { return strconv.Itoa(n) }
-
-func contextWithCancel(t *testing.T) (ctx context.Context, cancel context.CancelFunc) {
+// assertFinalSteps checks the mandatory final steps in the built disk by
+// reading its root file system with debugfs (no root needed); skipped when the
+// tools are missing.
+func assertFinalSteps(t *testing.T, paths Paths, disk string) {
 	t.Helper()
-	ctx, cancel = context.WithCancel(t.Context())
-	t.Cleanup(cancel)
-	return
+	const sfdisk, debugfs = "/sbin/sfdisk", "/sbin/debugfs"
+	for _, tool := range []string{sfdisk, debugfs} {
+		if _, err := os.Stat(tool); err != nil {
+			t.Logf("final steps not verified: %v", err)
+			return
+		}
+	}
+	raw := filepath.Join(paths.CacheDir, "verify.raw")
+	t.Cleanup(func() { _ = os.Remove(raw) })
+	if out, err := exec.Command("qemu-img", "convert", "-O", "raw", disk, raw).CombinedOutput(); err != nil {
+		t.Fatalf("qemu-img convert: %v\n%s", err, out)
+	}
+	layout, err := exec.Command(sfdisk, "-J", raw).Output()
+	if err != nil {
+		t.Fatalf("sfdisk: %v", err)
+	}
+	var table struct {
+		PartitionTable struct {
+			Partitions []struct{ Start, Size int64 }
+		}
+	}
+	if err = json.Unmarshal(layout, &table); err != nil {
+		t.Fatal(err)
+	}
+	var rootStart, rootSize int64 // the root file system is the largest partition
+	for _, partition := range table.PartitionTable.Partitions {
+		if partition.Size > rootSize {
+			rootStart, rootSize = partition.Start, partition.Size
+		}
+	}
+	fsImage := raw + "?offset=" + strconv.FormatInt(rootStart*512, 10)
+	inGuest := func(command string) (output string) {
+		out, err := exec.Command(debugfs, "-R", command, fsImage).CombinedOutput()
+		if err != nil {
+			t.Fatalf("debugfs %q: %v\n%s", command, err, out)
+		}
+		return string(out)
+	}
+	for _, path := range []string{"/etc/cloud/cloud-init.disabled", "/etc/netplan/90-afk.yaml"} {
+		if out := inGuest("stat " + path); !strings.Contains(out, "Inode:") {
+			t.Errorf("%s missing in the image:\n%s", path, out)
+		}
+	}
+	if out := inGuest("stat /etc/machine-id"); !strings.Contains(out, "Size: 0") {
+		t.Errorf("machine-id not empty:\n%s", out)
+	}
+	for _, path := range []string{"/etc/apt/apt.conf.d/90afk-proxy", "/etc/netplan/50-cloud-init.yaml"} {
+		if out := inGuest("stat " + path); strings.Contains(out, "Inode:") {
+			t.Errorf("%s still in the image:\n%s", path, out)
+		}
+	}
 }

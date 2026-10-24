@@ -11,37 +11,37 @@ func TestParseEvent(t *testing.T) {
 	tests := []struct {
 		name string
 		line string
-		want Event
+		want packerEvent
 	}{
 		{
 			name: "ui message",
 			line: "1700000000,qemu.debian,ui,message,==> qemu.debian: Waiting for SSH",
-			want: Event{Time: time.Unix(1700000000, 0), Target: "qemu.debian", Type: "ui", Data: []string{"message", "==> qemu.debian: Waiting for SSH"}},
+			want: packerEvent{Time: time.Unix(1700000000, 0), Target: "qemu.debian", Type: "ui", Data: []string{"message", "==> qemu.debian: Waiting for SSH"}},
 		},
 		{
 			name: "commas in data are decoded after splitting",
 			line: "1700000000,,ui,say,one%!(PACKER_COMMA) two%!(PACKER_COMMA) three",
-			want: Event{Time: time.Unix(1700000000, 0), Type: "ui", Data: []string{"say", "one, two, three"}},
+			want: packerEvent{Time: time.Unix(1700000000, 0), Type: "ui", Data: []string{"say", "one, two, three"}},
 		},
 		{
 			name: "encoded newlines",
 			line: `1700000000,,error,first\nsecond`,
-			want: Event{Time: time.Unix(1700000000, 0), Type: "error", Data: []string{"first\nsecond"}},
+			want: packerEvent{Time: time.Unix(1700000000, 0), Type: "error", Data: []string{"first\nsecond"}},
 		},
 		{
 			name: "no data",
 			line: "1700000000,,ping",
-			want: Event{Time: time.Unix(1700000000, 0), Type: "ping"},
+			want: packerEvent{Time: time.Unix(1700000000, 0), Type: "ping"},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := ParseEvent(tt.line)
+			got, err := parseEvent(tt.line)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if !got.Time.Equal(tt.want.Time) || got.Target != tt.want.Target || got.Type != tt.want.Type || strings.Join(got.Data, "|") != strings.Join(tt.want.Data, "|") {
-				t.Errorf("ParseEvent() = %+v, want %+v", got, tt.want)
+				t.Errorf("parseEvent() = %+v, want %+v", got, tt.want)
 			}
 		})
 	}
@@ -49,8 +49,8 @@ func TestParseEvent(t *testing.T) {
 
 func TestParseEventRejectsMalformed(t *testing.T) {
 	for _, line := range []string{"", "garbage", "notatime,target,ui,say,x", "1700000000,target"} {
-		if _, err := ParseEvent(line); err == nil {
-			t.Errorf("ParseEvent(%q) succeeded, want error", line)
+		if _, err := parseEvent(line); err == nil {
+			t.Errorf("parseEvent(%q) succeeded, want error", line)
 		}
 	}
 }

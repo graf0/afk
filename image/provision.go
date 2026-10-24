@@ -7,8 +7,11 @@ import (
 	"text/template"
 )
 
+// guestProxy is where the build tunnel appears inside the guest.
+const guestProxy = "http://127.0.0.1:3128"
+
 //go:embed template/debian13.pkr.hcl
-var debian13Template string
+var debian13HCL string
 
 //go:embed template/user-data.tmpl
 var userDataTemplate string
@@ -16,13 +19,21 @@ var userDataTemplate string
 //go:embed template/meta-data
 var metaData string
 
-// guestProxy is where the build tunnel appears inside the guest.
-const guestProxy = "http://127.0.0.1:3128"
+// templates are the supported [image].template values.
+var templates = map[string]imageTemplate{
+	"debian13": {
+		Name:        "debian13",
+		ImageURL:    "https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2",
+		ChecksumURL: "file:https://cloud.debian.org/images/cloud/trixie/latest/SHA512SUMS",
+		HCL:         debian13HCL,
+		DiskName:    "debian13.qcow2",
+	},
+}
 
-// afkSteps always run first: what afk needs in every image (sshd, git, Claude Code),
+// initialSteps always run first: what afk needs in every image (sshd, git, Claude Code),
 // independent of the project's provision steps. The guest reaches the internet
 // only through the Egress proxy tunnel.
-var afkSteps = []string{
+var initialSteps = []string{
 	`printf 'Acquire::http::Proxy "` + guestProxy + `";\nAcquire::https::Proxy "` + guestProxy + `";\n' | sudo tee /etc/apt/apt.conf.d/90afk-proxy >/dev/null`,
 	`sudo DEBIAN_FRONTEND=noninteractive apt-get update`,
 	`sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends openssh-server git curl ca-certificates`,
@@ -30,7 +41,8 @@ var afkSteps = []string{
 	`sudo ln -sf "$HOME/.local/bin/claude" /usr/local/bin/claude`,
 }
 
-// finalSteps always run last (docs/images.md): without them clones get no
+// finalSteps run in their own, last provisioner (docs/images.md), so nothing in
+// [image].provision (`exit`, `exec`) can skip them: without them clones get no
 // address or the same machine-id (and so the same DHCP client-id).
 var finalSteps = []string{
 	`sudo rm -f /etc/apt/apt.conf.d/90afk-proxy /etc/netplan/50-cloud-init.yaml`,
@@ -40,13 +52,26 @@ var finalSteps = []string{
 	`sudo truncate -s 0 /etc/machine-id`,
 }
 
-// provisionSteps returns the full guest script: afk's steps, the project's
-// steps ([image].provision), then the mandatory final steps.
-func provisionSteps(project []string) (steps []string) {
-	steps = make([]string, 0, len(afkSteps)+len(project)+len(finalSteps))
-	steps = append(steps, afkSteps...)
-	steps = append(steps, project...)
-	steps = append(steps, finalSteps...)
+// imageTemplate is a supported Base image template: where its source image
+// comes from and the embedded Packer template that builds it.
+type imageTemplate struct {
+	Name        string
+	ImageURL    string // source cloud image
+	ChecksumURL string // Packer iso_checksum for ImageURL
+	HCL         string // embedded Packer template
+	DiskName    string // file name of the built disk
+}
+
+// hclFile is the file name the template is written under.
+func (t imageTemplate) hclFile() (name string) { return t.Name + ".pkr.hcl" }
+
+// provisionSteps splits the guest script in two provisioners: afk's steps
+// followed by the project's ([image].provision), and the mandatory final steps.
+func provisionSteps(project []string) (provision, final []string) {
+	provision = make([]string, 0, len(initialSteps)+len(project))
+	provision = append(provision, initialSteps...)
+	provision = append(provision, project...)
+	final = append([]string(nil), finalSteps...)
 	return
 }
 

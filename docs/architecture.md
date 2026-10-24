@@ -40,7 +40,7 @@ ssh wszędzie, także Windows (sshd + klucz `afk` w obrazie). vsock odrzucony (b
 
 | Ścieżka | Zawartość |
 |---|---|
-| `/var/lib/afk/base/<name>/` | Base image (`*.qcow2`, dla UEFI `efivars.fd`), grupa `kvm` |
+| `/var/lib/afk/base/<project>/<wersja>/` | Base image (`*.qcow2`, dla UEFI `efivars.fd`), grupa `kvm`; wersja = znacznik czasu UTC `20261024T153000Z`, nowsza budowa = nowy katalog (stare zostają do Expiry) |
 | `/var/lib/afk/runs/<run>/` | Overlay i NVRAM jednego Run, katalog `2775` |
 | `/var/lib/afk/chats/<chat>/` | Overlay i NVRAM jednego Chat, jak wyżej |
 | `~/.local/state/afk/claims/<project>/<n>` | Rezerwacje ticketów (`flock`) |

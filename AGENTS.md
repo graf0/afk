@@ -4,7 +4,7 @@
 - pisz prosty, idiomatyczny kod w Go, co najmniej Go 1.26
 - stdlib first, zewnętrzny pakiet → zapytaj
 - dopasuj istniejący styl
-- testy: jeśli zmiana tego wymaga, popraw istniejące i dopisz nowe; jeden plik testów na plik `.go`
+- testy: jeśli zmiana tego wymaga, popraw istniejące i dopisz nowe; jeden plik testów na plik `.go` (wyjątek: test integracyjny za tagiem builda `integration` w osobnym pliku `<plik>_integration_test.go`)
 - przed PR-em: `task lint`
 - instrukcja użytkownika > ten plik
 - sygnatury funkcji z nazwanymi zwrotami: `func Name(arg type) (result type, err error)`.

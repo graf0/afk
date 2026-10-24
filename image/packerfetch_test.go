@@ -45,7 +45,8 @@ func fakeRelease(t *testing.T, sum string) (release packerRelease, requests *ato
 		_, _ = w.Write(archive)
 	}))
 	t.Cleanup(server.Close)
-	release = packerRelease{Version: "9.9.9", URL: server.URL + "/packer.zip", SHA256: sum}
+	binary := sha256.Sum256([]byte(fakePackerContent))
+	release = packerRelease{Version: "9.9.9", URL: server.URL + "/packer.zip", SHA256: sum, BinarySHA256: hex.EncodeToString(binary[:])}
 	return
 }
 
@@ -114,8 +115,48 @@ func TestEnsurePackerRejectsHTTPError(t *testing.T) {
 func TestPinnedPackerRelease(t *testing.T) {
 	// Values from docs/images.md; a bump must change code and docs together.
 	if pinnedPacker.Version != "1.16.2" ||
+		pinnedPacker.BinarySHA256 != "6f64a1e9e71be8b3a2f0225ccf0d51b5446fbf79d9ad323e917a0126ab6ee38a" ||
 		pinnedPacker.SHA256 != "abbfe0cf74985084112659b53e3565f264f70a20914c3b7c4f789f54f61c2414" ||
 		pinnedPacker.URL != "https://releases.hashicorp.com/packer/1.16.2/packer_1.16.2_linux_amd64.zip" {
 		t.Errorf("pinnedPacker = %+v", pinnedPacker)
+	}
+}
+
+// A cached binary is verified on every use; a changed one is replaced by a
+// fresh, verified download.
+func TestEnsurePackerReplacesTamperedCachedBinary(t *testing.T) {
+	release, requests := fakeRelease(t, "")
+	binDir := filepath.Join(t.TempDir(), "bin")
+	path, err := ensurePacker(t.Context(), http.DefaultClient, binDir, release)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(path, []byte("#!/bin/sh\necho evil\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err = ensurePacker(t.Context(), http.DefaultClient, binDir, release); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(path)
+	if string(data) != fakePackerContent {
+		t.Errorf("binary = %q, want the original restored", data)
+	}
+	if requests.Load() != 2 {
+		t.Errorf("requests = %d, want 2 (initial + re-download)", requests.Load())
+	}
+}
+
+func TestEnsurePackerRejectsBinaryNotMatchingPin(t *testing.T) {
+	release, _ := fakeRelease(t, "") // the zip is valid, but not the pinned binary
+	release.BinarySHA256 = strings.Repeat("0", 64)
+	binDir := filepath.Join(t.TempDir(), "bin")
+
+	if _, err := ensurePacker(t.Context(), http.DefaultClient, binDir, release); err == nil || !strings.Contains(err.Error(), "binary checksum") {
+		t.Fatalf("err = %v, want binary checksum error", err)
+	}
+	entries, _ := os.ReadDir(binDir)
+	if len(entries) != 0 {
+		t.Errorf("bin dir not empty: %v", entries)
 	}
 }
