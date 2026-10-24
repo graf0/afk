@@ -8,7 +8,7 @@ HTTP proxy: `CONNECT` (HTTPS) i zwykłe HTTP. Gość: `http_proxy`/`https_proxy=
 
 ## Polityka
 
-- Run: tylko domeny z `[network].allow` (domyślnie pusta) + domeny Agenta.
+- Run: tylko domeny z `[network].allow` (domyślnie pusta) + domeny Agenta (`agent.Domains`: `api.anthropic.com`; Claude Code z `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` i tokenem z `setup-token` nie potrzebuje innych).
 - Chat i budowa: wszystkie domeny.
 - Porty: w trybie allowlisty (Run) dozwolone tylko 80 i 443 (`CONNECT` i zwykłe HTTP), inny port → 403, sprawdzane przed DNS. W trybie „wszystkie domeny” bez ograniczenia portów.
 - Wpis allowlisty: nazwa, `*.domena` (podsubdomeny dowolnej głębokości, bez samej domeny) albo literał IP (dopasowanie dokładne, bez wildcardu). Wielkość liter ignorowana, końcowa kropka ucinana.

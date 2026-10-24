@@ -45,9 +45,13 @@ ssh wszędzie, także Windows (sshd + klucz `afk` w obrazie). vsock odrzucony (b
 | `/var/lib/afk/chats/<chat>/` | Overlay i NVRAM jednego Chat, jak wyżej |
 | `~/.local/state/afk/claims/<project>/<n>` | Rezerwacje ticketów (`flock`) |
 | `~/.local/state/afk/<project>/logs/` | Logi Run (stream-json) |
+| `~/.local/state/afk/<project>/quarantine.git` | Quarantine repo Project (bare): `refs/afk/base/ticket-<n>` baza Run, `refs/afk/incoming/ticket-<n>` surowy wynik z VM, `refs/heads/ticket-<n>` wynik po walidacji |
+| `~/.local/state/afk/claude-oauth-token` | Token Claude'a (`claude setup-token`), tryb `0600`, gdy brak `CLAUDE_CODE_OAUTH_TOKEN` |
 | `~/.cache/afk/bin/packer-<ver>` | Packer pobrany przez `afk` |
 | `~/.cache/afk/plugins` | `PACKER_PLUGIN_PATH` |
 | `~/.cache/afk/packer-config` | `PACKER_CONFIG_DIR` |
+
+Quarantine repo w katalogu stanu użytkownika, nie w repo użytkownika ani w `/var/lib/afk`: obiekty z VM nie trafiają do object store repo człowieka (jego hooki i config ich nie dotykają), `libvirt-qemu` nie potrzebuje do niego dostępu (`/var/lib/afk` jest współdzielone z grupą `kvm`), a wynik przeżywa restart (`/tmp` to tmpfs) do pushu. Bez hooków (`core.hooksPath=/dev/null`), `transfer.fsckObjects`, nigdy checkout.
 
 `/var/lib/afk`, nie `$HOME`: `libvirt-qemu` nie czyta katalogu domowego, AppArmor blokuje zapis poza ścieżkami dysków (ADR-0001). Cache obrazów per projekt. Uwaga: `/tmp` na hoście to tmpfs — nie na obrazy.
 
