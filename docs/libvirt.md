@@ -1,6 +1,38 @@
 # libvirt
 
-Połączenie `qemu:///system` przez `digitalocean/go-libvirt`. Użytkownik `afk` musi mieć dostęp do gniazda libvirt i być w grupie `kvm`.
+Połączenie `qemu:///system` przez `digitalocean/go-libvirt` (przypięty commit). Użytkownik `afk` musi mieć dostęp do gniazda libvirt i być w grupie `kvm`.
+
+## Sandbox VM (pakiet `machine`)
+
+Diagnostyka: `afk vm up` (start + ssh, wypisuje nazwę i czas), `afk vm shell <vm>` (shell z tunelem Egress proxy), `afk vm kill <vm>`.
+
+- Nazwa `afk-<run|chat>-<id>` — wspólna dla domeny, sieci i nwfiltra; katalog `/var/lib/afk/{runs,chats}/<id>/`.
+- `<metadata>` domeny (`xmlns:afk='https://github.com/graf0/afk/machine'`): Project, rodzaj, identyfikator, adres gościa, klucz hosta. To jedyny stan — `afk vm shell` czyta z niego, dokąd i z jakim kluczem się łączyć.
+- Podsieć `10.99.<n>.0/24`, most `afkbr<n>`: najniższe `n` wolne wśród sieci libvirt (adres lub nazwa mostu). Most wyprowadzony z `n`, więc libvirt odrzuca drugą sieć na tym samym `n` już przy define („nazwa mostka … jest już używana”) → ponowna próba (max 5). Sprawdzone: 3 równoległe `vm up` dostały 0, 1, 2.
+- `kill`: destroy + undefine domeny, sieci, nwfiltra (w tej kolejności — filtr w użyciu nie da się usunąć), `rm -rf` katalogu; brakujące części pomija. Nieudany lub anulowany `up` woła to samo (test: anulowanie w 0–2 s nie zostawia QEMU ani niczego w libvirt).
+- Domena trwała (define + create), nie transient — po restarcie hosta zostaje wyłączona i `kill` ją sprząta.
+
+## Klucz hosta per VM
+
+Klony Base image mają wspólne klucze hosta sshd → TOFU nie wchodzi w grę. `afk` generuje ed25519 per VM i przypina go (`ssh.FixedHostKey`, `HostKeyAlgorithms` tylko ed25519; inny klucz → `ErrHostKey` bez ponawiania).
+
+Dostarczenie: poświadczenie systemd przez SMBIOS (cloud-init w obrazie wyłączony):
+
+```xml
+<sysinfo type='smbios'><oemStrings>
+  <entry>io.systemd.credential.binary:tmpfiles.extra=BASE64</entry>
+</oemStrings></sysinfo>
+<os>…<smbios mode='sysinfo'/></os>
+```
+
+`BASE64` to konfiguracja tmpfiles (`f+~` = utwórz lub nadpisz, argument w base64):
+
+```
+f+~ /etc/ssh/ssh_host_ed25519_key 0600 root root - <base64 PEM>
+f+~ /etc/ssh/ssh_host_ed25519_key.pub 0644 root root - <base64 klucza publicznego>
+```
+
+`systemd-tmpfiles-setup.service` (przed `sysinit.target`) zapisuje klucz przed `ssh.service`. Sprawdzone w Debianie 13 (systemd 257): odcisk w gościu = odcisk z `<metadata>`. Klucz prywatny jest widoczny w XML domeny i w linii poleceń QEMU (`-smbios type=11`) — dla użytkowników hosta, nie dla innych VM.
 
 ## Dysk Run
 
@@ -30,8 +62,8 @@ Wspólne:
       <target dev='vda' bus='virtio'/>
     </disk>
     <interface type='network'>
-      <source network='afk-RUN'/><mac address='52:54:00:af:00:0a'/>
-      <model type='virtio'/><filterref filter='afk-RUN'/>
+      <source network='afk-run-ID'/><mac address='52:54:00:af:00:0a'/>
+      <model type='virtio'/><filterref filter='afk-run-ID'/>
     </interface>
     <memballoon model='virtio'><stats period='2'/></memballoon>
     <rng model='virtio'><backend model='random'>/dev/urandom</backend></rng>
@@ -76,7 +108,7 @@ Sprzęt musi odpowiadać buildowi Packera (q35, virtio, OVMF 4M, `cpu_model=host
 
 | Obraz | Czas |
 |---|---|
-| Debian 13 | 9 s |
+| Debian 13 | 9 s (spike); `afk vm up`: 6–8 s |
 | Server 2025, klon bez sysprepu | 19–23 s |
 | Win11 z vTPM, klon bez sysprepu | 19 s |
 | Windows po sysprepie, do `IMAGE_STATE_COMPLETE` | 53–61 s |

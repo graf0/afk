@@ -64,6 +64,8 @@ func run(ctx context.Context, abort <-chan struct{}, args []string, dir string, 
 		_, err = stdout.Write(data)
 	case "image":
 		err = runImage(ctx, abort, args[1:], cfg, stdout)
+	case "vm":
+		err = runVM(ctx, args[1:], cfg, stdout)
 	default:
 		err = fmt.Errorf("unknown command %q", args[0])
 	}

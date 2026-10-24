@@ -50,7 +50,7 @@ type Forge struct {
 type Labels struct {
 	NeedsTriage   string `toml:"needs_triage"`
 	NeedsInfo     string `toml:"needs_info"`
-	Ready         string `toml:"ready"`
+	ReadyForAgent string `toml:"ready_for_agent"`
 	ReadyForHuman string `toml:"ready_for_human"`
 	Wontfix       string `toml:"wontfix"`
 }
@@ -144,11 +144,12 @@ func defaults() (cfg Config) {
 		Labels: Labels{
 			NeedsTriage:   "needs-triage",
 			NeedsInfo:     "needs-info",
-			Ready:         "ready-for-agent",
+			ReadyForAgent: "ready-for-agent",
 			ReadyForHuman: "ready-for-human",
 			Wontfix:       "wontfix",
 		},
-		Gate: Gate{MaxFixes: defaultMaxFixes},
+		Gate:  Gate{MaxFixes: defaultMaxFixes},
+		Image: Image{Template: "debian13"},
 	}
 	return
 }

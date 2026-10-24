@@ -73,6 +73,32 @@ func Latest(paths Paths, project string) (dir string, err error) {
 	return
 }
 
+// LatestDisk returns the disk (*.qcow2) of the newest Base image of project.
+func LatestDisk(paths Paths, project string) (disk string, err error) {
+	dir, err := Latest(paths, project)
+	if err != nil {
+		return
+	}
+	disks, err := filepath.Glob(filepath.Join(dir, "*.qcow2"))
+	if err != nil {
+		err = fmt.Errorf("listing disks in %s: %w", dir, err)
+		return
+	}
+	if len(disks) != 1 {
+		err = fmt.Errorf("want exactly one disk in %s, found %d", dir, len(disks))
+		return
+	}
+	disk = disks[0]
+	return
+}
+
+// SharedGroupID returns the gid of group kvm, through which libvirt-qemu
+// reads Base images and machine disks.
+func SharedGroupID() (gid int, err error) {
+	gid, err = lookupGroupID(imageGroup)
+	return
+}
+
 // newVersion names the Base image version built at t.
 func newVersion(t time.Time) (version string) { return t.UTC().Format(versionFormat) }
 
@@ -91,10 +117,10 @@ func (p Paths) sshDir() (dir string) { return filepath.Join(p.StateDir, "ssh") }
 // projectDir holds the versions of project's Base image.
 func (p Paths) projectDir(project string) (dir string) { return filepath.Join(p.BaseDir, project) }
 
-// ensureSharedDir creates dir if needed and makes it group gid's, mode
+// EnsureSharedDir creates dir if needed and makes it group gid's, mode
 // setgid 2775, so images stay readable by libvirt-qemu. The result is checked,
 // because a directory afk does not own cannot be fixed.
-func ensureSharedDir(dir string, gid int) (err error) {
+func EnsureSharedDir(dir string, gid int) (err error) {
 	defer func() {
 		if err != nil {
 			err = fmt.Errorf("%w (%s must belong to group kvm and be writable by the user)", err, dir)

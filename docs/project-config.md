@@ -9,7 +9,7 @@ repo = "graf0/dfmx"
 # url = "https://gitea.example"   # dla gitea
 
 [labels]                    # nadpisuje domyślny słownik
-ready = "ready-for-agent"
+ready_for_agent = "ready-for-agent"
 needs_info = "needs-info"
 
 [agent]
@@ -22,7 +22,7 @@ cmd = "task lint && go test ./..."
 max_fixes = 3
 
 [image]
-template = "debian13"       # debian13 | ws2025 | win11
+template = "debian13"       # debian13 (domyślny) | ws2025 | win11
 max_age = "720h"            # Expiry: po upływie przebudowa (dla Windows z ISO)
 provision = ["..."]         # faza budowy: internet przez proxy, bez sekretów
 

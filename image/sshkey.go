@@ -15,6 +15,21 @@ import (
 
 const sshKeyName = "id_ed25519"
 
+// SSHSigner returns the `afk` ssh key built into Base images; it must exist
+// (`afk image build` creates it).
+func SSHSigner(paths Paths) (signer ssh.Signer, err error) {
+	path := filepath.Join(paths.sshDir(), sshKeyName)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		err = fmt.Errorf("reading ssh key: %w", err)
+		return
+	}
+	if signer, err = ssh.ParsePrivateKey(data); err != nil {
+		err = fmt.Errorf("parsing ssh key %s: %w", path, err)
+	}
+	return
+}
+
 // ensureSSHKey returns the path of the `afk` private key in dir and its public
 // key in authorized_keys format, generating the key pair on first use.
 // An existing key is never overwritten; the public key is derived from the

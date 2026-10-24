@@ -54,9 +54,29 @@ func TestLatestWithoutImages(t *testing.T) {
 	}
 }
 
+func TestLatestDisk(t *testing.T) {
+	paths := Paths{BaseDir: t.TempDir()}
+	version := filepath.Join(paths.projectDir("p"), "20261024T153000Z")
+	if err := os.MkdirAll(version, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LatestDisk(paths, "p"); err == nil {
+		t.Error("LatestDisk without a disk succeeded")
+	}
+	for _, name := range []string{"debian13.qcow2", "efivars.fd"} {
+		if err := os.WriteFile(filepath.Join(version, name), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := LatestDisk(paths, "p")
+	if want := filepath.Join(version, "debian13.qcow2"); err != nil || got != want {
+		t.Errorf("LatestDisk = %q, %v; want %q", got, err, want)
+	}
+}
+
 func TestEnsureSharedDirSetsGroupAndMode(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "afk", "base")
-	if err := ensureSharedDir(dir, os.Getgid()); err != nil {
+	if err := EnsureSharedDir(dir, os.Getgid()); err != nil {
 		t.Fatal(err)
 	}
 	info, err := os.Stat(dir)
@@ -74,7 +94,7 @@ func TestEnsureSharedDirSetsGroupAndMode(t *testing.T) {
 	if err = os.Chmod(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err = ensureSharedDir(dir, os.Getgid()); err != nil {
+	if err = EnsureSharedDir(dir, os.Getgid()); err != nil {
 		t.Fatal(err)
 	}
 	if info, _ = os.Stat(dir); info.Mode()&(os.ModeSetgid|os.ModePerm) != os.ModeSetgid|0o775 {
@@ -87,7 +107,7 @@ func TestEnsureSharedDirExplainsMissingPermissions(t *testing.T) {
 	if err := os.WriteFile(file, nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	err := ensureSharedDir(filepath.Join(file, "sub"), os.Getgid())
+	err := EnsureSharedDir(filepath.Join(file, "sub"), os.Getgid())
 	if err == nil || !strings.Contains(err.Error(), "must belong to group kvm and be writable") {
 		t.Errorf("err = %v, want a hint about group kvm", err)
 	}

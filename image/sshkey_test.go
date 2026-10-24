@@ -68,3 +68,21 @@ func TestEnsureSSHKeyRejectsCorruptKey(t *testing.T) {
 		t.Error("err = nil, want error for corrupt key (must not be overwritten silently)")
 	}
 }
+
+func TestSSHSigner(t *testing.T) {
+	paths := Paths{StateDir: t.TempDir()}
+	if _, err := SSHSigner(paths); err == nil {
+		t.Error("SSHSigner without a key succeeded")
+	}
+	_, publicKey, err := ensureSSHKey(paths.sshDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer, err := SSHSigner(paths)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(signer.PublicKey()))); got != publicKey {
+		t.Errorf("signer public key = %q, want %q", got, publicKey)
+	}
+}
