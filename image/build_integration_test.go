@@ -30,7 +30,7 @@ func integrationPaths(t *testing.T) (paths Paths) {
 	if err != nil {
 		t.Skipf("no usable /dev/kvm: %v", err)
 	}
-	kvm.Close()
+	_ = kvm.Close()
 	home, err := os.UserHomeDir()
 	if err != nil {
 		t.Fatal(err)
@@ -72,7 +72,7 @@ func listenAndCount(t *testing.T) (port int, accepted *atomic.Int32) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { ln.Close() })
+	t.Cleanup(func() { _ = ln.Close() })
 	accepted = new(atomic.Int32)
 	go func() {
 		for {
@@ -81,7 +81,7 @@ func listenAndCount(t *testing.T) (port int, accepted *atomic.Int32) {
 				return
 			}
 			accepted.Add(1)
-			conn.Close()
+			_ = conn.Close()
 		}
 	}()
 	return ln.Addr().(*net.TCPAddr).Port, accepted
@@ -92,7 +92,7 @@ func TestIntegrationBuildAndIsolationProbe(t *testing.T) {
 	port, accepted := listenAndCount(t)
 	lan := lanAddr(t)
 	imageDir := paths.ImageDir("afk-integration-test")
-	t.Cleanup(func() { os.RemoveAll(imageDir) })
+	t.Cleanup(func() { _ = os.RemoveAll(imageDir) })
 
 	// docs/isolation.md probe, run in the guest as a project provision step
 	// (the tunnel is up and the apt proxy is still configured).
@@ -140,7 +140,7 @@ command -v claude
 func TestIntegrationInterruptLeavesNoQEMU(t *testing.T) {
 	paths := integrationPaths(t)
 	imageDir := paths.ImageDir("afk-integration-test")
-	t.Cleanup(func() { os.RemoveAll(imageDir) })
+	t.Cleanup(func() { _ = os.RemoveAll(imageDir) })
 
 	ctx, cancel := contextWithCancel(t)
 	var out syncBuffer
