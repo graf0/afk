@@ -94,6 +94,8 @@ sudo touch /etc/cloud/cloud-init.disabled   # klon nie odpala cloud-init
 sudo truncate -s 0 /etc/machine-id          # unikalny machine-id = unikalny DHCP client-id
 ```
 
+Klucze hosta sshd zostają w obrazie, wspólne dla klonów; Sandbox VM dostaje własny ed25519 przez poświadczenie systemd w SMBIOS (docs/libvirt.md).
+
 Czas budowy: 22–51 s.
 
 ## Po budowie

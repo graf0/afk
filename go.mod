@@ -5,6 +5,7 @@ go 1.26.4
 tool github.com/go-task/task/v3/cmd/task
 
 require (
+	github.com/digitalocean/go-libvirt v0.0.0-20261013170128-efbbdf578ac8
 	github.com/pelletier/go-toml/v2 v2.4.3
 	golang.org/x/crypto v0.57.0
 )

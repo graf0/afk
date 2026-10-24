@@ -4,12 +4,12 @@ Decyzja: ADR-0001. Tu: konfiguracja i co sprawdziliśmy.
 
 ## Run: sieć libvirt + nwfilter
 
-Sieć per Run, bez NAT (brak `<forward>`), DNS wyłączony, adresy z rezerwacji DHCP po MAC:
+Sieć per Sandbox VM, bez NAT (brak `<forward>`), DNS wyłączony, adres z rezerwacji DHCP po MAC. Podsieć `10.99.<n>.0/24` i most `afkbr<n>` przydziela `afk` (docs/libvirt.md); poniżej `n = 0`:
 
 ```xml
 <network>
-  <name>afk-RUN</name>
-  <bridge name='virbr-afkX' stp='off'/>
+  <name>afk-run-ID</name>
+  <bridge name='afkbr0' stp='off'/>
   <dns enable='no'/>
   <ip address='10.99.0.1' netmask='255.255.255.0'>
     <dhcp><range start='10.99.0.100' end='10.99.0.199'/>
@@ -22,7 +22,7 @@ Sieć per Run, bez NAT (brak `<forward>`), DNS wyłączony, adresy z rezerwacji 
 nwfilter — **biała lista** (kolejność po `priority`):
 
 ```xml
-<filter name='afk-RUN' chain='root'>
+<filter name='afk-run-ID' chain='root'>
   <rule action='accept' direction='out' priority='90'><udp srcportstart='68' dstportstart='67'/></rule>
   <rule action='drop'   direction='out' priority='100'><all dstipaddr='10.99.0.1' state='NEW'/></rule>
   <rule action='accept' direction='out' priority='200'><all dstipaddr='10.99.0.0' dstipmask='24' state='NEW'/></rule>
@@ -32,7 +32,7 @@ nwfilter — **biała lista** (kolejność po `priority`):
 </filter>
 ```
 
-Interfejs domeny: `<filterref filter='afk-RUN'/>`.
+Interfejs domeny: `<filterref filter='afk-run-ID'/>`.
 
 ### Wyniki
 
@@ -62,7 +62,15 @@ Packer uruchamia QEMU bezpośrednio, bez libvirt. Sieć:
 
 ## Test integracyjny
 
-Obowiązkowy (ADR-0001). Skrypt-sonda w gościu, Linux:
+Obowiązkowy (ADR-0001). Sandbox VM: `machine/machine_integration_test.go`:
+
+```sh
+AFK_TEST_PROJECT=<project> go test -tags integration -run Integration -v ./machine/
+```
+
+Wymaga Base image zbudowanego przez `afk image build` (domyślny klucz `afk`). Sprawdza: host przez adres mostu, host przez adres LAN po `sudo ip route add <LAN>/32 via <most>`, `1.1.1.1:443` — `blocked`; przez proxy `deb.debian.org` 200, `example.com` 403 (`CONNECT` i zwykłe HTTP); inny klucz hosta → odrzucony; po `kill` nic nie zostaje. Wynik (Debian 13): wszystko zgodnie z oczekiwaniem, start → ssh 6,8 s.
+
+Skrypt-sonda w gościu, Linux:
 
 ```sh
 p() { (timeout 4 bash -c "echo > /dev/tcp/$1/$2" 2>/dev/null && echo "direct $1:$2 REACHABLE") || echo "direct $1:$2 blocked"; }

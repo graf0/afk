@@ -99,7 +99,7 @@ func Build(ctx context.Context, opts Options) (imageDir string, err error) {
 	}
 	projectDir := paths.projectDir(project)
 	for _, dir := range []string{paths.BaseDir, projectDir} {
-		if err = ensureSharedDir(dir, gid); err != nil {
+		if err = EnsureSharedDir(dir, gid); err != nil {
 			return
 		}
 	}
