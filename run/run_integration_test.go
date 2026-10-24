@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -41,6 +42,10 @@ denied=$(curl -s -m 20 -o /dev/null -w '%{http_connect}' https://example.com/ ||
 [ "$denied" = 403 ] || fail "example.com not denied: $denied"
 echo '{"type":"assistant","message":{"content":[{"type":"text","text":"fake agent working"},{"type":"tool_use","name":"Bash","input":{"command":"git commit"}}]}}'
 if grep -q 'MODE: sleep' /work/TICKET.md; then sleep 600; fi
+if grep -q 'MODE: needs_info' /work/TICKET.md; then
+	echo '{"type":"result","subtype":"success","is_error":false,"structured_output":{"status":"needs_info","reason":"Unclear.","summary":"","deviations":[],"questions":["Which one?"]}}'
+	exit 0
+fi
 if grep -q 'MODE: protected' /work/TICKET.md; then
 	echo '# changed' >> .afk.toml
 else
@@ -85,7 +90,10 @@ func TestIntegrationExecute(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = conn.Close() })
 
+	fake := &fakeGitHub{}
+	github := fake.serve(t, filepath.Join(root, "origin.git"))
 	execute := func(ctx context.Context, t *testing.T, number int, body string) (out string, vm string, err error) {
+		fake.requests, fake.bodies = nil, nil
 		var buf bytes.Buffer
 		start := time.Now()
 		err = Execute(ctx, Options{
@@ -94,6 +102,7 @@ func TestIntegrationExecute(t *testing.T) {
 			ClaudeToken: "fake-42",
 			Paths:       paths,
 			Out:         &buf,
+			Forge:       github,
 			AgentBinary: "/work/repo/fake-claude",
 		})
 		out = buf.String()
@@ -113,12 +122,12 @@ func TestIntegrationExecute(t *testing.T) {
 	}
 	quarantine := filepath.Join(paths.StateDir, project, QuarantineName)
 
-	t.Run("done: result in quarantine, VM destroyed", func(t *testing.T) {
+	t.Run("done: squashed, pushed, PR opened, VM destroyed", func(t *testing.T) {
 		out, vm, err := execute(t.Context(), t, 1, "Do the work.")
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, want := range []string{"fake agent working", "→ Bash git commit", "status: done — Fake.", "result valid: 1 commit(s)"} {
+		for _, want := range []string{"fake agent working", "→ Bash git commit", "status: done — Fake.", "result valid: 1 commit(s)", "pull request #42"} {
 			if !strings.Contains(out, want) {
 				t.Errorf("output lacks %q", want)
 			}
@@ -126,6 +135,13 @@ func TestIntegrationExecute(t *testing.T) {
 		files := sh(t, root, "git --git-dir="+quarantine+" show --name-only --format= refs/heads/ticket-1")
 		if files != "result.txt" {
 			t.Errorf("result commit changes %q, want result.txt", files)
+		}
+		if got := sh(t, root, "git --git-dir=origin.git log -1 --format=%s%n%b ticket-1"); got != "Fake (#1)\nFake work." {
+			t.Errorf("pushed commit message = %q", got)
+		}
+		want := []string{"POST /repos/o/r/pulls", "POST /repos/o/r/issues/42/comments", "DELETE /repos/o/r/issues/1/labels/ready-for-agent"}
+		if !slices.Equal(fake.requests, want) {
+			t.Errorf("Forge requests = %q, want %q", fake.requests, want)
 		}
 		if _, err := conn.Get(vm); err == nil {
 			t.Errorf("VM %s still exists", vm)
@@ -140,6 +156,31 @@ func TestIntegrationExecute(t *testing.T) {
 		out, vm, err := execute(t.Context(), t, 1, "Do the work.")
 		if err == nil || !strings.Contains(err.Error(), "already has a result") || vm != "" {
 			t.Errorf("err = %v, VM %q, output:\n%s", err, vm, out)
+		}
+	})
+
+	t.Run("branch on the remote: refused before the VM starts", func(t *testing.T) {
+		sh(t, root, "git --git-dir=origin.git branch ticket-4 main")
+		out, vm, err := execute(t.Context(), t, 4, "Do the work.")
+		if err == nil || !strings.Contains(err.Error(), "already exists on") || vm != "" {
+			t.Errorf("err = %v, VM %q, output:\n%s", err, vm, out)
+		}
+	})
+
+	t.Run("needs_info: questions on the ticket, no push, VM destroyed", func(t *testing.T) {
+		_, vm, err := execute(t.Context(), t, 5, "MODE: needs_info")
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []string{"POST /repos/o/r/issues/5/comments", "POST /repos/o/r/issues/5/labels", "DELETE /repos/o/r/issues/5/labels/ready-for-agent"}
+		if !slices.Equal(fake.requests, want) {
+			t.Errorf("Forge requests = %q, want %q", fake.requests, want)
+		}
+		if refs := sh(t, root, "git --git-dir=origin.git for-each-ref --format='%(refname)' refs/heads/ticket-5"); refs != "" {
+			t.Errorf("ticket-5 pushed: %q", refs)
+		}
+		if _, err := conn.Get(vm); err == nil {
+			t.Errorf("VM %s still exists", vm)
 		}
 	})
 

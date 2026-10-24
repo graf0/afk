@@ -22,6 +22,7 @@ type Base struct {
 	Branch string // e.g. main
 	Commit string
 	Config config.Config // .afk.toml at Commit, never the working tree (ADR-0002)
+	Ident  Ident         // the user's git identity: author of the squashed result
 }
 
 // ReadBase fetches origin in the repository containing dir and reads the
@@ -44,6 +45,9 @@ func ReadBase(ctx context.Context, dir string) (base Base, err error) {
 		err = fmt.Errorf("resolving the base branch: %w", err)
 		return
 	}
+	if base.Ident, err = readIdent(ctx, base.Repo); err != nil {
+		return
+	}
 	data, err := git(ctx, "-C", base.Repo, "cat-file", "blob", base.Commit+":"+config.FileName)
 	if err != nil {
 		err = fmt.Errorf("reading %s from origin/%s: %w", config.FileName, base.Branch, err)
@@ -52,5 +56,29 @@ func ReadBase(ctx context.Context, dir string) (base Base, err error) {
 	if base.Config, err = config.Parse([]byte(data)); err != nil {
 		err = fmt.Errorf("%s at origin/%s: %w", config.FileName, base.Branch, err)
 	}
+	return
+}
+
+// Ident is a git identity.
+type Ident struct {
+	Name  string
+	Email string
+}
+
+// readIdent reads the author identity git would use in repo.
+func readIdent(ctx context.Context, repo string) (ident Ident, err error) {
+	out, err := git(ctx, "-C", repo, "var", "GIT_AUTHOR_IDENT")
+	if err != nil {
+		err = fmt.Errorf("reading your git identity (set user.name and user.email): %w", err)
+		return
+	}
+	// "Name <email> 1700000000 +0200"
+	name, rest, ok := strings.Cut(out, " <")
+	email, _, ok2 := strings.Cut(rest, ">")
+	if !ok || !ok2 || name == "" || email == "" {
+		err = fmt.Errorf("unexpected git identity %q", out)
+		return
+	}
+	ident = Ident{Name: name, Email: email}
 	return
 }

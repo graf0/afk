@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/graf0/afk/forge"
 )
 
 const testConfig = "[forge]\nkind = \"github\"\nrepo = \"o/r\"\n[protect]\npaths = [\"secrets/key\"]\n"
@@ -224,5 +226,106 @@ func TestProtectedChanges(t *testing.T) {
 	want := []string{".afk.toml", ".github/ci.yml", "x/y/.claude", "x/.claude/settings.json", ".mcp.json", "a/.MCP.json", "secrets"}
 	if got := protectedChanges(changed, protected); !slices.Equal(got, want) {
 		t.Errorf("protectedChanges = %q, want %q", got, want)
+	}
+}
+
+// acceptedResult imports a result of one agent commit into a fresh
+// Quarantine repo, squashes it and accepts it as ticket-1.
+func acceptedResult(t *testing.T) (root, user, base string, q Quarantine) {
+	t.Helper()
+	root, user, base = userRepo(t)
+	q, err := OpenQuarantine(t.Context(), filepath.Join(t.TempDir(), "quarantine.git"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = q.FetchBase(t.Context(), user, base, "ticket-1"); err != nil {
+		t.Fatal(err)
+	}
+	head, err := q.Import(t.Context(), agentResult(t, root, base, `echo x > new && git add new && git commit -qm 1`), "ticket-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	squashed, err := q.Squash(t.Context(), base, head, "Do it (#1)\n", Ident{Name: "Human", Email: "human@example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = q.Accept(t.Context(), "ticket-1", squashed); err != nil {
+		t.Fatal(err)
+	}
+	return
+}
+
+func TestQuarantineSquash(t *testing.T) {
+	root, user, base := userRepo(t)
+	q, err := OpenQuarantine(t.Context(), filepath.Join(t.TempDir(), "quarantine.git"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = q.FetchBase(t.Context(), user, base, "ticket-1"); err != nil {
+		t.Fatal(err)
+	}
+	bundle := agentResult(t, root, base, `echo 1 > new && git add new && git commit -qm 1 && echo 2 >> src/a.go && git commit -qam 2`)
+	head, err := q.Import(t.Context(), bundle, "ticket-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	message := "Do it (#1)\n\nSummary --end-of-options\n-p HEAD\n"
+	squashed, err := q.Squash(t.Context(), base, head, message, Ident{Name: "Jan Kowalski", Email: "jan@example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	git := "git --git-dir=" + q.Dir + " "
+	if got := sh(t, root, git+"rev-parse "+squashed+"^@"); got != base {
+		t.Errorf("parents = %q, want only the base %s", got, base)
+	}
+	if got, want := sh(t, root, git+"rev-parse "+squashed+"^{tree}"), sh(t, root, git+"rev-parse "+head+"^{tree}"); got != want {
+		t.Errorf("tree = %s, want the Agent's %s", got, want)
+	}
+	if got := sh(t, root, git+"log -1 --format=%B "+squashed); got != strings.TrimSpace(message) {
+		t.Errorf("message = %q, want %q", got, message)
+	}
+	if got := sh(t, root, git+"log -1 --format='%an <%ae>|%cn <%ce>' "+squashed); got != "Jan Kowalski <jan@example.com>|Jan Kowalski <jan@example.com>" {
+		t.Errorf("author|committer = %q", got)
+	}
+	if commits, err := q.Validate(t.Context(), base, squashed, nil); err != nil || commits != 1 {
+		t.Errorf("Validate(squashed) = %d, %v", commits, err)
+	}
+}
+
+func TestQuarantinePush(t *testing.T) {
+	root, _, base, q := acceptedResult(t)
+	remote := forge.Remote{URL: filepath.Join(root, "origin.git")}
+	squashed := sh(t, root, "git --git-dir="+q.Dir+" rev-parse ticket-1")
+
+	exists, err := q.RemoteHasBranch(t.Context(), remote, "ticket-1")
+	if err != nil || exists {
+		t.Fatalf("RemoteHasBranch before push = %v, %v", exists, err)
+	}
+	// A branch whose name only ends like ticket-1 doesn't count.
+	sh(t, root, "git --git-dir=origin.git update-ref refs/heads/x/ticket-1 "+base)
+	if exists, err = q.RemoteHasBranch(t.Context(), remote, "ticket-1"); err != nil || exists {
+		t.Errorf("RemoteHasBranch with x/ticket-1 = %v, %v", exists, err)
+	}
+	if err = q.Push(t.Context(), remote, "ticket-1"); err != nil {
+		t.Fatal(err)
+	}
+	if got := sh(t, root, "git --git-dir=origin.git rev-parse refs/heads/ticket-1"); got != squashed {
+		t.Errorf("remote ticket-1 = %s, want %s", got, squashed)
+	}
+	if exists, err = q.RemoteHasBranch(t.Context(), remote, "ticket-1"); err != nil || !exists {
+		t.Errorf("RemoteHasBranch after push = %v, %v", exists, err)
+	}
+
+	// An existing branch is never moved, not even forward from the base.
+	sh(t, root, "git --git-dir=origin.git update-ref refs/heads/ticket-1 "+base)
+	if err = q.Push(t.Context(), remote, "ticket-1"); err == nil {
+		t.Error("push over an existing branch: want error")
+	}
+	if got := sh(t, root, "git --git-dir=origin.git rev-parse refs/heads/ticket-1"); got != base {
+		t.Errorf("remote ticket-1 moved to %s", got)
+	}
+
+	if _, err = q.RemoteHasBranch(t.Context(), forge.Remote{URL: filepath.Join(root, "missing.git")}, "ticket-1"); err == nil {
+		t.Error("missing remote: want error")
 	}
 }

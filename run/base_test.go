@@ -22,6 +22,9 @@ func TestReadBase(t *testing.T) {
 	if got.Config.Forge.Kind != "github" || !slices.Contains(got.Config.Protect.Paths, "secrets/key") {
 		t.Errorf("config = %+v, want the one from origin/main", got.Config)
 	}
+	if got.Ident != (Ident{Name: "t", Email: "t@example.com"}) {
+		t.Errorf("ident = %+v, want the user's git identity", got.Ident)
+	}
 
 	t.Run("fetches origin and follows origin/HEAD", func(t *testing.T) {
 		sh(t, root, `
