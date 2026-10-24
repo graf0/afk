@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -18,6 +19,8 @@ const (
 	publicV4 = "93.184.216.34"
 	publicV6 = "2606:2800:220:1::1"
 )
+
+// --- fakes ---
 
 type fakeResolver struct {
 	mu    sync.Mutex
@@ -40,7 +43,7 @@ func (r *fakeResolver) LookupIPAddr(ctx context.Context, host string) (addrs []n
 	return
 }
 
-func (r *fakeResolver) callCount() int {
+func (r *fakeResolver) callCount() (n int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return len(r.calls)
@@ -64,11 +67,24 @@ func (d *fakeDialer) DialContext(ctx context.Context, network, addr string) (con
 	return (&net.Dialer{}).DialContext(ctx, network, d.target)
 }
 
-func (d *fakeDialer) dialed() []string {
+type zonedResolver struct{}
+
+func (zonedResolver) LookupIPAddr(ctx context.Context, host string) (addrs []net.IPAddr, err error) {
+	return []net.IPAddr{{IP: net.ParseIP(publicV6), Zone: "eth0"}}, nil
+}
+
+// hostAddrs is the fake address list of the host running the proxy.
+func hostAddrs() (addrs []net.Addr, err error) {
+	return []net.Addr{&net.IPNet{IP: net.ParseIP("203.0.113.7"), Mask: net.CIDRMask(24, 32)}}, nil
+}
+
+func (d *fakeDialer) dialed() (addrs []string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	return append([]string(nil), d.addrs...)
+	return slices.Clone(d.addrs)
 }
+
+// --- fixture and helpers ---
 
 type fixture struct {
 	proxy    *Proxy
@@ -77,18 +93,16 @@ type fixture struct {
 	addr     string
 }
 
-func newFixture(t *testing.T, policy Policy, table map[string][]string, target string) *fixture {
+func newFixture(t *testing.T, policy Policy, table map[string][]string, target string) (f *fixture) {
 	t.Helper()
-	f := &fixture{
+	f = &fixture{
 		resolver: &fakeResolver{table: table},
 		dialer:   &fakeDialer{target: target},
 	}
 	f.proxy = New(policy)
 	f.proxy.Resolver = f.resolver
 	f.proxy.Dialer = f.dialer
-	f.proxy.HostAddrs = func() ([]net.Addr, error) {
-		return []net.Addr{&net.IPNet{IP: net.ParseIP("203.0.113.7"), Mask: net.CIDRMask(24, 32)}}, nil
-	}
+	f.proxy.HostAddrs = hostAddrs
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -104,19 +118,19 @@ func newFixture(t *testing.T, policy Policy, table map[string][]string, target s
 		}
 	})
 	f.addr = ln.Addr().String()
-	return f
+	return
 }
 
-func mustAllowlist(t *testing.T, entries ...string) Policy {
+func mustAllowlist(t *testing.T, entries ...string) (policy Policy) {
 	t.Helper()
 	policy, err := Allowlist(entries)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return policy
+	return
 }
 
-func dialProxy(t *testing.T, addr string) net.Conn {
+func dialProxy(t *testing.T, addr string) (conn net.Conn) {
 	t.Helper()
 	conn, err := net.Dial("tcp", addr)
 	if err != nil {
@@ -124,7 +138,7 @@ func dialProxy(t *testing.T, addr string) net.Conn {
 	}
 	t.Cleanup(func() { _ = conn.Close() })
 	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
-	return conn
+	return
 }
 
 // send writes raw to the proxy and returns the response status code.
@@ -139,14 +153,15 @@ func send(t *testing.T, addr, raw string) (status int) {
 		t.Fatal(err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	return resp.StatusCode
+	status = resp.StatusCode
+	return
 }
 
-func connectRequest(target string) string {
+func connectRequest(target string) (raw string) {
 	return fmt.Sprintf("CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", target, target)
 }
 
-func getRequest(target string) string {
+func getRequest(target string) (raw string) {
 	return fmt.Sprintf("GET http://%s/path?q=1 HTTP/1.1\r\nHost: %s\r\nProxy-Connection: keep-alive\r\n\r\n", target, target)
 }
 
@@ -169,8 +184,11 @@ func startEcho(t *testing.T) (addr string) {
 			}()
 		}
 	}()
-	return ln.Addr().String()
+	addr = ln.Addr().String()
+	return
 }
+
+// --- policy and address checks ---
 
 func TestDeniedNameNeverReachesResolver(t *testing.T) {
 	f := newFixture(t, mustAllowlist(t, "allowed.example"), map[string][]string{"evil.example": {publicV4}}, "")
@@ -234,6 +252,36 @@ func TestDeniedResolvedAddresses(t *testing.T) {
 	}
 }
 
+func TestAllowlistPortsAreWebOnly(t *testing.T) {
+	table := map[string][]string{"allowed.example": {publicV4}}
+	t.Run("other port denied before DNS", func(t *testing.T) {
+		f := newFixture(t, mustAllowlist(t, "allowed.example"), table, "")
+		for name, raw := range map[string]string{
+			"connect": connectRequest("allowed.example:25"),
+			"http":    getRequest("allowed.example:25"),
+		} {
+			if got := send(t, f.addr, raw); got != http.StatusForbidden {
+				t.Errorf("%s: status = %d, want 403", name, got)
+			}
+		}
+		if f.resolver.callCount() != 0 || len(f.dialer.dialed()) != 0 {
+			t.Error("resolver or dialer used")
+		}
+	})
+	t.Run("443 allowed", func(t *testing.T) {
+		f := newFixture(t, mustAllowlist(t, "allowed.example"), table, startEcho(t))
+		if got := send(t, f.addr, connectRequest("allowed.example:443")); got != http.StatusOK {
+			t.Errorf("status = %d, want 200", got)
+		}
+	})
+	t.Run("allow all has no port limit", func(t *testing.T) {
+		f := newFixture(t, AllowAll(), table, startEcho(t))
+		if got := send(t, f.addr, connectRequest("allowed.example:8443")); got != http.StatusOK {
+			t.Errorf("status = %d, want 200", got)
+		}
+	})
+}
+
 func TestIPLiteralTargets(t *testing.T) {
 	t.Run("allowlist without the literal", func(t *testing.T) {
 		f := newFixture(t, mustAllowlist(t, "app.example"), nil, "")
@@ -276,6 +324,8 @@ func TestIPLiteralTargets(t *testing.T) {
 	})
 }
 
+// --- CONNECT ---
+
 func TestConnectTunnelsBothWaysIncludingBufferedBytes(t *testing.T) {
 	echo := startEcho(t)
 	f := newFixture(t, mustAllowlist(t, "app.example"), map[string][]string{"app.example": {publicV4}}, echo)
@@ -313,6 +363,8 @@ func TestConnectTunnelsBothWaysIncludingBufferedBytes(t *testing.T) {
 	}
 }
 
+// --- plain HTTP ---
+
 func TestPlainHTTPReturnsUpstreamResponse(t *testing.T) {
 	var gotReq *http.Request
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -323,7 +375,7 @@ func TestPlainHTTPReturnsUpstreamResponse(t *testing.T) {
 	}))
 	t.Cleanup(upstream.Close)
 
-	f := newFixture(t, mustAllowlist(t, "app.example"), map[string][]string{"app.example": {publicV4}}, upstream.Listener.Addr().String())
+	f := newFixture(t, AllowAll(), map[string][]string{"app.example": {publicV4}}, upstream.Listener.Addr().String())
 	conn := dialProxy(t, f.addr)
 	if _, err := io.WriteString(conn, getRequest("app.example:8080")); err != nil {
 		t.Fatal(err)
@@ -345,6 +397,35 @@ func TestPlainHTTPReturnsUpstreamResponse(t *testing.T) {
 	}
 	if got := f.dialer.dialed(); len(got) != 1 || got[0] != publicV4+":8080" {
 		t.Errorf("dialed %v, want resolved address", got)
+	}
+}
+
+func TestZeroValueProxyServesPlainHTTP(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	t.Cleanup(upstream.Close)
+
+	proxy := &Proxy{
+		Policy:    AllowAll(),
+		Resolver:  &fakeResolver{table: map[string][]string{"app.example": {publicV4}}},
+		Dialer:    &fakeDialer{target: upstream.Listener.Addr().String()},
+		HostAddrs: hostAddrs,
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- proxy.Serve(ctx, ln) }()
+	t.Cleanup(func() {
+		cancel()
+		if err := <-done; err != nil {
+			t.Errorf("Serve: %v", err)
+		}
+	})
+
+	if got := send(t, ln.Addr().String(), getRequest("app.example")); got != http.StatusOK {
+		t.Errorf("status = %d, want 200", got)
 	}
 }
 
@@ -387,12 +468,6 @@ func TestResolverEdgeCases(t *testing.T) {
 	}
 }
 
-type zonedResolver struct{}
-
-func (zonedResolver) LookupIPAddr(ctx context.Context, host string) (addrs []net.IPAddr, err error) {
-	return []net.IPAddr{{IP: net.ParseIP(publicV6), Zone: "eth0"}}, nil
-}
-
 func TestIPv4DialedFirst(t *testing.T) {
 	echo := startEcho(t)
 	f := newFixture(t, mustAllowlist(t, "app.example"), map[string][]string{"app.example": {publicV6, publicV4}}, echo)
@@ -427,7 +502,7 @@ func TestUpstreamFailureIs502(t *testing.T) {
 
 func TestHostAddrsFailureDenies(t *testing.T) {
 	f := newFixture(t, AllowAll(), map[string][]string{"app.example": {publicV4}}, "")
-	f.proxy.HostAddrs = func() ([]net.Addr, error) { return nil, errors.New("boom") }
+	f.proxy.HostAddrs = func() (addrs []net.Addr, err error) { return nil, errors.New("boom") }
 	if got := send(t, f.addr, connectRequest("app.example:443")); got != http.StatusForbidden {
 		t.Errorf("status = %d, want 403 when host addresses are unknown", got)
 	}
@@ -456,6 +531,8 @@ func TestMalformedRequests(t *testing.T) {
 		t.Error("resolver called for malformed request")
 	}
 }
+
+// --- Serve ---
 
 func TestServeStopsOnContextCancel(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")

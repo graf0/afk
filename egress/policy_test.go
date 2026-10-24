@@ -73,3 +73,30 @@ func TestAllowAll(t *testing.T) {
 		t.Error("AllowAll allowed a malformed host")
 	}
 }
+
+func TestAllowlistWildcardCriterion(t *testing.T) {
+	policy, err := Allowlist([]string{"*.example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for host, want := range map[string]bool{"a.example.com": true, "example.com": false, "badexample.com": false} {
+		if got := policy.Allows(host); got != want {
+			t.Errorf("Allows(%q) = %v, want %v", host, got, want)
+		}
+	}
+}
+
+func TestAllowsPort(t *testing.T) {
+	allowlist, err := Allowlist([]string{"example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for port, want := range map[int]bool{80: true, 443: true, 25: false, 8443: false} {
+		if got := allowlist.AllowsPort(port); got != want {
+			t.Errorf("allowlist AllowsPort(%d) = %v, want %v", port, got, want)
+		}
+	}
+	if !AllowAll().AllowsPort(8443) {
+		t.Error("AllowAll denied port 8443")
+	}
+}

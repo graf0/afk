@@ -38,7 +38,7 @@ func Allowlist(entries []string) (policy Policy, err error) {
 			policy.exact[host] = struct{}{}
 			continue
 		}
-		if _, ipErr := netip.ParseAddr(host); ipErr == nil {
+		if isIPLiteral(host) {
 			err = fmt.Errorf("invalid allowlist entry %q: wildcard on IP address", entry)
 			return
 		}
@@ -56,11 +56,11 @@ func (p Policy) Allows(host string) (ok bool) {
 	if p.all {
 		return true
 	}
-	if _, ok = p.exact[host]; ok {
+	if _, found := p.exact[host]; found {
 		return true
 	}
 	// IP literals match only exactly, never by suffix ("*.0.0.1" vs 127.0.0.1).
-	if _, err := netip.ParseAddr(host); err == nil {
+	if isIPLiteral(host) {
 		return false
 	}
 	for _, suffix := range p.suffixes {
@@ -69,6 +69,12 @@ func (p Policy) Allows(host string) (ok bool) {
 		}
 	}
 	return false
+}
+
+// AllowsPort reports whether the policy permits connecting to port.
+// An allowlist permits only the web ports 80 and 443; AllowAll permits any.
+func (p Policy) AllowsPort(port int) (ok bool) {
+	return p.all || port == 80 || port == 443
 }
 
 // normalizeHost lowercases host, drops one trailing dot and canonicalizes IP literals.
@@ -85,11 +91,16 @@ func validHost(host string) (ok bool) {
 	if host == "" || strings.ContainsAny(host, " \t\r\n*/@%") {
 		return false
 	}
-	if _, err := netip.ParseAddr(host); err == nil {
+	if isIPLiteral(host) {
 		return true
 	}
 	if strings.Contains(host, ":") {
 		return false
 	}
 	return !slices.Contains(strings.Split(host, "."), "")
+}
+
+func isIPLiteral(host string) (ok bool) {
+	_, err := netip.ParseAddr(host)
+	return err == nil
 }

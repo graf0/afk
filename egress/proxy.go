@@ -36,6 +36,11 @@ var deniedPrefixes = []netip.Prefix{
 	netip.MustParsePrefix("198.18.0.0/15"),  // benchmarking
 }
 
+// errBadTarget marks a target that is not a valid "host:port".
+var errBadTarget = errors.New("bad target")
+
+// --- proxy ---
+
 // Resolver resolves a host name to IP addresses.
 type Resolver interface {
 	LookupIPAddr(ctx context.Context, host string) (addrs []net.IPAddr, err error)
@@ -53,23 +58,16 @@ type Proxy struct {
 	Resolver  Resolver
 	Dialer    Dialer
 	HostAddrs func() (addrs []net.Addr, err error) // addresses of the host's interfaces
-
-	transport *http.Transport
 }
 
 // New returns a Proxy enforcing policy, using the system resolver and dialer.
 func New(policy Policy) (proxy *Proxy) {
-	proxy = &Proxy{
+	return &Proxy{
 		Policy:    policy,
 		Resolver:  net.DefaultResolver,
 		Dialer:    &net.Dialer{Timeout: dialTimeout},
 		HostAddrs: net.InterfaceAddrs,
 	}
-	proxy.transport = &http.Transport{
-		DialContext:       proxy.dial,
-		DisableKeepAlives: true,
-	}
-	return
 }
 
 // --- serving ---
@@ -123,10 +121,6 @@ func (p *Proxy) handle(ctx context.Context, conn net.Conn) {
 // --- CONNECT ---
 
 func (p *Proxy) handleConnect(ctx context.Context, conn net.Conn, br *bufio.Reader, req *http.Request) {
-	if _, _, err := splitTarget(req.Host, ""); err != nil {
-		writeStatus(conn, http.StatusBadRequest)
-		return
-	}
 	upstream, err := p.dial(ctx, "tcp", req.Host)
 	if err != nil {
 		writeStatus(conn, statusFor(err))
@@ -170,7 +164,9 @@ func (p *Proxy) handlePlain(conn net.Conn, req *http.Request) {
 	req.URL.User = nil // the checked URL host is the only target; no credentials from the URL
 	req.Host = req.URL.Host
 
-	resp, err := p.transport.RoundTrip(req)
+	// No keep-alives: the transport keeps no state, so one per request is cheap.
+	transport := &http.Transport{DialContext: p.dial, DisableKeepAlives: true}
+	resp, err := transport.RoundTrip(req)
 	if err != nil {
 		writeStatus(conn, statusFor(err))
 		return
@@ -184,8 +180,11 @@ func (p *Proxy) handlePlain(conn net.Conn, req *http.Request) {
 
 // statusFor maps a dial or round trip error to the response status.
 func statusFor(err error) (status int) {
-	if errors.Is(err, ErrDenied) {
+	switch {
+	case errors.Is(err, ErrDenied):
 		return http.StatusForbidden
+	case errors.Is(err, errBadTarget):
+		return http.StatusBadRequest
 	}
 	return http.StatusBadGateway
 }
@@ -199,9 +198,13 @@ func writeStatus(w io.Writer, status int) {
 // dial applies the policy and address checks to address ("host:port") and
 // connects to a resolved IP, never to the name.
 func (p *Proxy) dial(ctx context.Context, network, address string) (conn net.Conn, err error) {
-	host, port, err := splitTarget(address, "80")
+	host, port, err := splitHostPort(address)
 	if err != nil {
 		err = fmt.Errorf("parsing target %q: %w", address, err)
+		return
+	}
+	if !p.Policy.AllowsPort(port) {
+		err = fmt.Errorf("%w: port %d not allowed", ErrDenied, port)
 		return
 	}
 	if !p.Policy.Allows(host) {
@@ -218,7 +221,7 @@ func (p *Proxy) dial(ctx context.Context, network, address string) (conn net.Con
 
 	var lastErr error
 	for _, ip := range ips {
-		conn, lastErr = p.Dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+		conn, lastErr = p.Dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), strconv.Itoa(port)))
 		if lastErr == nil {
 			return
 		}
@@ -239,20 +242,22 @@ func (p *Proxy) resolve(ctx context.Context, host string) (ips []net.IP, err err
 		err = fmt.Errorf("resolving %q: %w", host, err)
 		return
 	}
+	var v4s, v6s []net.IP
 	for _, addr := range addrs {
-		if addr.Zone != "" {
+		switch {
+		case addr.Zone != "":
 			err = fmt.Errorf("%w: %q resolved to a zoned address", ErrDenied, host)
 			return
+		case addr.IP.To4() != nil:
+			v4s = append(v4s, addr.IP)
+		default:
+			v6s = append(v6s, addr.IP)
 		}
-		ips = append(ips, addr.IP)
 	}
+	ips = append(v4s, v6s...)
 	if len(ips) == 0 {
 		err = fmt.Errorf("resolving %q: no addresses", host)
-		return
 	}
-	slices.SortStableFunc(ips, func(a, b net.IP) int {
-		return boolToInt(a.To4() == nil) - boolToInt(b.To4() == nil)
-	})
 	return
 }
 
@@ -303,31 +308,20 @@ func isHostAddr(ip net.IP, hostAddrs []net.Addr) (found bool) {
 	return false
 }
 
-// splitTarget splits "host:port"; an empty defaultPort makes the port mandatory.
-func splitTarget(address, defaultPort string) (host, port string, err error) {
-	host, port, err = net.SplitHostPort(address)
+// splitHostPort splits a mandatory-port "host:port" and validates the port.
+func splitHostPort(address string) (host string, port int, err error) {
+	host, portStr, err := net.SplitHostPort(address)
 	if err != nil {
-		if defaultPort == "" {
-			return
-		}
-		host, port, err = address, defaultPort, nil
-		if len(host) > 1 && host[0] == '[' && host[len(host)-1] == ']' {
-			host = host[1 : len(host)-1]
-		}
+		err = fmt.Errorf("%w: %w", errBadTarget, err)
+		return
 	}
-	if n, convErr := strconv.Atoi(port); convErr != nil || n < 1 || n > 65535 {
-		err = fmt.Errorf("invalid port %q", port)
+	port, convErr := strconv.Atoi(portStr)
+	if convErr != nil || port < 1 || port > 65535 {
+		err = fmt.Errorf("%w: invalid port %q", errBadTarget, portStr)
 		return
 	}
 	if host == "" {
-		err = errors.New("empty host")
-	}
-	return
-}
-
-func boolToInt(b bool) (n int) {
-	if b {
-		n = 1
+		err = fmt.Errorf("%w: empty host", errBadTarget)
 	}
 	return
 }
