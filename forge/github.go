@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -31,12 +32,13 @@ const (
 	requestTimeout   = time.Minute
 )
 
-// Ticket is a ticket as the Agent gets it.
+// Ticket is a ticket read from the Forge.
 type Ticket struct {
 	Number   int
 	Title    string
 	Body     string
 	Comments []string
+	Labels   []string
 }
 
 // GitHub reads tickets of Repo through the GitHub REST API.
@@ -49,10 +51,13 @@ type GitHub struct {
 
 // githubIssue is the part of the issue resource afk reads.
 type githubIssue struct {
-	Number      int       `json:"number"`
-	Title       string    `json:"title"`
-	Body        string    `json:"body"`
-	State       string    `json:"state"`
+	Number int    `json:"number"`
+	Title  string `json:"title"`
+	Body   string `json:"body"`
+	State  string `json:"state"`
+	Labels []struct {
+		Name string `json:"name"`
+	} `json:"labels"`
 	PullRequest *struct{} `json:"pull_request"`
 	SubIssues   struct {
 		Total int `json:"total"`
@@ -101,9 +106,26 @@ func NewGitHub(forge config.Forge, token string) (g *GitHub, err error) {
 	return
 }
 
+// ReadyTicket reads ticket n like Ticket and refuses it without label (the
+// Project's ready_for_agent): only a human makes a ticket ready (ADR-0003).
+func (g *GitHub) ReadyTicket(ctx context.Context, n int, label string) (ticket Ticket, err error) {
+	if label == "" {
+		err = errors.New("labels.ready_for_agent is empty")
+		return
+	}
+	ticket, err = g.ticket(ctx, n, label)
+	return
+}
+
 // Ticket reads ticket n with its comments. Pull requests, closed issues and
 // Specs (issues with sub-issues) are refused: a Run of them is not supported yet.
 func (g *GitHub) Ticket(ctx context.Context, n int) (ticket Ticket, err error) {
+	ticket, err = g.ticket(ctx, n, "")
+	return
+}
+
+// ticket reads ticket n, refusing it without label unless label is empty.
+func (g *GitHub) ticket(ctx context.Context, n int, label string) (ticket Ticket, err error) {
 	var issue githubIssue
 	if err = g.get(ctx, fmt.Sprintf("/repos/%s/issues/%d", g.Repo, n), &issue); err != nil {
 		err = fmt.Errorf("reading ticket #%d: %w", n, err)
@@ -121,6 +143,14 @@ func (g *GitHub) Ticket(ctx context.Context, n int) (ticket Ticket, err error) {
 		return
 	}
 	ticket = Ticket{Number: issue.Number, Title: issue.Title, Body: issue.Body}
+	for _, issueLabel := range issue.Labels {
+		ticket.Labels = append(ticket.Labels, issueLabel.Name)
+	}
+	if label != "" && !slices.Contains(ticket.Labels, label) {
+		err = fmt.Errorf("ticket #%d lacks the label %q: only tickets a human marked ready run in the Factory", n, label)
+		ticket = Ticket{}
+		return
+	}
 	for page := 1; ; page++ {
 		var comments []githubComment
 		path := fmt.Sprintf("/repos/%s/issues/%d/comments?per_page=%d&page=%d", g.Repo, n, commentsPerPage, page)
@@ -135,16 +165,6 @@ func (g *GitHub) Ticket(ctx context.Context, n int) (ticket Ticket, err error) {
 			return
 		}
 	}
-}
-
-// Markdown renders the ticket for the Agent: title, body, comments.
-func (t Ticket) Markdown() (text string) {
-	var b strings.Builder
-	fmt.Fprintf(&b, "# #%d %s\n\n%s\n", t.Number, t.Title, t.Body)
-	for _, comment := range t.Comments {
-		fmt.Fprintf(&b, "\n---\nKomentarz:\n%s\n", comment)
-	}
-	return b.String()
 }
 
 // --- http ---

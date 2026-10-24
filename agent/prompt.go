@@ -3,6 +3,8 @@ package agent
 import (
 	"fmt"
 	"strings"
+
+	"github.com/graf0/afk/forge"
 )
 
 // Task is what the prompt tells the Agent about its Run.
@@ -31,6 +33,16 @@ func Prompt(task Task) (prompt string) {
 	b.WriteString("- Na koniec zostaw czyste drzewo robocze (wszystko zacommitowane).\n")
 	b.WriteString("- Zwróć status `done`, gdy ticket jest zrobiony i zacommitowany: w `summary` 2-5 zdań co zrobiono, w `deviations` każde odstępstwo od ticketu z powodem (pusta lista, gdy nie było), w `doubts` rzeczy do sprawdzenia przez człowieka (opcjonalnie), w `reason` jedno zdanie. Zwykłe odstępstwo z dobrego powodu tylko zgłoś, nie zatrzymuj się.\n")
 	b.WriteString("- Zwróć `needs_info`, gdy ticket jest niejasny, sprzeczny albo za duży: powód w `reason`, konkretne pytania do autora ticketu w `questions`, `summary` puste, `deviations` pusta lista — wtedy bez commitów.\n")
+	return b.String()
+}
+
+// TicketFile renders the ticket file the Agent reads: title, body, comments.
+func TicketFile(ticket forge.Ticket) (text string) {
+	var b strings.Builder
+	fmt.Fprintf(&b, "# #%d %s\n\n%s\n", ticket.Number, ticket.Title, ticket.Body)
+	for _, comment := range ticket.Comments {
+		fmt.Fprintf(&b, "\n---\nKomentarz:\n%s\n", comment)
+	}
 	return b.String()
 }
 

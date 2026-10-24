@@ -27,6 +27,7 @@ Niesprawdzone albo nierozstrzygnięte. Po rozstrzygnięciu: przenieść wynik do
 - [ ] Minimalna wersja tmux (bindy bez prefiksu, `swap-pane`/`join-pane`, konfiguracja przez `-f`).
 - [ ] Czy skille `synced/` konta claude.ai synchronizują się same w VM przy tokenie z `setup-token` (jeśli tak — w Chat/Factory pojawią się mimo pominięcia przy kopiowaniu).
 - [ ] Czy `--plugin-dir` uruchamia hooki pluginów (np. SessionStart) tak samo jak instalacja.
+- [ ] „Pack bomb” z VM: bundle wyniku ma limit 1 GiB, ale rozmiar po rozpakowaniu w Quarantine repo (delty, duże bloby) nie jest ograniczony — limit na obiekty (`fetch.unpackLimit`/`transfer` + kontrola rozmiaru), czy wystarczy kontrola miejsca na dysku?
 - [ ] Czy `M-…` dochodzi do tmux w popularnych terminalach (Alt jako Meta) i nie koliduje ze skrótami Claude Code.
 
 ## go-libvirt

@@ -3,6 +3,8 @@ package agent
 import (
 	"strings"
 	"testing"
+
+	"github.com/graf0/afk/forge"
 )
 
 func TestPrompt(t *testing.T) {
@@ -32,5 +34,13 @@ func TestPrompt(t *testing.T) {
 	}
 	if strings.Contains(Prompt(Task{}), "chronionych") {
 		t.Error("prompt mentions protected paths without any")
+	}
+}
+
+func TestTicketFile(t *testing.T) {
+	got := TicketFile(forge.Ticket{Number: 3, Title: "T", Body: "B", Comments: []string{"c1", "c2"}})
+	want := "# #3 T\n\nB\n\n---\nKomentarz:\nc1\n\n---\nKomentarz:\nc2\n"
+	if got != want {
+		t.Errorf("TicketFile() = %q, want %q", got, want)
 	}
 }

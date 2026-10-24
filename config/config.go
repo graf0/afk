@@ -21,7 +21,9 @@ const defaultMaxFixes = 3
 
 var (
 	// requiredProtectPaths are always protected, regardless of the user's list.
-	requiredProtectPaths = []string{FileName, ".github/", ".gitea/", ".claude/"}
+	// Claude Code picks up .claude/ and .mcp.json in any directory, so they
+	// are protected at any depth ("**/").
+	requiredProtectPaths = []string{FileName, ".github/", ".gitea/", "**/.claude/", "**/.mcp.json"}
 
 	forgeKinds = []string{"github", "gitea"}
 	toolKinds  = []string{"package", "host-port", "vm"}
@@ -80,7 +82,8 @@ type Network struct {
 	Allow []string `toml:"allow"`
 }
 
-// Protect lists paths the agent must not change.
+// Protect lists paths the agent must not change: a file, a directory
+// ("dir/"), either at any depth with the prefix "**/".
 type Protect struct {
 	Paths []string `toml:"paths"`
 }

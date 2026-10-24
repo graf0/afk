@@ -21,9 +21,6 @@ import (
 	"github.com/graf0/afk/machine"
 )
 
-// sshTimeout bounds waiting for a fresh machine's sshd.
-const sshTimeout = 2 * time.Minute
-
 const vmUsage = "usage: afk vm up | afk vm shell <vm> | afk vm kill <vm>"
 
 // runVM executes the diagnostic `afk vm <subcommand>`.
@@ -76,7 +73,7 @@ func vmUp(ctx context.Context, conn *machine.Conn, cfg config.Config, stdout io.
 	if err != nil {
 		return
 	}
-	sshCtx, cancel := context.WithTimeout(ctx, sshTimeout)
+	sshCtx, cancel := context.WithTimeout(ctx, machine.SSHTimeout)
 	defer cancel()
 	client, err := m.SSH(sshCtx, signer)
 	if err != nil {
@@ -109,7 +106,7 @@ func vmShell(ctx context.Context, conn *machine.Conn, cfg config.Config, name st
 	if err != nil {
 		return
 	}
-	sshCtx, cancel := context.WithTimeout(ctx, sshTimeout)
+	sshCtx, cancel := context.WithTimeout(ctx, machine.SSHTimeout)
 	defer cancel()
 	client, err := m.SSH(sshCtx, signer)
 	if err != nil {

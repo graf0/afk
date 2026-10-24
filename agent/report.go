@@ -8,16 +8,23 @@ import (
 	"io"
 	"slices"
 	"strings"
+	"unicode"
 )
 
 // Report statuses.
 const (
-	StatusDone      = "done"
-	StatusNeedsInfo = "needs_info"
+	StatusDone      Status = "done"
+	StatusNeedsInfo Status = "needs_info"
 )
 
-// maxStreamLine bounds one stream-json line (a tool result can carry a file).
-const maxStreamLine = 64 << 20
+const (
+	// maxStreamLine bounds one stream-json line (a tool result can carry a file).
+	maxStreamLine = 64 << 20
+
+	// maxStreamBytes bounds the whole stream written to the log and out: the
+	// guest must not fill the host's disk.
+	maxStreamBytes = 256 << 20
+)
 
 // Schema is the JSON Schema of the Agent's report (claude --json-schema).
 const Schema = `{"type":"object","properties":{` +
@@ -33,9 +40,12 @@ const Schema = `{"type":"object","properties":{` +
 // (agent_lines in docs/reference/ralph.sh).
 var toolArgKeys = []string{"command", "file_path", "pattern", "description"}
 
+// Status is the outcome the Agent reports.
+type Status string
+
 // Report is the Agent's structured result of a session.
 type Report struct {
-	Status     string   `json:"status"`
+	Status     Status   `json:"status"`
 	Reason     string   `json:"reason"`
 	Summary    string   `json:"summary"`
 	Deviations []string `json:"deviations"`
@@ -65,13 +75,24 @@ type streamEvent struct {
 // Stream reads Claude Code's stream-json from r: every line goes to log
 // as is, the Agent's text and one line per tool call to out (control
 // characters removed, the stream comes from the untrusted guest). It returns
-// the report from the last result event.
+// the report from the last result event. A stream over maxStreamBytes is an
+// error.
 func Stream(r io.Reader, out, log io.Writer) (report Report, err error) {
+	report, err = stream(r, out, log, maxStreamBytes)
+	return
+}
+
+func stream(r io.Reader, out, log io.Writer, limit int) (report Report, err error) {
+	written := 0
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64<<10), maxStreamLine)
 	var result *streamEvent
 	for scanner.Scan() {
 		line := scanner.Bytes()
+		if written += len(line) + 1; written > limit {
+			err = fmt.Errorf("agent stream larger than %d bytes", limit)
+			return
+		}
 		// A copy: appending to line would overwrite the scanner's buffer.
 		if _, err = log.Write(append(slices.Clip(line), '\n')); err != nil {
 			err = fmt.Errorf("writing log: %w", err)
@@ -84,6 +105,7 @@ func Stream(r io.Reader, out, log io.Writer) (report Report, err error) {
 		switch event.Type {
 		case "assistant":
 			for _, text := range eventLines(event) {
+				written += len(text) + 1
 				_, _ = fmt.Fprintln(out, text)
 			}
 		case "result":
@@ -132,13 +154,14 @@ func toolArg(input map[string]json.RawMessage) (arg string) {
 }
 
 // Sanitize drops control characters (terminal escapes) except newline and
-// tab from text that comes from the guest.
+// tab, and format characters (bidi overrides, zero-width) from text that
+// comes from the guest.
 func Sanitize(text string) (clean string) {
 	return strings.Map(func(r rune) rune {
 		if r == '\n' || r == '\t' {
 			return r
 		}
-		if r < 0x20 || (r >= 0x7f && r < 0xa0) {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
 			return -1
 		}
 		return r
@@ -161,7 +184,7 @@ func parseResult(event streamEvent) (report Report, err error) {
 		return
 	}
 	if report.Status != StatusDone && report.Status != StatusNeedsInfo {
-		err = fmt.Errorf("agent report has invalid status %q", Sanitize(report.Status))
+		err = fmt.Errorf("agent report has invalid status %q", Sanitize(string(report.Status)))
 	}
 	return
 }

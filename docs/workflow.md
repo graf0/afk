@@ -4,14 +4,14 @@ Factory wzorowana na `ralph.sh` z dfmx; bez TUI ma go zastąpić już w pierwszy
 
 ## Factory
 
-Selektor przy starcie: `*` (domyślny — kolejne gotowe Tickety, jak `pick()` w ralph.sh, do wyczerpania kolejki) albo lista numerów `#12 #15` (w tej kolejności, potem koniec). Bez limitu iteracji; Factory zatrzymuje się ręcznie.
+`afk factory '#N'` (na razie jeden numer) bierze tylko Ticket z labelem `[labels].ready_for_agent` — bez niego odmawia, bez flagi obejścia. Selektor przy starcie: `*` (domyślny — kolejne gotowe Tickety, jak `pick()` w ralph.sh, do wyczerpania kolejki) albo lista numerów `#12 #15` (w tej kolejności, potem koniec). Bez limitu iteracji; Factory zatrzymuje się ręcznie.
 
 1. `afk` wybiera z Forge Ticket z labelem `ready-for-agent`, który nie ma otwartego blokera i nie jest zarezerwowany.
 2. Rezerwacja: `flock` na `~/.local/state/afk/claims/<project>/<n>`; spec rezerwuje też swoje dzieci. Blokada znika ze śmiercią procesu. Jeden host — dwie maszyny z `afk` na tym samym repo są poza zakresem.
 3. Spec (ticket z sub-issues) to ciąg sesji, jedna na każde dziecko w kolejności, zakończony review całości.
 4. Każdy Run dostaje świeżą Sandbox VM (overlay na Base image). Po sukcesie VM jest niszczona.
 5. Runy jednej Factory idą po kolei. Równoległość = kilka Factory.
-6. Porażka Run zatrzymuje Factory; VM zostaje do inspekcji (shell w VM z TUI, `afk kill` niszczy). Ponowne uruchomienie Factory kontynuuje zostawiony Run (jak `resume` w ralph.sh). `needs_info` nie jest porażką — Factory idzie dalej. Nie ma TTL — nie wiadomo, ile co trwa.
+6. Porażka Run zatrzymuje Factory; VM zostaje do inspekcji (shell w VM z TUI, `afk kill` niszczy). Ponowne uruchomienie Factory kontynuuje zostawiony Run (jak `resume` w ralph.sh). `needs_info` nie jest porażką — VM jest niszczona, Factory idzie dalej. Nie ma TTL — nie wiadomo, ile co trwa.
 
 Forge: GitHub i Gitea przez REST (`net/http`). Gitea nie ma natywnych sub-issues ani blokerów, więc relacje są konwencją w treści: `Part of #N`, `Blocked by: #N`. Słownik labeli konfigurowalny (`[labels]`), domyślnie z `docs/agents/triage-labels.md`.
 
@@ -32,13 +32,15 @@ Agent kończy sesję plikiem raportu:
 - `summary`, `deviations` (odstępstwa od ticketu), `doubts` (wątpliwości dla reviewera)
 - przy `needs_info`: lista pytań
 
-`needs_info` → `afk` komentuje ticket pytaniami, ustawia `needs-info`, zdejmuje `ready-for-agent`. Agent Factory nie rozmawia z człowiekiem (bez `ask_human`): część interaktywna dzieje się w Chat, przed Factory.
+`needs_info` → `afk` komentuje ticket pytaniami, ustawia `needs-info`, zdejmuje `ready-for-agent`; VM jest niszczona, wyniku się nie pobiera. Agent Factory nie rozmawia z człowiekiem (bez `ask_human`): część interaktywna dzieje się w Chat, przed Factory.
+
+Strumień Agenta (stream-json) idzie do pliku logu w `~/.local/state/afk/<project>/logs/`, a na wyjście `afk` tekst Agenta i jednolinijkowe wywołania narzędzi, bez znaków sterujących i formatujących (gość jest niezaufany). Łącznie najwyżej 256 MiB — powyżej `afk` przerywa Agenta i Run kończy się porażką (VM zostaje).
 
 ### Po sesji
 
 1. **Gate**: `gate_cmd` z `.afk.toml` uruchamiany w VM. Porażka → do 3 sesji naprawczych z wyjściem bramki w prompcie.
 2. **Review** innym modelem.
-3. **Git** (ADR-0002): host robi tylko `git fetch` / import `git bundle` z VM do Quarantine repo; nigdy nie uruchamia niczego w klonie agenta. Walidacja: zmiany w chronionych ścieżkach (`[protect]`, zawsze `.afk.toml`, `.github/`, `.gitea/`, `.claude/` — hooki i pluginy Claude'a uruchamiają się potem na hoście człowieka) → odrzucenie. `.afk.toml` czytany zawsze z gałęzi bazowej.
+3. **Git** (ADR-0002): host robi tylko `git fetch` / import `git bundle` z VM do Quarantine repo; nigdy nie uruchamia niczego w klonie agenta. Walidacja: zmiany w chronionych ścieżkach (`[protect]`, zawsze `.afk.toml`, `.github/`, `.gitea/` oraz na dowolnej głębokości `**/.claude/` i `**/.mcp.json` — hooki, pluginy i serwery MCP Claude'a uruchamiają się potem na hoście człowieka, także z podkatalogów) → odrzucenie. Sprawdzany jest każdy commit, bez wykrywania rename, z pominięciem wielkości liter; zastąpienie katalogu nadrzędnego plikiem lub symlinkiem też się liczy. `CLAUDE.md`, `.gitattributes`, `.gitmodules` są dozwolone. `.afk.toml` czytany zawsze z gałęzi bazowej.
 4. Push i PR wyłącznie przez `afk` z poświadczeniami hosta.
 
 ## Chat

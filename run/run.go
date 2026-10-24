@@ -37,10 +37,6 @@ const (
 
 	// QuarantineName is the Quarantine repo in a Project's state directory.
 	QuarantineName = "quarantine.git"
-
-	sshTimeout    = 2 * time.Minute
-	maxResultSize = 1 << 30 // bundle from the guest
-	maxStderr     = 4 << 10 // guest stderr kept for errors
 )
 
 // Options describe one Run.
@@ -66,9 +62,10 @@ type run struct {
 // --- run ---
 
 // Execute runs opts.Ticket in a fresh Sandbox VM and imports the result into
-// the Quarantine repo, as refs/heads/ticket-N once validated. Nothing is
-// written to the Forge. On success and on needs_info the VM is destroyed; on
-// failure (and Ctrl-C) it stays for `afk vm shell` / `afk vm kill`.
+// the Quarantine repo, as refs/heads/ticket-N once validated; that branch
+// must not exist yet. Nothing is written to the Forge. On success and on
+// needs_info the VM is destroyed; on any failure after start (and Ctrl-C) it
+// stays for `afk vm shell` / `afk vm kill`.
 func Execute(ctx context.Context, opts Options) (err error) {
 	r := run{Options: opts, branch: fmt.Sprintf("ticket-%d", opts.Ticket.Number)}
 	cfg := opts.Base.Config
@@ -92,7 +89,10 @@ func Execute(ctx context.Context, opts Options) (err error) {
 	if r.quarantine, err = OpenQuarantine(ctx, filepath.Join(r.stateDir, QuarantineName)); err != nil {
 		return
 	}
-	if err = r.quarantine.FetchBase(ctx, opts.Base.Repo, opts.Base.Commit, r.baseRef()); err != nil {
+	if err = r.quarantine.CheckNew(ctx, r.branch); err != nil {
+		return
+	}
+	if err = r.quarantine.FetchBase(ctx, opts.Base.Repo, opts.Base.Commit, r.branch); err != nil {
 		return
 	}
 	logPath, err := r.openLog()
@@ -120,18 +120,7 @@ func Execute(ctx context.Context, opts Options) (err error) {
 		return
 	}
 	r.say("VM %s started", m.Name)
-	sshCtx, cancel := context.WithTimeout(ctx, sshTimeout)
-	defer cancel()
-	client, err := m.SSH(sshCtx, signer)
-	if err != nil {
-		if killErr := conn.Kill(m.Name); killErr != nil {
-			err = errors.Join(err, killErr)
-		}
-		return
-	}
-	defer func() { _ = client.Close() }()
-	// Ctrl-C ends every session at once; the VM then stays like on failure.
-	defer context.AfterFunc(ctx, func() { _ = client.Close() })()
+	var client *ssh.Client
 	defer func() {
 		if err != nil {
 			r.say("Run failed; VM %s stays for inspection:", m.Name)
@@ -144,6 +133,14 @@ func Execute(ctx context.Context, opts Options) (err error) {
 			r.say("VM %s destroyed", m.Name)
 		}
 	}()
+	sshCtx, cancel := context.WithTimeout(ctx, machine.SSHTimeout)
+	defer cancel()
+	if client, err = m.SSH(sshCtx, signer); err != nil {
+		return
+	}
+	defer func() { _ = client.Close() }()
+	// Ctrl-C ends every session at once; the VM then stays like on failure.
+	defer context.AfterFunc(ctx, func() { _ = client.Close() })()
 	stop, err := machine.ServeEgress(ctx, client, policy)
 	if err != nil {
 		return
@@ -187,7 +184,7 @@ func (r run) prepareGuest(ctx context.Context, client *ssh.Client) (err error) {
 	_ = temp.Close()
 	defer func() { _ = os.Remove(temp.Name()) }()
 	// git replaces the file (lock file + rename): open it only afterwards.
-	if err = r.quarantine.Bundle(ctx, r.baseRef(), temp.Name()); err != nil {
+	if err = r.quarantine.Bundle(ctx, r.branch, temp.Name()); err != nil {
 		return
 	}
 	bundle, err := os.Open(temp.Name())
@@ -197,7 +194,7 @@ func (r run) prepareGuest(ctx context.Context, client *ssh.Client) (err error) {
 	}
 	defer func() { _ = bundle.Close() }()
 	q := agent.ShellQuote
-	origin := "refs/remotes/origin/" + r.Base.Branch
+	origin := originPrefix + r.Base.Branch
 	script := strings.Join([]string{
 		"set -eu",
 		`sudo install -d -o "$(id -u)" -g "$(id -g)" ` + guestWork,
@@ -206,7 +203,7 @@ func (r run) prepareGuest(ctx context.Context, client *ssh.Client) (err error) {
 		"cd " + guestRepo,
 		"git config user.name " + q(guestGitName),
 		"git config user.email " + q(guestGitEmail),
-		"git fetch -q --no-tags " + guestBundle + " " + q("+"+r.baseRef()+":"+origin),
+		"git fetch -q --no-tags " + guestBundle + " " + q("+"+baseRef(r.branch)+":"+origin),
 		"git checkout -q -B " + q(r.branch) + " " + q(origin),
 		"rm " + guestBundle,
 	}, "\n")
@@ -214,7 +211,7 @@ func (r run) prepareGuest(ctx context.Context, client *ssh.Client) (err error) {
 		err = fmt.Errorf("cloning the base in the guest: %w", err)
 		return
 	}
-	if err = remote(ctx, client, "cat > "+guestTicket, strings.NewReader(r.Ticket.Markdown()), nil); err != nil {
+	if err = remote(ctx, client, "cat > "+guestTicket, strings.NewReader(agent.TicketFile(r.Ticket)), nil); err != nil {
 		err = fmt.Errorf("writing the ticket in the guest: %w", err)
 	}
 	return
@@ -248,7 +245,7 @@ func (r run) takeResult(ctx context.Context, client *ssh.Client) (err error) {
 		err = fmt.Errorf("bundling the result in the guest: %w", err)
 		return
 	}
-	head, err := r.quarantine.Import(ctx, file.Name(), "refs/afk/incoming/"+r.branch)
+	head, err := r.quarantine.Import(ctx, file.Name(), r.branch)
 	if err != nil {
 		return
 	}
@@ -257,7 +254,7 @@ func (r run) takeResult(ctx context.Context, client *ssh.Client) (err error) {
 		err = fmt.Errorf("result %s rejected: %w", head, err)
 		return
 	}
-	if err = r.quarantine.Accept(ctx, "refs/heads/"+r.branch, head); err != nil {
+	if err = r.quarantine.Accept(ctx, r.branch, head); err != nil {
 		return
 	}
 	r.say("result valid: %d commit(s), %s in %s", commits, r.branch, r.quarantine.Dir)
@@ -267,7 +264,10 @@ func (r run) takeResult(ctx context.Context, client *ssh.Client) (err error) {
 
 // --- helpers ---
 
-func (r run) baseRef() (ref string) { return "refs/afk/base/" + r.branch }
+const (
+	maxResultSize = 1 << 30 // bundle from the guest
+	maxStderr     = 4 << 10 // guest stderr kept for errors
+)
 
 func (r run) prompt() (prompt string) {
 	return agent.Prompt(agent.Task{
@@ -311,7 +311,8 @@ func remote(ctx context.Context, client *ssh.Client, command string, stdin io.Re
 	var stderr tailBuffer
 	session.Stdin, session.Stdout, session.Stderr = stdin, stdout, &stderr
 	if err = session.Run(command); err != nil {
-		err = fmt.Errorf("%w: %s", err, agent.Sanitize(strings.TrimSpace(stderr.String())))
+		// Both the exit message and stderr come from the guest.
+		err = fmt.Errorf("%s: %s", agent.Sanitize(err.Error()), agent.Sanitize(strings.TrimSpace(stderr.String())))
 	}
 	return
 }
@@ -337,7 +338,7 @@ type limitWriter struct {
 
 func (l *limitWriter) Write(p []byte) (n int, err error) {
 	if int64(len(p)) > l.left {
-		err = fmt.Errorf("result larger than %d bytes", maxResultSize)
+		err = errors.New("output over the size limit")
 		return
 	}
 	n, err = l.w.Write(p)

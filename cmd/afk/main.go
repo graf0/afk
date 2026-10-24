@@ -46,6 +46,11 @@ func handleSignals(parent context.Context) (ctx context.Context, abort <-chan st
 // runCommand executes the command from args in the Project containing dir.
 // Closing abort stops long work immediately, without cleanup.
 func runCommand(ctx context.Context, abort <-chan struct{}, args []string, dir string, stdout io.Writer) (err error) {
+	// The Factory reads .afk.toml only from the base branch, never the working tree (ADR-0002).
+	if len(args) > 0 && args[0] == "factory" {
+		err = runFactory(ctx, args[1:], dir, stdout)
+		return
+	}
 	cfg, err := config.Load(dir)
 	if err != nil {
 		err = fmt.Errorf("loading project: %w", err)
@@ -62,8 +67,6 @@ func runCommand(ctx context.Context, abort <-chan struct{}, args []string, dir s
 			return
 		}
 		_, err = stdout.Write(data)
-	case "factory":
-		err = runFactory(ctx, args[1:], dir, stdout)
 	case "image":
 		err = runImage(ctx, abort, args[1:], cfg, stdout)
 	case "vm":

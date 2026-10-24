@@ -82,7 +82,7 @@ func agentResult(t *testing.T, root, base, script string) (bundle string) {
 
 func TestQuarantineValidate(t *testing.T) {
 	root, user, base := userRepo(t)
-	protected := []string{".afk.toml", ".github/", ".gitea/", ".claude/", "secrets/key"}
+	protected := []string{".afk.toml", ".github/", ".gitea/", "**/.claude/", "**/.mcp.json", "secrets/key"}
 	for name, tc := range map[string]struct {
 		script string
 		want   []string // protected paths in the error; nil: valid
@@ -99,6 +99,11 @@ func TestQuarantineValidate(t *testing.T) {
 		"case variant":           {`mkdir .CLAUDE && echo x > .CLAUDE/hook && git add -A && git commit -qm x`, []string{".CLAUDE/hook"}},
 		"changed and reverted":   {`echo '# x' >> .afk.toml && git commit -qam x && git revert --no-edit HEAD >/dev/null`, []string{".afk.toml"}},
 		"parent of user entry":   {`git rm -rq secrets && echo x > secrets && git add secrets && git commit -qm x`, []string{"secrets", "secrets/key"}},
+		"hostile path name":      {`mkdir .claude/x && touch $'.claude/x/\e[2J\u202e' && git add -A && git commit -qm x`, []string{".claude/x/[2J"}},
+		"nested .claude":         {`mkdir -p sub/.claude && echo '{}' > sub/.claude/settings.json && git add -A && git commit -qm x`, []string{"sub/.claude/settings.json"}},
+		"deep .claude hook":      {`mkdir -p a/b/.Claude/hooks && echo x > a/b/.Claude/hooks/x && git add -A && git commit -qm x`, []string{"a/b/.Claude/hooks/x"}},
+		".mcp.json":              {`echo '{}' > .mcp.json && mkdir -p sub && echo '{}' > sub/.mcp.json && git add -A && git commit -qm x`, []string{".mcp.json", "sub/.mcp.json"}},
+		"allowed agent files":    {`echo x > CLAUDE.md && echo '* text' > .gitattributes && touch .gitmodules && mkdir d && echo x > d/claude && git add -A && git commit -qm x`, nil},
 		"merge touching .claude": {`git checkout -q -b side && echo y > .claude/x && git add -A && git commit -qm side && git checkout -q ticket-1 && echo z > z && git add z && git commit -qm z && git merge -q --no-edit side`, []string{".claude/x"}},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -106,11 +111,11 @@ func TestQuarantineValidate(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err = q.FetchBase(t.Context(), user, base, "refs/afk/base/ticket-1"); err != nil {
+			if err = q.FetchBase(t.Context(), user, base, "ticket-1"); err != nil {
 				t.Fatal(err)
 			}
 			bundle := agentResult(t, root, base, tc.script)
-			head, err := q.Import(t.Context(), bundle, "refs/afk/incoming/ticket-1")
+			head, err := q.Import(t.Context(), bundle, "ticket-1")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -123,6 +128,9 @@ func TestQuarantineValidate(t *testing.T) {
 			}
 			if err == nil {
 				t.Fatalf("Validate = %d, nil; want rejection of %v", commits, tc.want)
+			}
+			if strings.ContainsAny(err.Error(), "\x1b\u202e") {
+				t.Errorf("err = %q, contains terminal controls", err)
 			}
 			for _, path := range tc.want {
 				if !strings.Contains(err.Error(), path) {
@@ -139,7 +147,7 @@ func TestQuarantineValidateHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = q.FetchBase(t.Context(), user, base, "refs/afk/base/ticket-1"); err != nil {
+	if err = q.FetchBase(t.Context(), user, base, "ticket-1"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = q.Validate(t.Context(), base, base, nil); err == nil || !strings.Contains(err.Error(), "no commits") {
@@ -152,7 +160,7 @@ func TestQuarantineValidateHistory(t *testing.T) {
 	sh(t, dir, "git checkout -q --orphan other && git commit -qm orphan")
 	bundle := filepath.Join(root, "orphan.bundle")
 	sh(t, dir, "git bundle create -q "+bundle+" HEAD")
-	head, err := q.Import(t.Context(), bundle, "refs/afk/incoming/ticket-1")
+	head, err := q.Import(t.Context(), bundle, "ticket-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,13 +182,13 @@ func TestQuarantineSetup(t *testing.T) {
 	if _, err = OpenQuarantine(t.Context(), dir); err != nil {
 		t.Errorf("reopening: %v", err)
 	}
-	if err = q.FetchBase(t.Context(), user, base, "refs/afk/base/ticket-1"); err != nil {
+	if err = q.FetchBase(t.Context(), user, base, "ticket-1"); err != nil {
 		t.Fatal(err)
 	}
 
 	// The base bundle clones into what the guest gets.
 	bundle := filepath.Join(root, "base.bundle")
-	if err = q.Bundle(t.Context(), "refs/afk/base/ticket-1", bundle); err != nil {
+	if err = q.Bundle(t.Context(), "ticket-1", bundle); err != nil {
 		t.Fatal(err)
 	}
 	got := sh(t, root, "git init -q -b ticket-1 guest && cd guest && git fetch -q "+bundle+" +refs/afk/base/ticket-1:refs/remotes/origin/main && git checkout -q -B ticket-1 origin/main && git rev-parse HEAD")
@@ -188,11 +196,33 @@ func TestQuarantineSetup(t *testing.T) {
 		t.Errorf("guest HEAD = %s, want %s", got, base)
 	}
 
-	if err = q.Accept(t.Context(), "refs/heads/ticket-1", base); err != nil {
+	if err = q.CheckNew(t.Context(), "ticket-1"); err != nil {
+		t.Errorf("CheckNew before Accept: %v", err)
+	}
+	if err = q.Accept(t.Context(), "ticket-1", base); err != nil {
 		t.Fatal(err)
+	}
+	if err = q.CheckNew(t.Context(), "ticket-1"); err == nil || !strings.Contains(err.Error(), "already has a result") {
+		t.Errorf("CheckNew after Accept: err = %v", err)
+	}
+	if err = q.Accept(t.Context(), "ticket-1", base); err == nil {
+		t.Error("second Accept overwrote the result")
 	}
 	refs := strings.Fields(sh(t, root, "git --git-dir="+dir+" for-each-ref --format='%(refname)'"))
 	if !slices.Equal(refs, []string{"refs/afk/base/ticket-1", "refs/heads/ticket-1"}) {
 		t.Errorf("refs = %v", refs)
+	}
+}
+
+func TestProtectedChanges(t *testing.T) {
+	protected := []string{".afk.toml", ".github/", "**/.claude/", "**/.mcp.json", "secrets/key"}
+	changed := []string{
+		"src/a.go", ".afk.toml", "x/.afk.toml", ".github/ci.yml", "x/.github/ci.yml",
+		"x/y/.claude", "x/.claude/settings.json", ".mcp.json", "a/.MCP.json", "a/.mcp.json.bak",
+		"secrets", "x/secrets/key", "CLAUDE.md", "my.claude/x",
+	}
+	want := []string{".afk.toml", ".github/ci.yml", "x/y/.claude", "x/.claude/settings.json", ".mcp.json", "a/.MCP.json", "secrets"}
+	if got := protectedChanges(changed, protected); !slices.Equal(got, want) {
+		t.Errorf("protectedChanges = %q, want %q", got, want)
 	}
 }

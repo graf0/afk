@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-var requiredProtect = []string{".afk.toml", ".github/", ".gitea/", ".claude/"}
+var requiredProtect = []string{".afk.toml", ".github/", ".gitea/", "**/.claude/", "**/.mcp.json"}
 
 func TestParseDefaults(t *testing.T) {
 	cfg, err := Parse([]byte("[forge]\nkind = \"github\"\n"))
@@ -87,7 +87,7 @@ func TestParseProtectPaths(t *testing.T) {
 		want []string
 	}{
 		{"user list appended", `paths = ["secrets/"]`, append(slices.Clone(requiredProtect), "secrets/")},
-		{"duplicates removed", `paths = [".claude/", "x/", "x/"]`, append(slices.Clone(requiredProtect), "x/")},
+		{"duplicates removed", `paths = ["**/.claude/", "x/", "x/"]`, append(slices.Clone(requiredProtect), "x/")},
 		{"empty list keeps required", `paths = []`, requiredProtect},
 	}
 	for _, tt := range tests {

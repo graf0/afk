@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+
+	"github.com/graf0/afk/agent"
 )
 
 // git runs host git with args and returns its trimmed stdout. Only on
@@ -17,7 +19,8 @@ func git(ctx context.Context, args ...string) (out string, err error) {
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	cmd.Env = append(os.Environ(), "LC_ALL=C")
 	if err = cmd.Run(); err != nil {
-		err = fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
+		// stderr can quote objects and refs from the guest.
+		err = fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, agent.Sanitize(strings.TrimSpace(stderr.String())))
 		return
 	}
 	out = strings.TrimSpace(stdout.String())

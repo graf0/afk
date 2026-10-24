@@ -22,6 +22,9 @@ const (
 	// ProxyAddr is where the Egress proxy appears inside the guest.
 	ProxyAddr = "127.0.0.1:3128"
 
+	// SSHTimeout bounds waiting for a fresh machine's sshd.
+	SSHTimeout = 2 * time.Minute
+
 	dialRetry        = 500 * time.Millisecond
 	handshakeTimeout = 10 * time.Second
 

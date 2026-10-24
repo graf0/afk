@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -28,7 +29,9 @@ func fakeGitHub(t *testing.T) (g *GitHub) {
 		}
 		switch r.PathValue("n") {
 		case "7":
-			issue(w, `{"number":7,"title":"Do it","body":"Body text","state":"open","sub_issues_summary":{"total":0}}`)
+			issue(w, `{"number":7,"title":"Do it","body":"Body text","state":"open","labels":[{"name":"bug"},{"name":"ready-for-agent"}],"sub_issues_summary":{"total":0}}`)
+		case "12":
+			issue(w, `{"number":12,"title":"Not ready","state":"open","labels":[{"name":"needs-triage"}]}`)
 		case "8":
 			issue(w, `{"number":8,"title":"PR","state":"open","pull_request":{"url":"x"}}`)
 		case "9":
@@ -74,6 +77,23 @@ func TestGitHubTicket(t *testing.T) {
 	}
 }
 
+func TestGitHubReadyTicket(t *testing.T) {
+	g := fakeGitHub(t)
+	ticket, err := g.ReadyTicket(t.Context(), 7, "ready-for-agent")
+	if err != nil || ticket.Number != 7 || !slices.Equal(ticket.Labels, []string{"bug", "ready-for-agent"}) {
+		t.Errorf("ReadyTicket(7) = %+v, %v", ticket, err)
+	}
+	if _, err = g.ReadyTicket(t.Context(), 12, "ready-for-agent"); err == nil || !strings.Contains(err.Error(), `"ready-for-agent"`) {
+		t.Errorf("ReadyTicket(12): err = %v, want refusal naming the label", err)
+	}
+	if _, err = g.ReadyTicket(t.Context(), 7, ""); err == nil {
+		t.Error("empty label: want error")
+	}
+	if _, err = g.ReadyTicket(t.Context(), 7, "go"); err == nil || !strings.Contains(err.Error(), `"go"`) {
+		t.Errorf("custom label: err = %v", err)
+	}
+}
+
 func TestGitHubTicketRefused(t *testing.T) {
 	g := fakeGitHub(t)
 	for n, want := range map[int]string{8: "pull request", 9: "closed", 10: "sub-issues", 11: "Not Found"} {
@@ -97,14 +117,6 @@ func TestNewGitHub(t *testing.T) {
 		if _, err := NewGitHub(forge, "t"); err == nil {
 			t.Errorf("NewGitHub(%+v): want error", forge)
 		}
-	}
-}
-
-func TestTicketMarkdown(t *testing.T) {
-	got := Ticket{Number: 3, Title: "T", Body: "B", Comments: []string{"c1", "c2"}}.Markdown()
-	want := "# #3 T\n\nB\n\n---\nKomentarz:\nc1\n\n---\nKomentarz:\nc2\n"
-	if got != want {
-		t.Errorf("Markdown() = %q, want %q", got, want)
 	}
 }
 

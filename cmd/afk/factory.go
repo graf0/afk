@@ -41,7 +41,7 @@ func runFactory(ctx context.Context, args []string, dir string, stdout io.Writer
 	if err != nil {
 		return
 	}
-	ticket, err := github.Ticket(ctx, n)
+	ticket, err := github.ReadyTicket(ctx, n, base.Config.Labels.ReadyForAgent)
 	if err != nil {
 		return
 	}

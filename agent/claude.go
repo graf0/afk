@@ -61,9 +61,12 @@ func (s Session) Run(ctx context.Context, client *ssh.Client, out, log io.Writer
 		return
 	}
 	report, streamErr := Stream(stdout, out, log)
-	_, _ = io.Copy(io.Discard, stdout) // after a stream error, let the command finish
+	if streamErr != nil {
+		_ = session.Close() // stop the agent: its output is unusable or too large
+	}
 	if waitErr := session.Wait(); waitErr != nil {
-		err = fmt.Errorf("agent exited: %w", waitErr)
+		// The exit message comes from the guest.
+		err = fmt.Errorf("agent exited: %s", Sanitize(waitErr.Error()))
 	}
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		err = fmt.Errorf("agent interrupted: %w", ctxErr)

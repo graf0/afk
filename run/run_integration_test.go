@@ -33,7 +33,7 @@ fail() { echo "FAKE: $*" >&2; exit 1; }
 [ "$CLAUDE_CODE_OAUTH_TOKEN" = "fake-$((6 * 7))" ] || fail "token not in the environment"
 ! grep -rqsF "$CLAUDE_CODE_OAUTH_TOKEN" /work /home/agent /tmp || fail "token on disk"
 grep -q /work/TICKET.md <<<"$prompt" || fail "prompt without the ticket path"
-[ "$(git rev-parse --abbrev-ref HEAD)" = ticket-1 ] || fail "wrong branch"
+[[ "$(git rev-parse --abbrev-ref HEAD)" == ticket-[0-9]* ]] || fail "wrong branch"
 git rev-parse -q --verify origin/main >/dev/null || fail "no origin/main"
 allowed=$(curl -s -m 20 -o /dev/null -w '%{http_code}' https://api.anthropic.com/ || true)
 denied=$(curl -s -m 20 -o /dev/null -w '%{http_connect}' https://example.com/ || true)
@@ -85,12 +85,12 @@ func TestIntegrationExecute(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = conn.Close() })
 
-	execute := func(ctx context.Context, t *testing.T, body string) (out string, vm string, err error) {
+	execute := func(ctx context.Context, t *testing.T, number int, body string) (out string, vm string, err error) {
 		var buf bytes.Buffer
 		start := time.Now()
 		err = Execute(ctx, Options{
 			Base:        base,
-			Ticket:      forge.Ticket{Number: 1, Title: "Fake", Body: body},
+			Ticket:      forge.Ticket{Number: number, Title: "Fake", Body: body},
 			ClaudeToken: "fake-42",
 			Paths:       paths,
 			Out:         &buf,
@@ -114,7 +114,7 @@ func TestIntegrationExecute(t *testing.T) {
 	quarantine := filepath.Join(paths.StateDir, project, QuarantineName)
 
 	t.Run("done: result in quarantine, VM destroyed", func(t *testing.T) {
-		out, vm, err := execute(t.Context(), t, "Do the work.")
+		out, vm, err := execute(t.Context(), t, 1, "Do the work.")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -136,8 +136,15 @@ func TestIntegrationExecute(t *testing.T) {
 		}
 	})
 
+	t.Run("existing result: refused before the VM starts", func(t *testing.T) {
+		out, vm, err := execute(t.Context(), t, 1, "Do the work.")
+		if err == nil || !strings.Contains(err.Error(), "already has a result") || vm != "" {
+			t.Errorf("err = %v, VM %q, output:\n%s", err, vm, out)
+		}
+	})
+
 	t.Run("protected path: rejected, VM stays", func(t *testing.T) {
-		out, vm, err := execute(t.Context(), t, "MODE: protected")
+		out, vm, err := execute(t.Context(), t, 2, "MODE: protected")
 		if err == nil || !strings.Contains(err.Error(), ".afk.toml") {
 			t.Fatalf("err = %v, want rejection naming .afk.toml", err)
 		}
@@ -155,7 +162,7 @@ func TestIntegrationExecute(t *testing.T) {
 	t.Run("interrupted: VM stays", func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(t.Context(), 40*time.Second) // the fake agent sleeps
 		defer cancel()
-		_, vm, err := execute(ctx, t, "MODE: sleep")
+		_, vm, err := execute(ctx, t, 3, "MODE: sleep")
 		if err == nil || !strings.Contains(err.Error(), "interrupted") {
 			t.Fatalf("err = %v, want interruption", err)
 		}

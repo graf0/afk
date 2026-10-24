@@ -6,8 +6,18 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/graf0/afk/agent"
+)
+
+// Refs of a Run in the Quarantine repo, per ticket branch.
+const (
+	baseRefPrefix     = "refs/afk/base/"     // the base of the Run
+	incomingRefPrefix = "refs/afk/incoming/" // raw result from the guest
+	resultRefPrefix   = "refs/heads/"        // validated result
 )
 
 // quarantineConfig hardens every git call on the Quarantine repo, which holds
@@ -52,17 +62,26 @@ func (q Quarantine) git(ctx context.Context, args ...string) (out string, err er
 
 // --- base ---
 
-// FetchBase copies commit of the user's repository repo to ref.
-func (q Quarantine) FetchBase(ctx context.Context, repo, commit, ref string) (err error) {
-	if _, err = q.git(ctx, "fetch", "--quiet", "--no-tags", "--no-write-fetch-head", repo, "+"+commit+":"+ref); err != nil {
+// CheckNew fails when branch already has a result: continuing a Run comes later.
+func (q Quarantine) CheckNew(ctx context.Context, branch string) (err error) {
+	if _, refErr := q.git(ctx, "rev-parse", "--quiet", "--verify", resultRef(branch)); refErr == nil {
+		err = fmt.Errorf("%s already has a result in %s; remove it first: git --git-dir=%s update-ref -d %s",
+			branch, q.Dir, q.Dir, resultRef(branch))
+	}
+	return
+}
+
+// FetchBase copies commit of the user's repository repo to the base ref of branch.
+func (q Quarantine) FetchBase(ctx context.Context, repo, commit, branch string) (err error) {
+	if _, err = q.git(ctx, "fetch", "--quiet", "--no-tags", "--no-write-fetch-head", repo, "+"+commit+":"+baseRef(branch)); err != nil {
 		err = fmt.Errorf("copying the base to the Quarantine repo: %w", err)
 	}
 	return
 }
 
-// Bundle writes a git bundle of ref (full history) to path.
-func (q Quarantine) Bundle(ctx context.Context, ref, path string) (err error) {
-	if _, err = q.git(ctx, "bundle", "create", "--quiet", path, ref); err != nil {
+// Bundle writes a git bundle of the base ref of branch (full history) to path.
+func (q Quarantine) Bundle(ctx context.Context, branch, path string) (err error) {
+	if _, err = q.git(ctx, "bundle", "create", "--quiet", path, baseRef(branch)); err != nil {
 		err = fmt.Errorf("bundling the base: %w", err)
 	}
 	return
@@ -70,9 +89,10 @@ func (q Quarantine) Bundle(ctx context.Context, ref, path string) (err error) {
 
 // --- result ---
 
-// Import fetches HEAD of the bundle at path (from the guest) to ref and
-// returns its commit.
-func (q Quarantine) Import(ctx context.Context, path, ref string) (head string, err error) {
+// Import fetches HEAD of the bundle at path (from the guest) to the incoming
+// ref of branch and returns its commit.
+func (q Quarantine) Import(ctx context.Context, path, branch string) (head string, err error) {
+	ref := incomingRef(branch)
 	if _, err = q.git(ctx, "fetch", "--quiet", "--no-tags", "--no-write-fetch-head", path, "+HEAD:"+ref); err != nil {
 		err = fmt.Errorf("importing the result: %w", err)
 		return
@@ -111,21 +131,30 @@ func (q Quarantine) Validate(ctx context.Context, base, head string, protected [
 		return
 	}
 	if hits := protectedChanges(strings.Split(out, "\x00"), protected); len(hits) > 0 {
-		err = fmt.Errorf("the result changes protected paths: %s", strings.Join(hits, ", "))
+		// The paths come from the guest.
+		err = fmt.Errorf("the result changes protected paths: %s", agent.Sanitize(strings.Join(hits, ", ")))
 	}
 	return
 }
 
-// Accept points ref at the validated head.
-func (q Quarantine) Accept(ctx context.Context, ref, head string) (err error) {
-	_, err = q.git(ctx, "update-ref", ref, head)
+// Accept creates the result branch at the validated head; an existing
+// branch is never overwritten.
+func (q Quarantine) Accept(ctx context.Context, branch, head string) (err error) {
+	if _, err = q.git(ctx, "update-ref", resultRef(branch), head, ""); err != nil {
+		err = fmt.Errorf("accepting the result (does %s already exist?): %w", resultRef(branch), err)
+	}
 	return
 }
 
+func baseRef(branch string) (ref string)     { return baseRefPrefix + branch }
+func incomingRef(branch string) (ref string) { return incomingRefPrefix + branch }
+func resultRef(branch string) (ref string)   { return resultRefPrefix + branch }
+
 // protectedChanges returns the changed paths that touch a protected entry:
 // the entry itself, anything under it, or one of its parent directories
-// (replaced by a file or a symlink). Entries may end with "/". Matching
-// ignores case, as checkouts on case-insensitive file systems do.
+// (replaced by a file or a symlink). Entries may end with "/"; an entry
+// starting with "**/" matches below any directory too. Matching ignores
+// case, as checkouts on case-insensitive file systems do.
 func protectedChanges(changed, protected []string) (hits []string) {
 	seen := map[string]bool{}
 	for _, path := range changed {
@@ -133,17 +162,27 @@ func protectedChanges(changed, protected []string) (hits []string) {
 			continue
 		}
 		seen[path] = true
-		p := strings.ToLower(path)
-		for _, entry := range protected {
-			e := strings.ToLower(strings.TrimSuffix(entry, "/"))
-			if e == "" {
-				continue
-			}
-			if p == e || strings.HasPrefix(p, e+"/") || strings.HasPrefix(e, p+"/") {
-				hits = append(hits, path)
-				break
-			}
+		if slices.ContainsFunc(protected, func(entry string) bool { return touches(strings.ToLower(path), entry) }) {
+			hits = append(hits, path)
 		}
 	}
 	return
+}
+
+// touches reports whether the lower-case path p touches entry.
+func touches(p, entry string) (ok bool) {
+	e, anyDepth := strings.CutPrefix(strings.ToLower(strings.TrimSuffix(entry, "/")), "**/")
+	if e == "" {
+		return false
+	}
+	for {
+		if p == e || strings.HasPrefix(p, e+"/") || strings.HasPrefix(e, p+"/") {
+			return true
+		}
+		_, rest, found := strings.Cut(p, "/")
+		if !anyDepth || !found {
+			return false
+		}
+		p = rest
+	}
 }

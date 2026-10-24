@@ -16,6 +16,13 @@ func TestRun(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	t.Run("factory ignores the working tree's .afk.toml", func(t *testing.T) {
+		err := runCommand(t.Context(), nil, []string{"factory"}, root, &bytes.Buffer{})
+		if err == nil || !strings.Contains(err.Error(), "afk factory") {
+			t.Errorf("err = %v, want usage (no config load)", err)
+		}
+	})
+
 	t.Run("config without .afk.toml fails with path", func(t *testing.T) {
 		var out bytes.Buffer
 		err := runCommand(t.Context(), nil, []string{"config"}, root, &out)
