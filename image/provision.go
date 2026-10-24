@@ -1,0 +1,93 @@
+package image
+
+import (
+	"bytes"
+	_ "embed"
+	"fmt"
+	"text/template"
+)
+
+// guestProxy is where the build tunnel appears inside the guest.
+const guestProxy = "http://127.0.0.1:3128"
+
+//go:embed template/debian13.pkr.hcl
+var debian13HCL string
+
+//go:embed template/user-data.tmpl
+var userDataTemplate string
+
+//go:embed template/meta-data
+var metaData string
+
+// templates are the supported [image].template values.
+var templates = map[string]imageTemplate{
+	"debian13": {
+		Name:        "debian13",
+		ImageURL:    "https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2",
+		ChecksumURL: "file:https://cloud.debian.org/images/cloud/trixie/latest/SHA512SUMS",
+		HCL:         debian13HCL,
+		DiskName:    "debian13.qcow2",
+	},
+}
+
+// initialSteps always run first: what afk needs in every image (sshd, git, Claude Code),
+// independent of the project's provision steps. The guest reaches the internet
+// only through the Egress proxy tunnel.
+var initialSteps = []string{
+	`printf 'Acquire::http::Proxy "` + guestProxy + `";\nAcquire::https::Proxy "` + guestProxy + `";\n' | sudo tee /etc/apt/apt.conf.d/90afk-proxy >/dev/null`,
+	`sudo DEBIAN_FRONTEND=noninteractive apt-get update`,
+	`sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends openssh-server git curl ca-certificates`,
+	`curl -fsSL https://claude.ai/install.sh | bash`,
+	`sudo ln -sf "$HOME/.local/bin/claude" /usr/local/bin/claude`,
+}
+
+// finalSteps run in their own, last provisioner (docs/images.md), so nothing in
+// [image].provision (`exit`, `exec`) can skip them: without them clones get no
+// address or the same machine-id (and so the same DHCP client-id).
+var finalSteps = []string{
+	`sudo rm -f /etc/apt/apt.conf.d/90afk-proxy /etc/netplan/50-cloud-init.yaml`,
+	`printf 'network:\n  version: 2\n  ethernets:\n    all:\n      match: {name: "en*"}\n      dhcp4: true\n' | sudo tee /etc/netplan/90-afk.yaml >/dev/null`,
+	`sudo chmod 600 /etc/netplan/90-afk.yaml`,
+	`sudo touch /etc/cloud/cloud-init.disabled`,
+	`sudo truncate -s 0 /etc/machine-id`,
+}
+
+// imageTemplate is a supported Base image template: where its source image
+// comes from and the embedded Packer template that builds it.
+type imageTemplate struct {
+	Name        string
+	ImageURL    string // source cloud image
+	ChecksumURL string // Packer iso_checksum for ImageURL
+	HCL         string // embedded Packer template
+	DiskName    string // file name of the built disk
+}
+
+// hclFile is the file name the template is written under.
+func (t imageTemplate) hclFile() (name string) { return t.Name + ".pkr.hcl" }
+
+// provisionSteps splits the guest script in two provisioners: afk's steps
+// followed by the project's ([image].provision), and the mandatory final steps.
+func provisionSteps(project []string) (provision, final []string) {
+	provision = make([]string, 0, len(initialSteps)+len(project))
+	provision = append(provision, initialSteps...)
+	provision = append(provision, project...)
+	final = append([]string(nil), finalSteps...)
+	return
+}
+
+// renderSeed returns the cloud-init NoCloud files (file name to content):
+// user "agent" with passwordless sudo and publicKey as its only login.
+func renderSeed(publicKey string) (files map[string]string, err error) {
+	tmpl, err := template.New("user-data").Parse(userDataTemplate)
+	if err != nil {
+		err = fmt.Errorf("parsing user-data template: %w", err)
+		return
+	}
+	var userData bytes.Buffer
+	if err = tmpl.Execute(&userData, struct{ PublicKey string }{publicKey}); err != nil {
+		err = fmt.Errorf("rendering user-data: %w", err)
+		return
+	}
+	files = map[string]string{"user-data": userData.String(), "meta-data": metaData}
+	return
+}

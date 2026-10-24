@@ -8,22 +8,26 @@ Decyzja: ADR-0006 (Packer CLI zarządzany przez `afk`). Budowa ma internet przez
 |---|---|
 | Wersja | 1.16.2, tylko z releases.hashicorp.com (binarek nie ma na GitHubie) |
 | Plik | `packer_1.16.2_linux_amd64.zip` |
-| SHA256 | `abbfe0cf74985084112659b53e3565f264f70a20914c3b7c4f789f54f61c2414` |
+| SHA256 zipa | `abbfe0cf74985084112659b53e3565f264f70a20914c3b7c4f789f54f61c2414` |
+| SHA256 binarki `packer` | `6f64a1e9e71be8b3a2f0225ccf0d51b5446fbf79d9ad323e917a0126ab6ee38a` |
 | Plugin | `github.com/hashicorp/qemu` `= 1.1.7`, instalowany `packer init` |
 
-Środowisko podprocesu:
+Środowisko podprocesu jest minimalne (nic z env hosta poza `PATH`, `HOME`, `TMPDIR` jeśli ustawiony — bez `GITHUB_TOKEN`, `PKR_VAR_*` itd.):
 
 ```
+PATH, HOME, TMPDIR
 PACKER_PLUGIN_PATH=~/.cache/afk/plugins
 PACKER_CONFIG_DIR=~/.cache/afk/packer-config
 CHECKPOINT_DISABLE=1
 ```
 
-Wywołanie: `packer build -machine-readable -var-file=<gen>.json <embedded>.pkr.hcl`. `packer` z `PATH` jest ignorowany. Przerwanie → SIGINT, Packer sam sprząta QEMU.
+Wywołanie: `packer build -machine-readable -var-file=<gen>.json <embedded>.pkr.hcl`. `packer` z `PATH` jest ignorowany. Binarka z cache jest weryfikowana (SHA256) przy każdym użyciu; niezgodna jest usuwana i pobierana ponownie (zip weryfikowany sumą, potem binarka).
+
+Przerwanie: pierwszy Ctrl-C → jeden SIGINT do Packera (sam sprząta QEMU); po 2 min, albo od razu po drugim Ctrl-C, `SIGKILL` na całą grupę procesów Packera (plugin, QEMU). Packer ma też `Pdeathsig=SIGKILL` (ginie z `afk`; plugin i QEMU tylko przy zabiciu grupy).
 
 **`-machine-readable`**: format `timestamp,target,type,data...`; przecinki w danych są zakodowane jako `%!(PACKER_COMMA)` — parser musi je odkodować po podziale na pola.
 
-Przy podbiciu wersji: pobrać `SHA256SUMS` + `.sig`, `gpg --verify` kluczem HashiCorp `C874 011F 0AB4 0511 0D02 1055 3436 5D94 72D7 468F`, wpisać nową sumę do kodu.
+Przy podbiciu wersji: pobrać `SHA256SUMS` + `.sig`, `gpg --verify` kluczem HashiCorp `C874 011F 0AB4 0511 0D02 1055 3436 5D94 72D7 468F`, wpisać nową sumę zipa do kodu, rozpakować `packer`, policzyć `sha256sum packer` i wpisać też sumę binarki (kod i ta tabela razem).
 
 ## Wymagane klucze buildera
 
@@ -74,11 +78,12 @@ source "qemu" "debian" {
 
 build {
   sources = ["source.qemu.debian"]
-  provisioner "shell" { inline = var.provision }
+  provisioner "shell" { inline = var.provision }       # kroki afk + [image].provision
+  provisioner "shell" { inline = var.final_provision } # zawsze ostatni
 }
 ```
 
-Kroki końcowe (obowiązkowe, inaczej klony nie dostaną adresu albo dostaną ten sam):
+Kroki końcowe (obowiązkowe, inaczej klony nie dostaną adresu albo dostaną ten sam) idą w osobnym, ostatnim provisionerze, więc `exit`/`exec` w `[image].provision` ich nie pominie:
 
 ```sh
 sudo rm /etc/apt/apt.conf.d/90afk-proxy /etc/netplan/50-cloud-init.yaml
@@ -93,4 +98,4 @@ Czas budowy: 22–51 s.
 
 ## Po budowie
 
-Artefakt (`*.qcow2`, dla UEFI `efivars.fd`) trafia do `/var/lib/afk/base/<name>/` z grupą `kvm`. Expiry z `[image].max_age`.
+Artefakt (`*.qcow2`, dla UEFI `efivars.fd`) trafia do `/var/lib/afk/base/<project>/<wersja>/` z grupą `kvm`; `/var/lib/afk/base` i katalog projektu mają grupę `kvm` i `2775`. Wersja to znacznik czasu UTC (`20261024T153000Z`, sortuje się leksykograficznie). Budowa idzie do `.build-*` w katalogu projektu i jest przenoszona `rename`-em, więc wersja jest zawsze kompletna; stare wersje zostają (sprzątanie przez Expiry z `[image].max_age`). Sandbox VM bierze najnowszą przez `image.Latest`.

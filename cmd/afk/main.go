@@ -2,17 +2,22 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/graf0/afk/config"
+	"github.com/graf0/afk/image"
 )
 
 func main() {
+	ctx, abort := handleSignals(context.Background())
 	dir, err := os.Getwd()
 	if err == nil {
-		err = run(os.Args[1:], dir, os.Stdout)
+		err = run(ctx, abort, os.Args[1:], dir, os.Stdout)
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "afk:", err)
@@ -20,8 +25,27 @@ func main() {
 	}
 }
 
-// run executes the command from args in the Project containing dir.
-func run(args []string, dir string, stdout io.Writer) (err error) {
+// handleSignals turns the first SIGINT/SIGTERM into cancellation of the
+// returned context (graceful stop) and the second into closing abort (stop
+// right now). A third signal gets the default action.
+func handleSignals(parent context.Context) (ctx context.Context, abort <-chan struct{}) {
+	ctx, cancel := context.WithCancel(parent)
+	hard := make(chan struct{})
+	signals := make(chan os.Signal, 2)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-signals
+		cancel()
+		<-signals
+		close(hard)
+		signal.Stop(signals)
+	}()
+	return ctx, hard
+}
+
+// run executes the command from args in the Project containing dir. Closing
+// abort stops long work immediately, without cleanup.
+func run(ctx context.Context, abort <-chan struct{}, args []string, dir string, stdout io.Writer) (err error) {
 	cfg, err := config.Load(dir)
 	if err != nil {
 		err = fmt.Errorf("loading project: %w", err)
@@ -38,8 +62,24 @@ func run(args []string, dir string, stdout io.Writer) (err error) {
 			return
 		}
 		_, err = stdout.Write(data)
+	case "image":
+		err = runImage(ctx, abort, args[1:], cfg, stdout)
 	default:
 		err = fmt.Errorf("unknown command %q", args[0])
 	}
+	return
+}
+
+// runImage executes `afk image <subcommand>`.
+func runImage(ctx context.Context, abort <-chan struct{}, args []string, cfg config.Config, stdout io.Writer) (err error) {
+	if len(args) != 1 || args[0] != "build" {
+		err = fmt.Errorf("usage: afk image build")
+		return
+	}
+	paths, err := image.DefaultPaths()
+	if err != nil {
+		return
+	}
+	_, err = image.Build(ctx, image.Options{Paths: paths, Config: cfg, Out: stdout, Abort: abort})
 	return
 }
