@@ -34,7 +34,7 @@ Agent kończy sesję plikiem raportu:
 
 `needs_info` → `afk` komentuje ticket pytaniami, ustawia `needs-info`, zdejmuje `ready-for-agent`; VM jest niszczona, wyniku się nie pobiera. Agent Factory nie rozmawia z człowiekiem (bez `ask_human`): część interaktywna dzieje się w Chat, przed Factory.
 
-Strumień Agenta (stream-json) idzie do pliku logu w `~/.local/state/afk/<project>/logs/`, a na wyjście `afk` tekst Agenta i jednolinijkowe wywołania narzędzi, bez znaków sterujących i formatujących (gość jest niezaufany). Łącznie najwyżej 256 MiB — powyżej `afk` przerywa Agenta i Run kończy się porażką (VM zostaje).
+Strumień Agenta (stream-json) idzie do pliku logu w `~/.local/state/afk/<project>/logs/`, a na wyjście `afk` tekst Agenta i jednolinijkowe wywołania narzędzi, bez znaków sterujących i formatujących (gość jest niezaufany). Log jest rotowany: po 128 MiB przechodzi do `<log>.1` (poprzedni `.1` znika), więc na dysku najwyżej ok. 256 MiB, a Run nie jest przerywany z powodu rozmiaru; najstarsza część strumienia przepada.
 
 ### Po sesji
 

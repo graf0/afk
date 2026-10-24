@@ -56,7 +56,7 @@ type run struct {
 	stateDir   string // ~/.local/state/afk/<project>
 	branch     string // ticket-N, in the guest and the Quarantine repo
 	quarantine Quarantine
-	log        *os.File
+	log        *rotatingLog
 }
 
 // --- run ---
@@ -287,7 +287,8 @@ func (r *run) openLog() (path string, err error) {
 		return
 	}
 	path = filepath.Join(dir, fmt.Sprintf("%s-%s.jsonl", r.branch, time.Now().UTC().Format("20060102T150405Z")))
-	if r.log, err = os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600); err != nil {
+	r.log = &rotatingLog{path: path, max: logRotateSize}
+	if r.log.file, err = os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600); err != nil {
 		err = fmt.Errorf("creating log: %w", err)
 	}
 	return
@@ -329,6 +330,50 @@ func (b *tailBuffer) Write(p []byte) (n int, err error) {
 }
 
 func (b *tailBuffer) String() (s string) { return string(b.data) }
+
+// logRotateSize is the size at which the Run's log moves to <path>.1.
+const logRotateSize = 128 << 20
+
+// rotatingLog writes to path; a write that would take it past max bytes
+// first moves it to path.1 (replacing the previous one). The guest can't fill
+// the host's disk (at most ~2×max) and a long Run is never stopped for its
+// log; the oldest part of the stream is lost instead.
+type rotatingLog struct {
+	path string
+	max  int64
+	file *os.File
+	size int64
+}
+
+func (l *rotatingLog) Write(p []byte) (n int, err error) {
+	if l.size > 0 && l.size+int64(len(p)) > l.max {
+		if err = l.rotate(); err != nil {
+			return
+		}
+	}
+	n, err = l.file.Write(p)
+	l.size += int64(n)
+	return
+}
+
+func (l *rotatingLog) rotate() (err error) {
+	if err = l.file.Close(); err != nil {
+		err = fmt.Errorf("closing log: %w", err)
+		return
+	}
+	if err = os.Rename(l.path, l.path+".1"); err != nil {
+		err = fmt.Errorf("rotating log: %w", err)
+		return
+	}
+	if l.file, err = os.OpenFile(l.path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600); err != nil {
+		err = fmt.Errorf("creating log: %w", err)
+		return
+	}
+	l.size = 0
+	return
+}
+
+func (l *rotatingLog) Close() (err error) { return l.file.Close() }
 
 // limitWriter fails once more than left bytes are written.
 type limitWriter struct {

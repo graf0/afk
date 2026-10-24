@@ -2,6 +2,8 @@ package run
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -28,6 +30,29 @@ func TestLimitWriter(t *testing.T) {
 	}
 	if out.String() != "abc" {
 		t.Errorf("out = %q", out.String())
+	}
+}
+
+func TestRotatingLog(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "run.jsonl")
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l := &rotatingLog{path: path, max: 8, file: file}
+	for _, line := range []string{"1111\n", "222\n", "33\n", "4\n"} {
+		if _, err = l.Write([]byte(line)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err = l.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// "1111\n" is dropped: lines stay whole, at most two files remain.
+	for name, want := range map[string]string{path + ".1": "222\n33\n", path: "4\n"} {
+		if got, _ := os.ReadFile(name); string(got) != want {
+			t.Errorf("%s = %q, want %q", filepath.Base(name), got, want)
+		}
 	}
 }
 

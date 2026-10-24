@@ -62,13 +62,6 @@ func TestStreamErrors(t *testing.T) {
 	}
 }
 
-func TestStreamLimit(t *testing.T) {
-	_, err := stream(strings.NewReader(sampleStream), &bytes.Buffer{}, &bytes.Buffer{}, 300)
-	if err == nil || !strings.Contains(err.Error(), "larger than 300") {
-		t.Errorf("err = %v, want limit error", err)
-	}
-}
-
 func TestSanitize(t *testing.T) {
 	in := "a\x1b[31mb\tc\n\u202eevil\u2066x\u200by\u0085z\x7f"
 	if got, want := Sanitize(in), "a[31mb\tc\nevilxyz"; got != want {

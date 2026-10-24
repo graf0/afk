@@ -17,14 +17,8 @@ const (
 	StatusNeedsInfo Status = "needs_info"
 )
 
-const (
-	// maxStreamLine bounds one stream-json line (a tool result can carry a file).
-	maxStreamLine = 64 << 20
-
-	// maxStreamBytes bounds the whole stream written to the log and out: the
-	// guest must not fill the host's disk.
-	maxStreamBytes = 256 << 20
-)
+// maxStreamLine bounds one stream-json line (a tool result can carry a file).
+const maxStreamLine = 64 << 20
 
 // Schema is the JSON Schema of the Agent's report (claude --json-schema).
 const Schema = `{"type":"object","properties":{` +
@@ -75,24 +69,14 @@ type streamEvent struct {
 // Stream reads Claude Code's stream-json from r: every line goes to log
 // as is, the Agent's text and one line per tool call to out (control
 // characters removed, the stream comes from the untrusted guest). It returns
-// the report from the last result event. A stream over maxStreamBytes is an
-// error.
+// the report from the last result event. Each line is written to log in one
+// Write, so a rotating log splits only between lines.
 func Stream(r io.Reader, out, log io.Writer) (report Report, err error) {
-	report, err = stream(r, out, log, maxStreamBytes)
-	return
-}
-
-func stream(r io.Reader, out, log io.Writer, limit int) (report Report, err error) {
-	written := 0
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64<<10), maxStreamLine)
 	var result *streamEvent
 	for scanner.Scan() {
 		line := scanner.Bytes()
-		if written += len(line) + 1; written > limit {
-			err = fmt.Errorf("agent stream larger than %d bytes", limit)
-			return
-		}
 		// A copy: appending to line would overwrite the scanner's buffer.
 		if _, err = log.Write(append(slices.Clip(line), '\n')); err != nil {
 			err = fmt.Errorf("writing log: %w", err)
@@ -105,7 +89,6 @@ func stream(r io.Reader, out, log io.Writer, limit int) (report Report, err erro
 		switch event.Type {
 		case "assistant":
 			for _, text := range eventLines(event) {
-				written += len(text) + 1
 				_, _ = fmt.Fprintln(out, text)
 			}
 		case "result":
