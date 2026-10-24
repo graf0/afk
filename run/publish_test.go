@@ -78,7 +78,7 @@ func TestPublishDone(t *testing.T) {
 		report agent.Report
 		human  bool
 	}{
-		"clean":      {agent.Report{Status: agent.StatusDone, Summary: "Did it, cc @boss.", Deviations: []string{}}, false},
+		"clean":      {agent.Report{Status: agent.StatusDone, Summary: "Did it, cc @boss. Fixes #12.", Deviations: []string{}}, false},
 		"doubts":     {agent.Report{Status: agent.StatusDone, Summary: "Did it.", Doubts: []string{"Is X right?"}}, true},
 		"deviations": {agent.Report{Status: agent.StatusDone, Summary: "Did it.", Deviations: []string{"Skipped Y."}}, true},
 	} {
@@ -109,8 +109,8 @@ func TestPublishDone(t *testing.T) {
 					t.Errorf("comment lacks %q:\n%s", item, comment)
 				}
 			}
-			if strings.Contains(comment, "@boss") {
-				t.Errorf("comment mentions @boss:\n%s", comment)
+			if strings.Contains(comment, "@boss") || strings.Contains(comment, "Fixes #12") {
+				t.Errorf("comment mentions @boss or closes #12:\n%s", comment)
 			}
 			if tc.human && fmt.Sprint(fake.bodies[2]["labels"]) != "[ready-for-human]" {
 				t.Errorf("labels = %v", fake.bodies[2])
@@ -159,8 +159,10 @@ func TestPublishPartialFailure(t *testing.T) {
 	}
 	for _, want := range []string{
 		"open the pull request:", "Validation Failed",
-		"done: push ticket-1\n",
-		"left: open the pull request, comment the report on the pull request, remove ready-for-agent from #1",
+		"\ndone:\n  - push ticket-1\nleft, to do by hand:\n",
+		"\n  - open a pull request ticket-1 → main titled \"Do it\" with the body \"Closes #1\\n\"\n",
+		"\n  - comment the agent report (printed above) on the pull request\n",
+		"\n  - remove the label ready-for-agent from #1",
 	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("err = %v\nwant %q", err, want)
@@ -177,8 +179,8 @@ func TestPublishPartialFailure(t *testing.T) {
 
 func TestCommitMessage(t *testing.T) {
 	r := run{Options: Options{Ticket: forge.Ticket{Number: 6, Title: "Push, PR i needs_info"}}}
-	got := r.commitMessage(agent.Report{Summary: " Pushes \x1b[2Jit, @someone.\n"})
-	if want := "Push, PR i needs_info (#6)\n\nPushes [2Jit, @\u200bsomeone.\n"; got != want {
+	got := r.commitMessage(agent.Report{Summary: " Pushes \x1b[2Jit, @someone. Closes #3.\n"})
+	if want := "Push, PR i needs_info (#6)\n\nPushes [2Jit, @\u200bsomeone. C\u200bloses #3.\n"; got != want {
 		t.Errorf("commitMessage = %q, want %q", got, want)
 	}
 	if got = r.commitMessage(agent.Report{}); got != "Push, PR i needs_info (#6)\n" {
@@ -186,17 +188,28 @@ func TestCommitMessage(t *testing.T) {
 	}
 }
 
-func TestForGitHub(t *testing.T) {
+func TestAgentText(t *testing.T) {
 	for in, want := range map[string]string{
 		"@user, @org/team (@x) mail a@b.pl": "@\u200buser, @\u200borg/team (@\u200bx) mail a@\u200bb.pl",
 		"@ alone, @-dash, `@code`":          "@ alone, @-dash, `@\u200bcode`",
 		"bidi \u202eevil\u200b@user":        "bidi evil@\u200buser",
+		"hidden <!-- Fixes #9 --> text":     "hidden &lt;!-- F\u200bixes #9 --> text",
+		"prefixes #3, fixtures #4, fix it":  "prefixes #3, fixtures #4, fix it",
 	} {
-		if got := forGitHub(in); got != want {
-			t.Errorf("forGitHub(%q) = %q, want %q", in, got, want)
+		if got := agentText(in); got != want {
+			t.Errorf("agentText(%q) = %q, want %q", in, got, want)
 		}
 	}
-	long := forGitHub(strings.Repeat("ą", maxGitHubText))
+	for _, keyword := range []string{"close", "closes", "closed", "fix", "fixes", "fixed", "resolve", "resolves", "resolved", "Closes", "FIXES", "Resolved"} {
+		for _, ref := range []string{" #12", ": #12", " owner/repo#3", ":owner/re.po#3", " https://github.com/o/r/issues/5"} {
+			in := "Text. " + keyword + ref + " more"
+			want := "Text. " + keyword[:1] + "\u200b" + keyword[1:] + ref + " more"
+			if got := agentText(in); got != want {
+				t.Errorf("agentText(%q) = %q, want %q", in, got, want)
+			}
+		}
+	}
+	long := agentText(strings.Repeat("ą", maxGitHubText))
 	if len(long) > maxGitHubText+100 || !strings.HasSuffix(long, "(obcięte)\n") || !strings.HasPrefix(long, "ąą") {
 		t.Errorf("long text: %d bytes, suffix %q", len(long), long[len(long)-20:])
 	}

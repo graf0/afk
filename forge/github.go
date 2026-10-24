@@ -73,12 +73,6 @@ type githubComment struct {
 	Body string `json:"body"`
 }
 
-// PullRequest is a pull request opened by afk.
-type PullRequest struct {
-	Number int    `json:"number"`
-	URL    string `json:"html_url"`
-}
-
 // --- credentials ---
 
 // HostToken returns the host's GitHub token: GITHUB_TOKEN, else `gh auth token`.
@@ -115,23 +109,6 @@ func NewGitHub(forge config.Forge, token string) (g *GitHub, err error) {
 	}
 	g = &GitHub{APIURL: GitHubAPI, GitURL: githubGit + forge.Repo + ".git", Repo: forge.Repo, Token: token}
 	return
-}
-
-// GitEnv is the environment for git talking to GitURL with Token. The token
-// goes in an Authorization header scoped to GitURL, through git's
-// GIT_CONFIG_* variables: never on argv, never in a config file. Credential
-// helpers and prompts are off, so a rejected token fails instead of asking.
-func (g *GitHub) GitEnv() (env []string) {
-	auth := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + g.Token))
-	return []string{
-		"GIT_TERMINAL_PROMPT=0",
-		"GIT_TRACE_REDACT=1",
-		"GIT_CONFIG_COUNT=2",
-		"GIT_CONFIG_KEY_0=http." + g.GitURL + ".extraHeader",
-		"GIT_CONFIG_VALUE_0=Authorization: Basic " + auth,
-		"GIT_CONFIG_KEY_1=credential.helper",
-		"GIT_CONFIG_VALUE_1=",
-	}
 }
 
 // ReadyTicket reads ticket n like Ticket and refuses it without label (the
@@ -195,7 +172,44 @@ func (g *GitHub) ticket(ctx context.Context, n int, label string) (ticket Ticket
 	}
 }
 
+// --- git ---
+
+// Remote is where git pushes ticket branches, with the environment that
+// authenticates it.
+type Remote struct {
+	URL string
+	Env []string
+}
+
+// Remote is GitURL with Token in an Authorization header scoped to GitURL,
+// given to git through GIT_CONFIG_* variables: never on argv, never in a
+// config file. The user's global and system git config is ignored, so no
+// url.insteadOf can send the push elsewhere (another host, ssh with the
+// user's key); redirects, credential helpers and prompts are off.
+func (g *GitHub) Remote() (remote Remote) {
+	auth := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + g.Token))
+	return Remote{URL: g.GitURL, Env: []string{
+		"GIT_CONFIG_GLOBAL=" + os.DevNull,
+		"GIT_CONFIG_NOSYSTEM=1",
+		"GIT_TERMINAL_PROMPT=0",
+		"GIT_TRACE_REDACT=1",
+		"GIT_CONFIG_COUNT=3",
+		"GIT_CONFIG_KEY_0=http." + g.GitURL + ".extraHeader",
+		"GIT_CONFIG_VALUE_0=Authorization: Basic " + auth,
+		"GIT_CONFIG_KEY_1=credential.helper",
+		"GIT_CONFIG_VALUE_1=",
+		"GIT_CONFIG_KEY_2=http.followRedirects",
+		"GIT_CONFIG_VALUE_2=false",
+	}}
+}
+
 // --- writes ---
+
+// PullRequest is a pull request opened by afk.
+type PullRequest struct {
+	Number int    `json:"number"`
+	URL    string `json:"html_url"`
+}
 
 // CreatePull opens a pull request of branch head into base.
 func (g *GitHub) CreatePull(ctx context.Context, head, base, title, body string) (pull PullRequest, err error) {

@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/graf0/afk/forge"
 )
 
 const testConfig = "[forge]\nkind = \"github\"\nrepo = \"o/r\"\n[protect]\npaths = [\"secrets/key\"]\n"
@@ -292,38 +294,38 @@ func TestQuarantineSquash(t *testing.T) {
 
 func TestQuarantinePush(t *testing.T) {
 	root, _, base, q := acceptedResult(t)
-	remote := filepath.Join(root, "origin.git")
+	remote := forge.Remote{URL: filepath.Join(root, "origin.git")}
 	squashed := sh(t, root, "git --git-dir="+q.Dir+" rev-parse ticket-1")
 
-	exists, err := q.RemoteHasBranch(t.Context(), remote, nil, "ticket-1")
+	exists, err := q.RemoteHasBranch(t.Context(), remote, "ticket-1")
 	if err != nil || exists {
 		t.Fatalf("RemoteHasBranch before push = %v, %v", exists, err)
 	}
 	// A branch whose name only ends like ticket-1 doesn't count.
 	sh(t, root, "git --git-dir=origin.git update-ref refs/heads/x/ticket-1 "+base)
-	if exists, err = q.RemoteHasBranch(t.Context(), remote, nil, "ticket-1"); err != nil || exists {
+	if exists, err = q.RemoteHasBranch(t.Context(), remote, "ticket-1"); err != nil || exists {
 		t.Errorf("RemoteHasBranch with x/ticket-1 = %v, %v", exists, err)
 	}
-	if err = q.Push(t.Context(), remote, nil, "ticket-1"); err != nil {
+	if err = q.Push(t.Context(), remote, "ticket-1"); err != nil {
 		t.Fatal(err)
 	}
 	if got := sh(t, root, "git --git-dir=origin.git rev-parse refs/heads/ticket-1"); got != squashed {
 		t.Errorf("remote ticket-1 = %s, want %s", got, squashed)
 	}
-	if exists, err = q.RemoteHasBranch(t.Context(), remote, nil, "ticket-1"); err != nil || !exists {
+	if exists, err = q.RemoteHasBranch(t.Context(), remote, "ticket-1"); err != nil || !exists {
 		t.Errorf("RemoteHasBranch after push = %v, %v", exists, err)
 	}
 
 	// An existing branch is never moved, not even forward from the base.
 	sh(t, root, "git --git-dir=origin.git update-ref refs/heads/ticket-1 "+base)
-	if err = q.Push(t.Context(), remote, nil, "ticket-1"); err == nil {
+	if err = q.Push(t.Context(), remote, "ticket-1"); err == nil {
 		t.Error("push over an existing branch: want error")
 	}
 	if got := sh(t, root, "git --git-dir=origin.git rev-parse refs/heads/ticket-1"); got != base {
 		t.Errorf("remote ticket-1 moved to %s", got)
 	}
 
-	if _, err = q.RemoteHasBranch(t.Context(), filepath.Join(root, "missing.git"), nil, "ticket-1"); err == nil {
+	if _, err = q.RemoteHasBranch(t.Context(), forge.Remote{URL: filepath.Join(root, "missing.git")}, "ticket-1"); err == nil {
 		t.Error("missing remote: want error")
 	}
 }

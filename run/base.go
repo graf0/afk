@@ -59,6 +59,12 @@ func ReadBase(ctx context.Context, dir string) (base Base, err error) {
 	return
 }
 
+// Ident is a git identity.
+type Ident struct {
+	Name  string
+	Email string
+}
+
 // readIdent reads the author identity git would use in repo.
 func readIdent(ctx context.Context, repo string) (ident Ident, err error) {
 	out, err := git(ctx, "-C", repo, "var", "GIT_AUTHOR_IDENT")

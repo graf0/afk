@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/graf0/afk/agent"
+	"github.com/graf0/afk/forge"
 )
 
 // Refs of a Run in the Quarantine repo, per ticket branch.
@@ -153,12 +154,6 @@ func (q Quarantine) Accept(ctx context.Context, branch, head string) (err error)
 
 // --- squash and push ---
 
-// Ident is a git identity.
-type Ident struct {
-	Name  string
-	Email string
-}
-
 // Squash creates one commit with the tree of head on top of base, authored
 // and committed by ident, and returns it. No ref points to it yet.
 func (q Quarantine) Squash(ctx context.Context, base, head, message string, ident Ident) (commit string, err error) {
@@ -172,12 +167,11 @@ func (q Quarantine) Squash(ctx context.Context, base, head, message string, iden
 	return
 }
 
-// RemoteHasBranch reports whether the remote at url (git env env, e.g. its
-// credentials) has branch.
-func (q Quarantine) RemoteHasBranch(ctx context.Context, url string, env []string, branch string) (exists bool, err error) {
-	out, err := q.gitWith(ctx, env, "", "ls-remote", "--heads", "--end-of-options", url, resultRef(branch))
+// RemoteHasBranch reports whether remote has branch.
+func (q Quarantine) RemoteHasBranch(ctx context.Context, remote forge.Remote, branch string) (exists bool, err error) {
+	out, err := q.gitWith(ctx, remote.Env, "", "ls-remote", "--heads", "--end-of-options", remote.URL, resultRef(branch))
 	if err != nil {
-		err = fmt.Errorf("listing branches of %s: %w", url, err)
+		err = fmt.Errorf("listing branches of %s: %w", remote.URL, err)
 		return
 	}
 	// The pattern matches any ref ending in it; only the exact one counts.
@@ -189,13 +183,13 @@ func (q Quarantine) RemoteHasBranch(ctx context.Context, url string, env []strin
 	return
 }
 
-// Push creates branch at the remote url (git env env) from the result
-// branch. It never overwrites: the lease with an empty value lets the push
-// only create the branch, so one that exists on the remote fails it.
-func (q Quarantine) Push(ctx context.Context, url string, env []string, branch string) (err error) {
+// Push creates branch on remote from the result branch. It never
+// overwrites: the lease with an empty value lets the push only create the
+// branch, so one that exists on the remote fails it.
+func (q Quarantine) Push(ctx context.Context, remote forge.Remote, branch string) (err error) {
 	ref := resultRef(branch)
-	if _, err = q.gitWith(ctx, env, "", "push", "--quiet", "--no-verify", "--force-with-lease="+ref+":", "--end-of-options", url, ref+":"+ref); err != nil {
-		err = fmt.Errorf("pushing %s to %s: %w", branch, url, err)
+	if _, err = q.gitWith(ctx, remote.Env, "", "push", "--quiet", "--no-verify", "--force-with-lease="+ref+":", "--end-of-options", remote.URL, ref+":"+ref); err != nil {
+		err = fmt.Errorf("pushing %s to %s: %w", branch, remote.URL, err)
 	}
 	return
 }

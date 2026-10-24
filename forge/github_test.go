@@ -8,9 +8,11 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/graf0/afk/config"
@@ -216,17 +218,64 @@ func TestGitHubWrites(t *testing.T) {
 	}
 }
 
-// TestGitHubGitEnv checks that git sends the token in a header to GitURL
-// only, and that it appears neither on argv nor in git's error.
-func TestGitHubGitEnv(t *testing.T) {
-	var auth []string
+// TestGitHubRemote checks that git sends the token in a header to GitURL
+// only, that it appears neither on argv nor in git's error, and that the
+// user's global config (url.insteadOf) and redirects can't send it elsewhere.
+func TestGitHubRemote(t *testing.T) {
+	var (
+		mu   sync.Mutex
+		auth []string
+	)
+	record := func(request string) {
+		mu.Lock()
+		defer mu.Unlock()
+		auth = append(auth, request)
+	}
+	requests := func() (got []string) {
+		mu.Lock()
+		defer mu.Unlock()
+		got, auth = auth, nil
+		return
+	}
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		record("other " + r.URL.Path + " " + r.Header.Get("Authorization"))
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(other.Close)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		auth = append(auth, r.URL.Path+" "+r.Header.Get("Authorization"))
+		record(r.URL.Path + " " + r.Header.Get("Authorization"))
+		if strings.HasPrefix(r.URL.Path, "/moved/") {
+			http.Redirect(w, r, other.URL+r.URL.Path, http.StatusFound)
+			return
+		}
 		w.WriteHeader(http.StatusNotFound)
 	}))
 	t.Cleanup(server.Close)
-	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
-	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+
+	// The user's global config sends everything for server to other.
+	home := t.TempDir()
+	rule := fmt.Sprintf("[url %q]\n\tinsteadOf = %s/\n\tpushInsteadOf = %s/\n", other.URL+"/", server.URL, server.URL)
+	if err := os.WriteFile(filepath.Join(home, ".gitconfig"), []byte(rule), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", home)
+	t.Setenv("GIT_CONFIG_GLOBAL", "")
+	_ = os.Unsetenv("GIT_CONFIG_GLOBAL")
+	lsRemote := func(url string, env []string) (out string, args []string) {
+		cmd := exec.Command("git", "ls-remote", url)
+		cmd.Env = append(os.Environ(), env...)
+		data, err := cmd.CombinedOutput()
+		if err == nil {
+			t.Fatalf("ls-remote %s: want error", url)
+		}
+		return string(data), cmd.Args
+	}
+	lsRemote(server.URL+"/o/r.git", nil)
+	if got := requests(); len(got) != 1 || !strings.HasPrefix(got[0], "other ") {
+		t.Fatalf("without Remote's env the rule applies, got requests %q", got)
+	}
+
 	g, err := NewGitHub(config.Forge{Kind: "github", Repo: "o/r"}, "secret")
 	if err != nil {
 		t.Fatal(err)
@@ -234,21 +283,20 @@ func TestGitHubGitEnv(t *testing.T) {
 	if g.GitURL != "https://github.com/o/r.git" {
 		t.Errorf("GitURL = %q", g.GitURL)
 	}
-	g.GitURL = server.URL + "/o/r.git"
-	for _, url := range []string{g.GitURL, server.URL + "/other/r.git"} {
-		cmd := exec.Command("git", "ls-remote", url)
-		cmd.Env = append(os.Environ(), g.GitEnv()...)
-		out, err := cmd.CombinedOutput()
-		if err == nil {
-			t.Fatalf("ls-remote %s: want error", url)
+	for _, url := range []string{server.URL + "/o/r.git", server.URL + "/x/r.git", server.URL + "/moved/r.git"} {
+		g.GitURL = server.URL + "/o/r.git"
+		if strings.HasPrefix(url, server.URL+"/moved/") {
+			g.GitURL = url
 		}
-		if strings.Contains(string(out), "secret") || strings.Contains(strings.Join(cmd.Args, " "), "secret") {
-			t.Errorf("token leaked: %s %s", cmd.Args, out)
+		remote := g.Remote()
+		out, args := lsRemote(url, remote.Env)
+		if strings.Contains(out, "secret") || strings.Contains(strings.Join(args, " "), "secret") {
+			t.Errorf("token leaked: %s %s", args, out)
 		}
 	}
 	basic := "Basic " + base64.StdEncoding.EncodeToString([]byte("x-access-token:secret"))
-	want := []string{"/o/r.git/info/refs " + basic, "/other/r.git/info/refs "}
-	if !slices.Equal(auth, want) {
-		t.Errorf("Authorization by path = %q, want %q", auth, want)
+	want := []string{"/o/r.git/info/refs " + basic, "/x/r.git/info/refs ", "/moved/r.git/info/refs " + basic}
+	if got := requests(); !slices.Equal(got, want) {
+		t.Errorf("requests with Authorization = %q, want %q", got, want)
 	}
 }
