@@ -16,7 +16,7 @@ func TestRun(t *testing.T) {
 
 	t.Run("config without .afk.toml fails with path", func(t *testing.T) {
 		var out bytes.Buffer
-		err := run([]string{"config"}, root, &out)
+		err := run(t.Context(), []string{"config"}, root, &out)
 		if err == nil || !strings.Contains(err.Error(), filepath.Join(root, ".afk.toml")) {
 			t.Errorf("err = %v", err)
 		}
@@ -28,7 +28,7 @@ func TestRun(t *testing.T) {
 
 	t.Run("config prints effective config", func(t *testing.T) {
 		var out bytes.Buffer
-		if err := run([]string{"config"}, root, &out); err != nil {
+		if err := run(t.Context(), []string{"config"}, root, &out); err != nil {
 			t.Fatal(err)
 		}
 		for _, want := range []string{"max_fixes = 3", "ready-for-agent", ".claude/"} {
@@ -39,19 +39,33 @@ func TestRun(t *testing.T) {
 	})
 
 	t.Run("unknown command", func(t *testing.T) {
-		err := run([]string{"nope"}, root, &bytes.Buffer{})
+		err := run(t.Context(), []string{"nope"}, root, &bytes.Buffer{})
 		if err == nil || !strings.Contains(err.Error(), "nope") {
 			t.Errorf("err = %v", err)
 		}
 	})
 
+	t.Run("image needs a subcommand", func(t *testing.T) {
+		err := run(t.Context(), []string{"image"}, root, &bytes.Buffer{})
+		if err == nil || !strings.Contains(err.Error(), "afk image build") {
+			t.Errorf("err = %v", err)
+		}
+	})
+
+	t.Run("image build rejects unsupported template", func(t *testing.T) {
+		err := run(t.Context(), []string{"image", "build"}, root, &bytes.Buffer{})
+		if err == nil || !strings.Contains(err.Error(), "image.template") {
+			t.Errorf("err = %v", err)
+		}
+	})
+
 	t.Run("no command requires project", func(t *testing.T) {
-		if err := run(nil, root, &bytes.Buffer{}); err != nil {
+		if err := run(t.Context(), nil, root, &bytes.Buffer{}); err != nil {
 			t.Errorf("err = %v", err)
 		}
 		other := t.TempDir()
 		_ = os.Mkdir(filepath.Join(other, ".git"), 0o755)
-		if err := run(nil, other, &bytes.Buffer{}); err == nil {
+		if err := run(t.Context(), nil, other, &bytes.Buffer{}); err == nil {
 			t.Error("want error without .afk.toml")
 		}
 	})
