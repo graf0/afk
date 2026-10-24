@@ -21,7 +21,7 @@ func TestParseDefaults(t *testing.T) {
 	wantLabels := Labels{
 		NeedsTriage:   "needs-triage",
 		NeedsInfo:     "needs-info",
-		Ready:         "ready-for-agent",
+		ReadyForAgent: "ready-for-agent",
 		ReadyForHuman: "ready-for-human",
 		Wontfix:       "wontfix",
 	}
@@ -30,6 +30,9 @@ func TestParseDefaults(t *testing.T) {
 	}
 	if cfg.Gate.MaxFixes != 3 {
 		t.Errorf("gate.max_fixes = %d", cfg.Gate.MaxFixes)
+	}
+	if cfg.Image.Template != "debian13" {
+		t.Errorf("image.template = %q", cfg.Image.Template)
 	}
 	if len(cfg.Network.Allow) != 0 || len(cfg.Agent.FactoryPlugins) != 0 {
 		t.Errorf("allow/factory_plugins should be empty: %v %v", cfg.Network.Allow, cfg.Agent.FactoryPlugins)
@@ -46,7 +49,7 @@ kind = "gitea"
 repo = "a/b"
 url = "https://gitea.example"
 [labels]
-ready = "go"
+ready_for_agent = "go"
 [agent]
 model = "m"
 factory_plugins = ["p@x"]
@@ -63,7 +66,7 @@ kind = "host-port"
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Labels.Ready != "go" || cfg.Labels.NeedsInfo != "needs-info" {
+	if cfg.Labels.ReadyForAgent != "go" || cfg.Labels.NeedsInfo != "needs-info" {
 		t.Errorf("labels = %+v", cfg.Labels)
 	}
 	if cfg.Gate.MaxFixes != 5 || cfg.Gate.Cmd != "make" {

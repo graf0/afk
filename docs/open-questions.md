@@ -2,6 +2,10 @@
 
 Niesprawdzone albo nierozstrzygnięte. Po rozstrzygnięciu: przenieść wynik do właściwego pliku, usunąć stąd.
 
+## Obrazy
+
+- [ ] `HTTP(S)_PROXY` hosta dla Packera (`packer init`, pobranie cloud image) — dziś Packer dostaje minimalne środowisko bez nich; dodać, gdy ktoś będzie za firmowym proxy.
+
 ## Obrazy Windows
 
 - [ ] Budowa Windows przez Packer CLI (szablony jeszcze tylko przez bibliotekę). Provisioning natywnie: `powershell` + `windows-restart`, sysprep jako ostatni krok.

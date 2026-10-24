@@ -24,7 +24,7 @@ func TestRun(t *testing.T) {
 		}
 	})
 
-	if err := os.WriteFile(filepath.Join(root, ".afk.toml"), []byte("[forge]\nkind = \"github\"\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, ".afk.toml"), []byte("[forge]\nkind = \"github\"\n[image]\ntemplate = \"ws2025\"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
