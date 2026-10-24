@@ -19,7 +19,7 @@ Bez `internal/`:
 | `tui/` | Sidebar (bubbletea v2) i sterowanie serwerem `tmux -L afk` (ADR-0008) |
 | `cmd/afk-forge` | CLI w VM: operacje na ticketach przez kanał ssh do `afk` |
 
-Wąskie interfejsy `Machine`, `Agent`, `Forge`. Na razie po jednej implementacji, poza `Forge` (GitHub, Gitea).
+Interfejs tylko tam, gdzie są co najmniej dwie implementacje: `Forge` (GitHub, Gitea). `machine.Machine` to struktura; interfejs dopiero, gdy druga implementacja (Windows, Tool VM) go wymusi.
 
 Stan bez bazy danych: przynależność VM w `<metadata>` domeny libvirt, rezerwacje `flock`, logi w plikach (szczegóły: [workflow.md](workflow.md#stan)).
 

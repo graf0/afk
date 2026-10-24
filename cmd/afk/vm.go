@@ -9,11 +9,10 @@ import (
 	"io"
 	"os"
 	"slices"
-	"syscall"
 	"time"
-	"unsafe"
 
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/term"
 
 	"github.com/graf0/afk/config"
 	"github.com/graf0/afk/egress"
@@ -133,14 +132,22 @@ func vmShell(ctx context.Context, conn *machine.Conn, cfg config.Config, name st
 	}
 	defer func() { _ = session.Close() }()
 	session.Stdin, session.Stdout, session.Stderr = os.Stdin, os.Stdout, os.Stderr
-	if restore, rawErr := makeRaw(int(os.Stdin.Fd())); rawErr == nil { // a terminal
-		defer restore()
-		rows, cols := terminalSize(int(os.Stdout.Fd()))
-		term := os.Getenv("TERM")
-		if term == "" {
-			term = "xterm"
+	if fd := int(os.Stdin.Fd()); term.IsTerminal(fd) {
+		var state *term.State
+		if state, err = term.MakeRaw(fd); err != nil {
+			err = fmt.Errorf("setting terminal raw mode: %w", err)
+			return
 		}
-		if err = session.RequestPty(term, rows, cols, ssh.TerminalModes{ssh.ECHO: 1}); err != nil {
+		defer func() { _ = term.Restore(fd, state) }()
+		cols, rows, sizeErr := term.GetSize(int(os.Stdout.Fd()))
+		if sizeErr != nil || rows == 0 { // unknown size
+			cols, rows = 80, 24
+		}
+		termName := os.Getenv("TERM")
+		if termName == "" {
+			termName = "xterm"
+		}
+		if err = session.RequestPty(termName, rows, cols, ssh.TerminalModes{ssh.ECHO: 1}); err != nil {
 			err = fmt.Errorf("requesting pty: %w", err)
 			return
 		}
@@ -152,45 +159,6 @@ func vmShell(ctx context.Context, conn *machine.Conn, cfg config.Config, name st
 	}
 	if err = session.Wait(); err != nil {
 		err = fmt.Errorf("shell: %w", err)
-	}
-	return
-}
-
-// --- terminal ---
-
-// makeRaw puts the terminal fd into raw mode, like cfmakeraw(3); it fails
-// when fd is not a terminal.
-func makeRaw(fd int) (restore func(), err error) {
-	var old syscall.Termios
-	if err = ioctl(fd, syscall.TCGETS, unsafe.Pointer(&old)); err != nil {
-		return
-	}
-	raw := old
-	raw.Iflag &^= syscall.IGNBRK | syscall.BRKINT | syscall.PARMRK | syscall.ISTRIP | syscall.INLCR | syscall.IGNCR | syscall.ICRNL | syscall.IXON
-	raw.Oflag &^= syscall.OPOST
-	raw.Lflag &^= syscall.ECHO | syscall.ECHONL | syscall.ICANON | syscall.ISIG | syscall.IEXTEN
-	raw.Cflag &^= syscall.CSIZE | syscall.PARENB
-	raw.Cflag |= syscall.CS8
-	raw.Cc[syscall.VMIN], raw.Cc[syscall.VTIME] = 1, 0
-	if err = ioctl(fd, syscall.TCSETS, unsafe.Pointer(&raw)); err != nil {
-		return
-	}
-	restore = func() { _ = ioctl(fd, syscall.TCSETS, unsafe.Pointer(&old)) }
-	return
-}
-
-// terminalSize returns the size of terminal fd, 24x80 when unknown.
-func terminalSize(fd int) (rows, cols int) {
-	var size struct{ Rows, Cols, X, Y uint16 }
-	if err := ioctl(fd, syscall.TIOCGWINSZ, unsafe.Pointer(&size)); err != nil || size.Rows == 0 {
-		return 24, 80
-	}
-	return int(size.Rows), int(size.Cols)
-}
-
-func ioctl(fd int, request uintptr, arg unsafe.Pointer) (err error) {
-	if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), request, uintptr(arg)); errno != 0 {
-		err = errno
 	}
 	return
 }

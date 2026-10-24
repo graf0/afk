@@ -5,6 +5,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"net/netip"
+	"strconv"
 	"strings"
 	"text/template"
 )
@@ -13,12 +14,18 @@ const (
 	// metadataNS is the namespace of afk's element in the domain <metadata>.
 	metadataNS = "https://github.com/graf0/afk/machine"
 
-	// subnets is the address space of Sandbox VM networks, one /24 each:
-	// 10.99.<n>.0/24 on bridge afkbr<n>.
+	// bridgePrefix names the bridge of subnet n: afkbr<n>.
+	bridgePrefix = "afkbr"
+
+	// subnets is the number of /24 subnets in machineNet.
 	subnets = 256
 )
 
 var (
+	// machineNet holds Sandbox VM networks, one /24 each: subnet n is
+	// <machineNet>.<n>.0/24 on bridge <bridgePrefix><n>.
+	machineNet = netip.MustParsePrefix("10.99.0.0/16")
+
 	xmlFuncs = template.FuncMap{"x": escapeXML}
 
 	// domainTemplate follows docs/libvirt.md. The systemd credential in SMBIOS
@@ -101,7 +108,7 @@ var (
 `))
 )
 
-// subnet is the network of one machine: 10.99.<n>.0/24.
+// subnet is the network of one machine: the n-th /24 of machineNet.
 type subnet int
 
 // metadata is afk's element in the domain <metadata>: what the machine is,
@@ -126,7 +133,10 @@ type definition struct {
 // --- subnet ---
 
 // Host returns the address of host i in the subnet.
-func (s subnet) Host(i int) (addr string) { return fmt.Sprintf("10.99.%d.%d", int(s), i) }
+func (s subnet) Host(i int) (addr string) {
+	base := machineNet.Addr().As4()
+	return netip.AddrFrom4([4]byte{base[0], base[1], byte(s), byte(i)}).String()
+}
 
 // Gateway is the host's address on the bridge.
 func (s subnet) Gateway() (addr string) { return s.Host(1) }
@@ -140,7 +150,7 @@ func (s subnet) MAC() (mac string) { return fmt.Sprintf("52:54:00:af:%02x:0a", i
 // Bridge is the bridge name; deriving it from the subnet makes libvirt refuse
 // a second network on the same subnet at define time ("bridge name already in
 // use"), so concurrent `up`s cannot share one.
-func (s subnet) Bridge() (name string) { return fmt.Sprintf("afkbr%d", int(s)) }
+func (s subnet) Bridge() (name string) { return bridgePrefix + strconv.Itoa(int(s)) }
 
 // parseUsedSubnets returns the subnets taken by networks (libvirt network
 // XML), by address range or by bridge name.
@@ -159,13 +169,14 @@ func parseUsedSubnets(networks []string) (used map[subnet]bool, err error) {
 			err = fmt.Errorf("parsing network XML: %w", err)
 			return
 		}
-		var n int
-		if _, scanErr := fmt.Sscanf(network.Bridge.Name, "afkbr%d", &n); scanErr == nil {
-			used[subnet(n)] = true
+		if suffix, ok := strings.CutPrefix(network.Bridge.Name, bridgePrefix); ok {
+			if n, convErr := strconv.Atoi(suffix); convErr == nil && n >= 0 && n < subnets {
+				used[subnet(n)] = true
+			}
 		}
 		for _, ip := range network.IPs {
 			addr, parseErr := netip.ParseAddr(ip.Address)
-			if parseErr == nil && addr.Is4() && addr.As4()[0] == 10 && addr.As4()[1] == 99 {
+			if parseErr == nil && machineNet.Contains(addr) {
 				used[subnet(addr.As4()[2])] = true
 			}
 		}
@@ -181,7 +192,7 @@ func freeSubnet(used map[subnet]bool) (free subnet, err error) {
 			return
 		}
 	}
-	err = fmt.Errorf("all %d subnets of 10.99.0.0/16 are in use", subnets)
+	err = fmt.Errorf("all %d subnets of %s are in use", subnets, machineNet)
 	return
 }
 

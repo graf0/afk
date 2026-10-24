@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"net"
+	"net/netip"
 	"os"
 	"os/exec"
 	"strconv"
@@ -98,7 +99,7 @@ func lanAddr(t *testing.T) (addr string) {
 	}
 	for _, a := range addrs {
 		ipNet, ok := a.(*net.IPNet)
-		if ok && !ipNet.IP.IsLoopback() && ipNet.IP.To4() != nil && !strings.HasPrefix(ipNet.IP.String(), "10.99.") {
+		if ok && !ipNet.IP.IsLoopback() && ipNet.IP.To4() != nil && !machineNet.Contains(netip.MustParseAddr(ipNet.IP.To4().String())) {
 			return ipNet.IP.String()
 		}
 	}
@@ -269,6 +270,36 @@ func TestIntegrationCancelledUpLeavesNothing(t *testing.T) {
 			assertGone(t, env.conn, name, env.conn.dir(spec.Kind, spec.ID))
 		})
 	}
+}
+
+// Up must not redefine or clean up a foreign object with the same name.
+func TestIntegrationUpRefusesNameInUse(t *testing.T) {
+	env := setupIntegration(t)
+	spec := env.spec(t)
+	name, _ := Name(spec.Kind, spec.ID)
+	foreign := "<filter name='" + name + "' chain='root'><rule action='accept' direction='inout' priority='500'><all/></rule></filter>"
+	if _, err := env.conn.lv.NwfilterDefineXML(foreign); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = env.conn.Kill(name) })
+
+	if _, err := env.conn.Up(t.Context(), spec); err == nil || !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("Up = %v, want name in use", err)
+	}
+	filter, err := env.conn.lv.NwfilterLookupByName(name)
+	if err != nil {
+		t.Fatalf("foreign nwfilter removed: %v", err)
+	}
+	if data, _ := env.conn.lv.NwfilterGetXMLDesc(filter, 0); strings.Contains(data, "priority='90'") || strings.Contains(data, `priority="90"`) {
+		t.Error("foreign nwfilter overwritten")
+	}
+	if _, err := os.Stat(env.conn.dir(spec.Kind, spec.ID)); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("Up left a directory: %v", err)
+	}
+	if err = env.conn.Kill(name); err != nil {
+		t.Fatal(err)
+	}
+	assertGone(t, env.conn, name, env.conn.dir(spec.Kind, spec.ID))
 }
 
 func keysEqual(a, b ssh.PublicKey) (equal bool) {

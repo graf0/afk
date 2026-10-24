@@ -147,8 +147,13 @@ func (c *Conn) Up(ctx context.Context, spec Spec) (m Machine, err error) {
 	if err = image.EnsureSharedDir(filepath.Dir(dir), gid); err != nil {
 		return
 	}
-	// Exclusive: a directory that exists belongs to another machine and must
-	// survive the cleanup below.
+	// A name in use belongs to another machine (or the leftovers of a crashed
+	// one, for `afk vm kill`): nothing of it may be redefined or cleaned up here.
+	if err = c.checkFree(name); err != nil {
+		return
+	}
+	// Exclusive: of two concurrent Ups with the same name only one gets past
+	// this point, so the cleanup below removes only what this Up created.
 	if err = os.Mkdir(dir, 0o775); err != nil {
 		err = fmt.Errorf("creating machine directory: %w", err)
 		return
@@ -298,6 +303,33 @@ func (c *Conn) kill(name, dir string) (err error) {
 }
 
 // --- helpers ---
+
+// checkFree fails when a domain, network or nwfilter called name exists.
+func (c *Conn) checkFree(name string) (err error) {
+	var taken []string
+	if _, lookupErr := c.lv.DomainLookupByName(name); lookupErr == nil {
+		taken = append(taken, "domain")
+	} else if !isCode(lookupErr, libvirt.ErrNoDomain) {
+		err = fmt.Errorf("looking up domain %s: %w", name, lookupErr)
+		return
+	}
+	if _, lookupErr := c.lv.NetworkLookupByName(name); lookupErr == nil {
+		taken = append(taken, "network")
+	} else if !isCode(lookupErr, libvirt.ErrNoNetwork) {
+		err = fmt.Errorf("looking up network %s: %w", name, lookupErr)
+		return
+	}
+	if _, lookupErr := c.lv.NwfilterLookupByName(name); lookupErr == nil {
+		taken = append(taken, "nwfilter")
+	} else if !isCode(lookupErr, libvirt.ErrNoNwfilter) {
+		err = fmt.Errorf("looking up nwfilter %s: %w", name, lookupErr)
+		return
+	}
+	if len(taken) > 0 {
+		err = fmt.Errorf("machine %s already exists (%s): kill it first", name, strings.Join(taken, ", "))
+	}
+	return
+}
 
 // defineNetwork defines and starts def's network on the lowest free subnet
 // and sets def.Net. Two concurrent calls can pick the same subnet; libvirt then

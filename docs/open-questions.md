@@ -6,6 +6,10 @@ Niesprawdzone albo nierozstrzygnięte. Po rozstrzygnięciu: przenieść wynik do
 
 - [ ] `HTTP(S)_PROXY` hosta dla Packera (`packer init`, pobranie cloud image) — dziś Packer dostaje minimalne środowisko bez nich; dodać, gdy ktoś będzie za firmowym proxy.
 
+## Sandbox VM
+
+- [ ] Prywatny klucz hosta sshd VM widzą użytkownicy hosta z dostępem do libvirt lub `ps` (XML domeny, `-smbios type=11` w linii poleceń QEMU) — na razie akceptowane; alternatywa: zapis do overlayu przed startem.
+
 ## Obrazy Windows
 
 - [ ] Budowa Windows przez Packer CLI (szablony jeszcze tylko przez bibliotekę). Provisioning natywnie: `powershell` + `windows-restart`, sysprep jako ostatni krok.
