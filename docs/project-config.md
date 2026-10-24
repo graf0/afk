@@ -30,7 +30,7 @@ provision = ["..."]         # faza budowy: internet przez proxy, bez sekretów
 allow = ["proxy.golang.org", "sum.golang.org"]   # allowlista Run, domyślnie pusta
 
 [protect]
-paths = [".afk.toml", ".github/", ".gitea/", ".claude/"]
+paths = [".afk.toml", ".github/", ".gitea/", "**/.claude/", "**/.mcp.json"]   # zawsze; "dir/" = katalog, "**/" = na dowolnej głębokości
 
 [tool.postgres]
 kind = "package"            # host-port | package | vm

@@ -14,20 +14,14 @@ import (
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/term"
 
+	"github.com/graf0/afk/agent"
 	"github.com/graf0/afk/config"
 	"github.com/graf0/afk/egress"
 	"github.com/graf0/afk/image"
 	"github.com/graf0/afk/machine"
 )
 
-// sshTimeout bounds waiting for a fresh machine's sshd.
-const sshTimeout = 2 * time.Minute
-
 const vmUsage = "usage: afk vm up | afk vm shell <vm> | afk vm kill <vm>"
-
-// agentDomains are always allowed for the Agent (Claude Code); the Run ticket
-// confirms the full list.
-var agentDomains = []string{"api.anthropic.com"}
 
 // runVM executes the diagnostic `afk vm <subcommand>`.
 func runVM(ctx context.Context, args []string, cfg config.Config, stdout io.Writer) (err error) {
@@ -79,7 +73,7 @@ func vmUp(ctx context.Context, conn *machine.Conn, cfg config.Config, stdout io.
 	if err != nil {
 		return
 	}
-	sshCtx, cancel := context.WithTimeout(ctx, sshTimeout)
+	sshCtx, cancel := context.WithTimeout(ctx, machine.SSHTimeout)
 	defer cancel()
 	client, err := m.SSH(sshCtx, signer)
 	if err != nil {
@@ -94,9 +88,9 @@ func vmUp(ctx context.Context, conn *machine.Conn, cfg config.Config, stdout io.
 }
 
 // vmShell opens an interactive shell in machine name, with the Egress proxy
-// (allowlist [network].allow + agentDomains) tunneled in for its duration.
+// (allowlist [network].allow + agent.Domains) tunneled in for its duration.
 func vmShell(ctx context.Context, conn *machine.Conn, cfg config.Config, name string) (err error) {
-	policy, err := egress.Allowlist(slices.Concat(cfg.Network.Allow, agentDomains))
+	policy, err := egress.Allowlist(slices.Concat(cfg.Network.Allow, agent.Domains))
 	if err != nil {
 		return
 	}
@@ -112,7 +106,7 @@ func vmShell(ctx context.Context, conn *machine.Conn, cfg config.Config, name st
 	if err != nil {
 		return
 	}
-	sshCtx, cancel := context.WithTimeout(ctx, sshTimeout)
+	sshCtx, cancel := context.WithTimeout(ctx, machine.SSHTimeout)
 	defer cancel()
 	client, err := m.SSH(sshCtx, signer)
 	if err != nil {
