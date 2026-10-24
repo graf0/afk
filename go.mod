@@ -4,6 +4,8 @@ go 1.26.4
 
 tool github.com/go-task/task/v3/cmd/task
 
+require github.com/pelletier/go-toml/v2 v2.4.3
+
 require (
 	cel.dev/expr v0.25.2 // indirect
 	charm.land/bubbles/v2 v2.1.1 // indirect
