@@ -1,9 +1,13 @@
 package forge
 
 import (
+	"encoding/base64"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
 	"slices"
 	"strconv"
 	"strings"
@@ -130,5 +134,121 @@ func TestHostToken(t *testing.T) {
 	t.Setenv("PATH", t.TempDir()) // no gh
 	if _, err := HostToken(t.Context()); err == nil || !strings.Contains(err.Error(), "gh auth token") {
 		t.Errorf("without gh: err = %v", err)
+	}
+}
+
+// recorder is a fake GitHub API that records write requests as
+// "METHOD path body" and answers them with status (201 unless set).
+type recorder struct {
+	requests []string
+	status   map[string]int // by "METHOD path"
+}
+
+func (rec *recorder) serve(t *testing.T) (g *GitHub) {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer secret" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		if len(body) > 0 && r.Header.Get("Content-Type") != "application/json" {
+			t.Errorf("%s %s: Content-Type %q", r.Method, r.URL.Path, r.Header.Get("Content-Type"))
+		}
+		rec.requests = append(rec.requests, strings.TrimSpace(r.Method+" "+r.URL.EscapedPath()+" "+string(body)))
+		status, ok := rec.status[r.Method+" "+r.URL.EscapedPath()]
+		if !ok {
+			status = http.StatusCreated
+		}
+		w.WriteHeader(status)
+		if status >= 300 {
+			_, _ = fmt.Fprint(w, `{"message":"Nope"}`)
+			return
+		}
+		_, _ = fmt.Fprint(w, `{"number":42,"html_url":"https://github.com/o/r/pull/42"}`)
+	}))
+	t.Cleanup(server.Close)
+	g, err := NewGitHub(config.Forge{Kind: "github", Repo: "o/r"}, "secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.APIURL = server.URL
+	return
+}
+
+func TestGitHubWrites(t *testing.T) {
+	rec := &recorder{status: map[string]int{"DELETE /repos/o/r/issues/8/labels/ready-for-agent": http.StatusNotFound}}
+	g := rec.serve(t)
+	pull, err := g.CreatePull(t.Context(), "ticket-7", "main", "Do it", "Closes #7\n")
+	if err != nil || pull.Number != 42 || pull.URL != "https://github.com/o/r/pull/42" {
+		t.Errorf("CreatePull = %+v, %v", pull, err)
+	}
+	for _, err := range []error{
+		g.Comment(t.Context(), 42, "report"),
+		g.AddLabel(t.Context(), 42, "ready-for-human"),
+		g.RemoveLabel(t.Context(), 7, "ready for/agent"),
+		g.RemoveLabel(t.Context(), 8, "ready-for-agent"), // not on the issue: fine
+	} {
+		if err != nil {
+			t.Error(err)
+		}
+	}
+	want := []string{
+		`POST /repos/o/r/pulls {"base":"main","body":"Closes #7\n","head":"ticket-7","title":"Do it"}`,
+		`POST /repos/o/r/issues/42/comments {"body":"report"}`,
+		`POST /repos/o/r/issues/42/labels {"labels":["ready-for-human"]}`,
+		`DELETE /repos/o/r/issues/7/labels/ready%20for%2Fagent`,
+		`DELETE /repos/o/r/issues/8/labels/ready-for-agent`,
+	}
+	if !slices.Equal(rec.requests, want) {
+		t.Errorf("requests:\n%s\nwant:\n%s", strings.Join(rec.requests, "\n"), strings.Join(want, "\n"))
+	}
+
+	rec.status = map[string]int{
+		"POST /repos/o/r/pulls":                             http.StatusUnprocessableEntity,
+		"DELETE /repos/o/r/issues/7/labels/ready-for-agent": http.StatusForbidden,
+	}
+	if _, err = g.CreatePull(t.Context(), "ticket-7", "main", "t", "b"); err == nil || !strings.Contains(err.Error(), "422") || !strings.Contains(err.Error(), "Nope") {
+		t.Errorf("CreatePull refused: err = %v", err)
+	}
+	if err = g.RemoveLabel(t.Context(), 7, "ready-for-agent"); err == nil || !strings.Contains(err.Error(), "403") {
+		t.Errorf("RemoveLabel forbidden: err = %v", err)
+	}
+}
+
+// TestGitHubGitEnv checks that git sends the token in a header to GitURL
+// only, and that it appears neither on argv nor in git's error.
+func TestGitHubGitEnv(t *testing.T) {
+	var auth []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth = append(auth, r.URL.Path+" "+r.Header.Get("Authorization"))
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	g, err := NewGitHub(config.Forge{Kind: "github", Repo: "o/r"}, "secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g.GitURL != "https://github.com/o/r.git" {
+		t.Errorf("GitURL = %q", g.GitURL)
+	}
+	g.GitURL = server.URL + "/o/r.git"
+	for _, url := range []string{g.GitURL, server.URL + "/other/r.git"} {
+		cmd := exec.Command("git", "ls-remote", url)
+		cmd.Env = append(os.Environ(), g.GitEnv()...)
+		out, err := cmd.CombinedOutput()
+		if err == nil {
+			t.Fatalf("ls-remote %s: want error", url)
+		}
+		if strings.Contains(string(out), "secret") || strings.Contains(strings.Join(cmd.Args, " "), "secret") {
+			t.Errorf("token leaked: %s %s", cmd.Args, out)
+		}
+	}
+	basic := "Basic " + base64.StdEncoding.EncodeToString([]byte("x-access-token:secret"))
+	want := []string{"/o/r.git/info/refs " + basic, "/other/r.git/info/refs "}
+	if !slices.Equal(auth, want) {
+		t.Errorf("Authorization by path = %q, want %q", auth, want)
 	}
 }

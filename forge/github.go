@@ -6,6 +6,7 @@ package forge
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,6 +26,8 @@ import (
 const (
 	// GitHubAPI is the REST API of github.com.
 	GitHubAPI = "https://api.github.com"
+	// githubGit is the git (smart HTTP) host of github.com.
+	githubGit = "https://github.com/"
 
 	githubAPIVersion = "2022-11-28"
 	commentsPerPage  = 100
@@ -41,9 +44,11 @@ type Ticket struct {
 	Labels   []string
 }
 
-// GitHub reads tickets of Repo through the GitHub REST API.
+// GitHub reads and updates tickets and pull requests of Repo through the
+// GitHub REST API; GitURL is where the ticket branches are pushed.
 type GitHub struct {
 	APIURL string // GitHubAPI unless set (tests)
+	GitURL string // https://github.com/<Repo>.git unless set (tests)
 	Repo   string // owner/name
 	Token  string
 	Client *http.Client // http.DefaultClient unless set
@@ -66,6 +71,12 @@ type githubIssue struct {
 
 type githubComment struct {
 	Body string `json:"body"`
+}
+
+// PullRequest is a pull request opened by afk.
+type PullRequest struct {
+	Number int    `json:"number"`
+	URL    string `json:"html_url"`
 }
 
 // --- credentials ---
@@ -102,8 +113,25 @@ func NewGitHub(forge config.Forge, token string) (g *GitHub, err error) {
 		err = fmt.Errorf("invalid forge.repo %q: want owner/name", forge.Repo)
 		return
 	}
-	g = &GitHub{APIURL: GitHubAPI, Repo: forge.Repo, Token: token}
+	g = &GitHub{APIURL: GitHubAPI, GitURL: githubGit + forge.Repo + ".git", Repo: forge.Repo, Token: token}
 	return
+}
+
+// GitEnv is the environment for git talking to GitURL with Token. The token
+// goes in an Authorization header scoped to GitURL, through git's
+// GIT_CONFIG_* variables: never on argv, never in a config file. Credential
+// helpers and prompts are off, so a rejected token fails instead of asking.
+func (g *GitHub) GitEnv() (env []string) {
+	auth := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + g.Token))
+	return []string{
+		"GIT_TERMINAL_PROMPT=0",
+		"GIT_TRACE_REDACT=1",
+		"GIT_CONFIG_COUNT=2",
+		"GIT_CONFIG_KEY_0=http." + g.GitURL + ".extraHeader",
+		"GIT_CONFIG_VALUE_0=Authorization: Basic " + auth,
+		"GIT_CONFIG_KEY_1=credential.helper",
+		"GIT_CONFIG_VALUE_1=",
+	}
 }
 
 // ReadyTicket reads ticket n like Ticket and refuses it without label (the
@@ -167,10 +195,71 @@ func (g *GitHub) ticket(ctx context.Context, n int, label string) (ticket Ticket
 	}
 }
 
+// --- writes ---
+
+// CreatePull opens a pull request of branch head into base.
+func (g *GitHub) CreatePull(ctx context.Context, head, base, title, body string) (pull PullRequest, err error) {
+	in := map[string]string{"head": head, "base": base, "title": title, "body": body}
+	if err = g.call(ctx, http.MethodPost, fmt.Sprintf("/repos/%s/pulls", g.Repo), in, &pull); err != nil {
+		err = fmt.Errorf("opening pull request of %s: %w", head, err)
+	}
+	return
+}
+
+// Comment adds a comment to issue or pull request n.
+func (g *GitHub) Comment(ctx context.Context, n int, body string) (err error) {
+	in := map[string]string{"body": body}
+	if err = g.call(ctx, http.MethodPost, fmt.Sprintf("/repos/%s/issues/%d/comments", g.Repo, n), in, nil); err != nil {
+		err = fmt.Errorf("commenting on #%d: %w", n, err)
+	}
+	return
+}
+
+// AddLabel adds label to issue or pull request n.
+func (g *GitHub) AddLabel(ctx context.Context, n int, label string) (err error) {
+	in := map[string][]string{"labels": {label}}
+	if err = g.call(ctx, http.MethodPost, fmt.Sprintf("/repos/%s/issues/%d/labels", g.Repo, n), in, nil); err != nil {
+		err = fmt.Errorf("adding label %q to #%d: %w", label, n, err)
+	}
+	return
+}
+
+// RemoveLabel removes label from issue or pull request n; a label it
+// doesn't have is no error.
+func (g *GitHub) RemoveLabel(ctx context.Context, n int, label string) (err error) {
+	path := fmt.Sprintf("/repos/%s/issues/%d/labels/%s", g.Repo, n, url.PathEscape(label))
+	err = g.call(ctx, http.MethodDelete, path, nil, nil)
+	if apiErr, ok := errors.AsType[*apiError](err); ok && apiErr.Status == http.StatusNotFound {
+		err = nil
+	}
+	if err != nil {
+		err = fmt.Errorf("removing label %q from #%d: %w", label, n, err)
+	}
+	return
+}
+
 // --- http ---
+
+// apiError is a non-2xx response of the GitHub API.
+type apiError struct {
+	Method, Path string
+	Status       int
+	Message      string
+}
+
+func (e *apiError) Error() (text string) {
+	return fmt.Sprintf("%s %s: %d %s: %s", e.Method, e.Path, e.Status, http.StatusText(e.Status), e.Message)
+}
 
 // get decodes the JSON resource at path (relative to APIURL) into v.
 func (g *GitHub) get(ctx context.Context, path string, v any) (err error) {
+	err = g.call(ctx, http.MethodGet, path, nil, v)
+	return
+}
+
+// call sends a method request to path (relative to APIURL) with in as JSON
+// body (none when nil) and decodes a 2xx response into out (unless nil).
+func (g *GitHub) call(ctx context.Context, method, path string, in, out any) (err error) {
 	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
 	base, err := url.Parse(g.APIURL)
@@ -183,7 +272,16 @@ func (g *GitHub) get(ctx context.Context, path string, v any) (err error) {
 		err = fmt.Errorf("building URL: %w", err)
 		return
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
+	var body io.Reader
+	if in != nil {
+		var data []byte
+		if data, err = json.Marshal(in); err != nil {
+			err = fmt.Errorf("encoding request: %w", err)
+			return
+		}
+		body = bytes.NewReader(data)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, target.String(), body)
 	if err != nil {
 		err = fmt.Errorf("building request: %w", err)
 		return
@@ -191,27 +289,33 @@ func (g *GitHub) get(ctx context.Context, path string, v any) (err error) {
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", githubAPIVersion)
 	req.Header.Set("Authorization", "Bearer "+g.Token)
+	if in != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	client := g.Client
 	if client == nil {
 		client = http.DefaultClient
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		err = fmt.Errorf("GET %s: %w", target.Path, err)
+		err = fmt.Errorf("%s %s: %w", method, target.Path, err)
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize))
 	if err != nil {
-		err = fmt.Errorf("GET %s: reading response: %w", target.Path, err)
+		err = fmt.Errorf("%s %s: reading response: %w", method, target.Path, err)
 		return
 	}
-	if resp.StatusCode != http.StatusOK {
-		err = fmt.Errorf("GET %s: %s: %s", target.Path, resp.Status, apiMessage(data))
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		err = &apiError{Method: method, Path: target.Path, Status: resp.StatusCode, Message: apiMessage(data)}
 		return
 	}
-	if err = json.Unmarshal(data, v); err != nil {
-		err = fmt.Errorf("GET %s: decoding response: %w", target.Path, err)
+	if out == nil {
+		return
+	}
+	if err = json.Unmarshal(data, out); err != nil {
+		err = fmt.Errorf("%s %s: decoding response: %w", method, target.Path, err)
 	}
 	return
 }

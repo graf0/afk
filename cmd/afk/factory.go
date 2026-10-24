@@ -45,7 +45,7 @@ func runFactory(ctx context.Context, args []string, dir string, stdout io.Writer
 	if err != nil {
 		return
 	}
-	err = run.Execute(ctx, run.Options{Base: base, Ticket: ticket, ClaudeToken: claudeToken, Paths: paths, Out: stdout})
+	err = run.Execute(ctx, run.Options{Base: base, Ticket: ticket, ClaudeToken: claudeToken, Paths: paths, Out: stdout, Forge: github})
 	return
 }
 

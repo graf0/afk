@@ -46,7 +46,8 @@ type Options struct {
 	ClaudeToken string
 	Paths       image.Paths
 	Out         io.Writer
-	AgentBinary string // "claude" unless set (tests)
+	Forge       *forge.GitHub // GitURL is where ticket-N is pushed
+	AgentBinary string        // "claude" unless set (tests)
 }
 
 // run is the state of one Run.
@@ -61,11 +62,13 @@ type run struct {
 
 // --- run ---
 
-// Execute runs opts.Ticket in a fresh Sandbox VM and imports the result into
-// the Quarantine repo, as refs/heads/ticket-N once validated; that branch
-// must not exist yet. Nothing is written to the Forge. On success and on
-// needs_info the VM is destroyed; on any failure after start (and Ctrl-C) it
-// stays for `afk vm shell` / `afk vm kill`.
+// Execute runs opts.Ticket in a fresh Sandbox VM, imports the result into
+// the Quarantine repo as refs/heads/ticket-N (one validated commit on the
+// base) and publishes it on the Forge: push, pull request, report, labels.
+// needs_info goes to the ticket instead. The branch must exist neither in
+// the Quarantine repo nor on the Forge. On success and on needs_info the VM
+// is destroyed before the Forge is written; on any failure in the VM (and
+// Ctrl-C) it stays for `afk vm shell` / `afk vm kill`.
 func Execute(ctx context.Context, opts Options) (err error) {
 	r := run{Options: opts, branch: fmt.Sprintf("ticket-%d", opts.Ticket.Number)}
 	cfg := opts.Base.Config
@@ -92,6 +95,10 @@ func Execute(ctx context.Context, opts Options) (err error) {
 	if err = r.quarantine.CheckNew(ctx, r.branch); err != nil {
 		return
 	}
+	// Fail before the VM, not after an hour of work; Push checks again.
+	if err = r.checkRemote(ctx); err != nil {
+		return
+	}
 	if err = r.quarantine.FetchBase(ctx, opts.Base.Repo, opts.Base.Commit, r.branch); err != nil {
 		return
 	}
@@ -103,6 +110,17 @@ func Execute(ctx context.Context, opts Options) (err error) {
 	r.say("ticket #%d %s", opts.Ticket.Number, agent.Sanitize(opts.Ticket.Title))
 	r.say("base origin/%s %s, log %s", opts.Base.Branch, opts.Base.Commit, logPath)
 
+	report, err := r.session(ctx, policy, disk, signer, logPath)
+	if err != nil {
+		return
+	}
+	err = r.publish(ctx, report)
+	return
+}
+
+// session runs the Agent in a fresh VM and, on done, takes its result into
+// the Quarantine repo. The VM is destroyed on success, kept on failure.
+func (r run) session(ctx context.Context, policy egress.Policy, disk string, signer ssh.Signer, logPath string) (report agent.Report, err error) {
 	conn, err := machine.Connect()
 	if err != nil {
 		return
@@ -113,7 +131,7 @@ func Execute(ctx context.Context, opts Options) (err error) {
 	m, err := conn.Up(ctx, machine.Spec{
 		Project:  r.project,
 		Kind:     machine.KindRun,
-		ID:       fmt.Sprintf("%d-%s", opts.Ticket.Number, hex.EncodeToString(id)),
+		ID:       fmt.Sprintf("%d-%s", r.Ticket.Number, hex.EncodeToString(id)),
 		BaseDisk: disk,
 	})
 	if err != nil {
@@ -151,25 +169,24 @@ func Execute(ctx context.Context, opts Options) (err error) {
 		return
 	}
 	r.say("agent started")
-	report, err := agent.Session{
-		Token:  opts.ClaudeToken,
+	report, err = agent.Session{
+		Token:  r.ClaudeToken,
 		Prompt: r.prompt(),
 		Dir:    guestRepo,
-		Model:  cfg.Agent.Model,
+		Model:  r.Base.Config.Agent.Model,
 		Proxy:  "http://" + machine.ProxyAddr,
-		Binary: opts.AgentBinary,
-	}.Run(ctx, client, opts.Out, r.log)
+		Binary: r.AgentBinary,
+	}.Run(ctx, client, r.Out, r.log)
 	if err != nil {
 		err = fmt.Errorf("%w (log: %s)", err, logPath)
 		return
 	}
 	r.say("agent report:")
-	_, _ = fmt.Fprint(opts.Out, report.String())
+	_, _ = fmt.Fprint(r.Out, report.String())
 	if report.Status == agent.StatusNeedsInfo {
-		r.say("needs_info: no result taken; the questions are not posted to the ticket yet")
 		return
 	}
-	err = r.takeResult(ctx, client)
+	err = r.takeResult(ctx, client, report)
 	return
 }
 
@@ -219,8 +236,9 @@ func (r run) prepareGuest(ctx context.Context, client *ssh.Client) (err error) {
 
 // takeResult brings HEAD of the guest's clone into the Quarantine repo as a
 // bundle, without running anything of the clone on the host (ADR-0002),
-// validates it and accepts it as refs/heads/ticket-N.
-func (r run) takeResult(ctx context.Context, client *ssh.Client) (err error) {
+// validates it, squashes it into one commit on the base (validated again)
+// and accepts that as refs/heads/ticket-N.
+func (r run) takeResult(ctx context.Context, client *ssh.Client, report agent.Report) (err error) {
 	var status tailBuffer
 	if err = remote(ctx, client, "cd "+guestRepo+" && git status --porcelain", nil, &status); err != nil {
 		err = fmt.Errorf("checking the guest's working tree: %w", err)
@@ -254,11 +272,19 @@ func (r run) takeResult(ctx context.Context, client *ssh.Client) (err error) {
 		err = fmt.Errorf("result %s rejected: %w", head, err)
 		return
 	}
-	if err = r.quarantine.Accept(ctx, r.branch, head); err != nil {
+	squashed, err := r.quarantine.Squash(ctx, r.Base.Commit, head, r.commitMessage(report), r.Base.Ident)
+	if err != nil {
 		return
 	}
-	r.say("result valid: %d commit(s), %s in %s", commits, r.branch, r.quarantine.Dir)
-	r.say("  git --git-dir=%s log %s..%s", r.quarantine.Dir, r.Base.Commit[:12], r.branch)
+	if _, err = r.quarantine.Validate(ctx, r.Base.Commit, squashed, r.Base.Config.Protect.Paths); err != nil {
+		err = fmt.Errorf("squashed result %s rejected: %w", squashed, err)
+		return
+	}
+	if err = r.quarantine.Accept(ctx, r.branch, squashed); err != nil {
+		return
+	}
+	r.say("result valid: %d commit(s) squashed into %s, %s in %s", commits, squashed[:12], r.branch, r.quarantine.Dir)
+	r.say("  git --git-dir=%s show %s", r.quarantine.Dir, r.branch)
 	return
 }
 
