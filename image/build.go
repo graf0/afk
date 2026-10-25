@@ -60,9 +60,9 @@ func ProjectName(repo string) (name string, err error) {
 // --- build ---
 
 // Build builds the Base image of the Project described by opts.Config and
-// installs it in a new version directory Paths.BaseDir/<project>/<version>
-// (older versions stay). It returns that directory. Cancelling ctx interrupts
-// Packer, which stops QEMU.
+// installs it in a new version directory
+// Paths.BaseDir/<project>/sandbox/<version> (older versions stay). It returns
+// that directory. Cancelling ctx interrupts Packer, which stops QEMU.
 //
 // Internet access during the build goes only through an Egress proxy
 // (all public domains) on a random loopback port, tunneled into the guest.
@@ -71,9 +71,10 @@ func Build(ctx context.Context, opts Options) (imageDir string, err error) {
 	if opts.Out == nil {
 		opts.Out = io.Discard
 	}
-	tmpl, ok := templates[cfg.Image.Template]
+	machineCfg := cfg.Machine.Sandbox
+	tmpl, ok := templates[machineCfg.Template]
 	if !ok {
-		err = fmt.Errorf("unsupported image.template %q: only %q are implemented", cfg.Image.Template, slices.Sorted(maps.Keys(templates)))
+		err = fmt.Errorf("unsupported machine.%s.template %q: only %q are implemented", config.SandboxMachine, machineCfg.Template, slices.Sorted(maps.Keys(templates)))
 		return
 	}
 	project, err := ProjectName(cfg.Forge.Repo)
@@ -102,7 +103,8 @@ func Build(ctx context.Context, opts Options) (imageDir string, err error) {
 		}
 	}
 	projectDir := paths.projectDir(project)
-	for _, dir := range []string{paths.BaseDir, projectDir} {
+	machineDir := paths.machineDir(project, config.SandboxMachine)
+	for _, dir := range []string{paths.BaseDir, projectDir, machineDir} {
 		if err = EnsureSharedDir(dir, gid); err != nil {
 			return
 		}
@@ -114,7 +116,7 @@ func Build(ctx context.Context, opts Options) (imageDir string, err error) {
 		return
 	}
 	defer cleanWork()
-	buildDir, cleanBuild, err := tempDir(projectDir, ".build-*")
+	buildDir, cleanBuild, err := tempDir(machineDir, ".build-*")
 	if err != nil {
 		return
 	}
@@ -139,7 +141,7 @@ func Build(ctx context.Context, opts Options) (imageDir string, err error) {
 	if err != nil {
 		return
 	}
-	provision, final := provisionSteps(pluginSteps, cfg.Image.Provision)
+	provision, final := provisionSteps(pluginSteps, machineCfg.Build)
 	vars := packerVars{
 		BaseImage:      tmpl.ImageURL,
 		BaseChecksum:   tmpl.ChecksumURL,
@@ -173,7 +175,7 @@ func Build(ctx context.Context, opts Options) (imageDir string, err error) {
 		return
 	}
 
-	imageDir = filepath.Join(projectDir, newVersion(time.Now()))
+	imageDir = filepath.Join(machineDir, newVersion(time.Now()))
 	if err = installArtifact(outputDir, imageDir, gid); err != nil {
 		imageDir = ""
 		return

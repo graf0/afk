@@ -15,7 +15,7 @@ Domknięcie M1:
 
 `.afk.toml`:
 
-- [ ] `[image]` → `[machine.<nazwa>]` (`template`, `build`, `max_age` domyślnie `168h`, `memory`, `cpus`); `sandbox` zastrzeżone, inne nazwy odrzucane do M4.
+- [x] `[image]` → `[machine.<nazwa>]` (`template`, `build`, `max_age` domyślnie `168h`, `memory`, `cpus`); `sandbox` zastrzeżone, inne nazwy odrzucane do M4.
 - [ ] `[tool.<nazwa>]`: `on` (tylko `sandbox`), `build`, `setup`, `env`, `prompt`; usunięcie `kind`.
 - [ ] Walidacja wszystkich sekcji (lista w `README.md`), wszystkie błędy naraz z `linia:kolumna`; `afk config` z drzewa roboczego.
 - [ ] Toole w Run: `setup` po klonie (alfabetycznie, `<log>-setup.txt`, pomijany przy wznowieniu), `env` w sesjach i bramce, sekcja „Narzędzia” w promptach.
@@ -23,7 +23,8 @@ Domknięcie M1:
 Base image:
 
 - [ ] Konfiguracja z gałęzi bazowej także w `afk image build` i `afk vm up` (ADR-0010).
-- [ ] Ścieżka per maszyna `/var/lib/afk/base/<project>/<maszyna>/<wersja>/`, hash konfiguracji obrazu w katalogu wersji.
+- [x] Base image w katalogu per maszyna `/var/lib/afk/base/<project>/<maszyna>/<wersja>/`.
+- [ ] Hash konfiguracji obrazu w katalogu wersji.
 - [ ] Factory buduje obraz przed Run (brak / Expiry / inny hash) pod `flock` per Project, log `image-<maszyna>-<wersja>.log`.
 - [ ] Sprzątanie po udanej budowie: wersje nie najnowsze, niebędące backing file overlayu w `runs/` ani `chats/`.
 

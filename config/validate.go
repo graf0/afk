@@ -20,7 +20,7 @@ var (
 	forgeKinds = []string{"github", "gitea"}
 	toolKinds  = []string{"package", "host-port", "vm"}
 
-	// ImageTemplates are the [image].template values the image package can
+	// ImageTemplates are the [machine.<name>].template values the image package can
 	// build; image's tests assert that it knows exactly these.
 	ImageTemplates = []string{"debian13"}
 
@@ -85,12 +85,17 @@ func (v *validator) reportDecodeError(err error) {
 func (v *validator) reportUnknownKeys(strictErr *toml.StrictMissingError) {
 	for i := range strictErr.Errors {
 		detail := &strictErr.Errors[i]
-		path := strings.Join(detail.Key(), ".")
+		key := detail.Key()
+		path := strings.Join(key, ".")
 		pos := v.locate(path)
 		if pos == (position{}) {
 			pos = positionOf(detail)
 		}
-		v.issues = append(v.issues, issue{pos: pos, msg: fmt.Sprintf("unknown key %q", path)})
+		msg := fmt.Sprintf("unknown key %q", path)
+		if len(key) >= 2 && key[0] == "machine" && key[1] != SandboxMachine {
+			msg = fmt.Sprintf("machine.%s: Tool VM is not supported yet: only machine.%s is allowed", key[1], SandboxMachine)
+		}
+		v.issues = append(v.issues, issue{pos: pos, msg: msg})
 	}
 }
 
@@ -129,7 +134,7 @@ func (c Config) validate(v *validator) {
 	c.validateLabels(v)
 	c.validateAgent(v)
 	c.validateGate(v)
-	c.validateImage(v)
+	c.validateMachines(v)
 	c.validateNetwork(v)
 	c.validateProtect(v)
 	c.validateTools(v)
@@ -216,14 +221,20 @@ func (c Config) validateGate(v *validator) {
 	}
 }
 
-func (c Config) validateImage(v *validator) {
-	if !slices.Contains(ImageTemplates, c.Image.Template) {
-		v.reportChoice("image.template", ImageTemplates, c.Image.Template)
+func (c Config) validateMachines(v *validator) {
+	m := c.Machine.Sandbox
+	path := "machine." + SandboxMachine
+	if !slices.Contains(ImageTemplates, m.Template) {
+		v.reportChoice(path+".template", ImageTemplates, m.Template)
 	}
-	if c.Image.MaxAge != "" {
-		if age, err := time.ParseDuration(c.Image.MaxAge); err != nil || age < 0 {
-			v.report("image.max_age", `want a duration like "168h" or "0", got %q`, c.Image.MaxAge)
-		}
+	if age, err := time.ParseDuration(m.MaxAge); err != nil || age < 0 {
+		v.report(path+".max_age", `want a duration like "168h" or "0", got %q`, m.MaxAge)
+	}
+	if m.MemoryMiB <= 0 {
+		v.report(path+".memory", "want MiB > 0, got %d", m.MemoryMiB)
+	}
+	if m.CPUs <= 0 {
+		v.report(path+".cpus", "want > 0, got %d", m.CPUs)
 	}
 }
 

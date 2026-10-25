@@ -69,7 +69,7 @@ func vmUp(ctx context.Context, conn *machine.Conn, cfg config.Config, stdout io.
 	if err != nil {
 		return
 	}
-	disk, err := image.LatestDisk(paths, project)
+	disk, err := image.LatestDisk(paths, project, config.SandboxMachine)
 	if err != nil {
 		return
 	}
@@ -77,11 +77,14 @@ func vmUp(ctx context.Context, conn *machine.Conn, cfg config.Config, stdout io.
 	if err != nil {
 		return
 	}
+	sandbox := cfg.Machine.Sandbox
 	id := make([]byte, 4)
 	_, _ = rand.Read(id)
 
 	start := time.Now()
-	m, err := conn.Up(ctx, machine.Spec{Project: project, Kind: machine.KindRun, ID: hex.EncodeToString(id), BaseDisk: disk})
+	m, err := conn.Up(ctx, machine.Spec{Project: project, Kind: machine.KindRun, ID: hex.EncodeToString(id), BaseDisk: disk,
+		MemoryMiB: sandbox.MemoryMiB, CPUs: sandbox.CPUs,
+	})
 	if err != nil {
 		return
 	}

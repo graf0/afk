@@ -77,10 +77,12 @@ func parseName(name string) (kind Kind, id string, err error) {
 
 // Spec describes a machine to start.
 type Spec struct {
-	Project  string // Project name (image.ProjectName)
-	Kind     Kind
-	ID       string // unique per Kind: [a-z0-9-], at most 40 characters
-	BaseDisk string // Base image disk the overlay is based on
+	Project   string // Project name (image.ProjectName)
+	Kind      Kind
+	ID        string // unique per Kind: [a-z0-9-], at most 40 characters
+	BaseDisk  string // Base image disk the overlay is based on
+	MemoryMiB int    // RAM of the VM
+	CPUs      int    // vCPUs of the VM
 }
 
 // Machine is a running Sandbox VM.
@@ -141,6 +143,10 @@ func (c *Conn) Up(ctx context.Context, spec Spec) (m Machine, err error) {
 		err = fmt.Errorf("machine %s: project and base disk are required", name)
 		return
 	}
+	if spec.MemoryMiB <= 0 || spec.CPUs <= 0 {
+		err = fmt.Errorf("machine %s: memory and cpus must be positive, got %d MiB and %d", name, spec.MemoryMiB, spec.CPUs)
+		return
+	}
 	dir := c.dir(spec.Kind, spec.ID)
 	gid, err := image.SharedGroupID()
 	if err != nil {
@@ -172,7 +178,7 @@ func (c *Conn) Up(ctx context.Context, spec Spec) (m Machine, err error) {
 		return
 	}
 
-	def := definition{Name: name, Disk: filepath.Join(dir, diskName)}
+	def := definition{Name: name, Disk: filepath.Join(dir, diskName), MemoryMiB: spec.MemoryMiB, CPUs: spec.CPUs}
 	if err = createOverlay(ctx, spec.BaseDisk, def.Disk); err != nil {
 		return
 	}

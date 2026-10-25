@@ -19,6 +19,7 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/graf0/afk/agent"
+	"github.com/graf0/afk/config"
 	"github.com/graf0/afk/egress"
 	"github.com/graf0/afk/forge"
 	"github.com/graf0/afk/image"
@@ -60,9 +61,10 @@ type Options struct {
 
 // vmSetup is what a Run needs to bring up a Sandbox VM.
 type vmSetup struct {
-	policy egress.Policy
-	disk   string
-	signer ssh.Signer
+	policy  egress.Policy
+	disk    string
+	sandbox config.Machine
+	signer  ssh.Signer
 }
 
 // run is the state of one Run.
@@ -96,7 +98,8 @@ func newRun(ctx context.Context, opts Options) (r run, setup vmSetup, err error)
 	if setup.policy, err = EgressPolicy(cfg); err != nil {
 		return
 	}
-	if setup.disk, err = image.LatestDisk(opts.Paths, r.project); err != nil {
+	setup.sandbox = cfg.Machine.Sandbox
+	if setup.disk, err = image.LatestDisk(opts.Paths, r.project, config.SandboxMachine); err != nil {
 		return
 	}
 	if setup.signer, err = image.SSHSigner(opts.Paths); err != nil {
@@ -182,10 +185,12 @@ func (r run) session(ctx context.Context, setup vmSetup, work workFunc) (res res
 		id = fmt.Sprintf("%d-%s", r.Ticket.Number, hex.EncodeToString(random))
 	}
 	m, err := conn.Up(ctx, machine.Spec{
-		Project:  r.project,
-		Kind:     machine.KindRun,
-		ID:       id,
-		BaseDisk: setup.disk,
+		Project:   r.project,
+		Kind:      machine.KindRun,
+		ID:        id,
+		BaseDisk:  setup.disk,
+		MemoryMiB: setup.sandbox.MemoryMiB,
+		CPUs:      setup.sandbox.CPUs,
 	})
 	if err != nil {
 		return

@@ -35,8 +35,9 @@ func TestParseDefaults(t *testing.T) {
 	if cfg.Gate.MaxFixes != 3 {
 		t.Errorf("gate.max_fixes = %d", cfg.Gate.MaxFixes)
 	}
-	if cfg.Image.Template != "debian13" {
-		t.Errorf("image.template = %q", cfg.Image.Template)
+	wantSandbox := Machine{Template: "debian13", MaxAge: "168h", MemoryMiB: 2048, CPUs: 2}
+	if !machineEqual(cfg.Machine.Sandbox, wantSandbox) {
+		t.Errorf("sandbox = %+v, want %+v", cfg.Machine.Sandbox, wantSandbox)
 	}
 	if len(cfg.Network.Allow) != 0 || len(cfg.Agent.Plugins) != 0 || len(cfg.Agent.Marketplaces) != 0 {
 		t.Errorf("allow/plugins/marketplaces should be empty: %v %v %v", cfg.Network.Allow, cfg.Agent.Plugins, cfg.Agent.Marketplaces)
@@ -44,6 +45,32 @@ func TestParseDefaults(t *testing.T) {
 	if !slices.Equal(cfg.Protect.Paths, requiredProtect) {
 		t.Errorf("protect.paths = %v", cfg.Protect.Paths)
 	}
+}
+
+func machineEqual(a, b Machine) (equal bool) {
+	return a.Template == b.Template && a.MaxAge == b.MaxAge && a.MemoryMiB == b.MemoryMiB && a.CPUs == b.CPUs && slices.Equal(a.Build, b.Build)
+}
+
+func TestParseMachine(t *testing.T) {
+	t.Run("overrides keep the other defaults", func(t *testing.T) {
+		cfg, err := Parse([]byte(minimalConfig + "[machine.sandbox]\nbuild = [\"a\", \"b\"]\nmemory = 4096\nmax_age = \"0\"\n"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := Machine{Template: "debian13", Build: []string{"a", "b"}, MaxAge: "0", MemoryMiB: 4096, CPUs: 2}
+		if got := cfg.Machine.Sandbox; !machineEqual(got, want) {
+			t.Errorf("sandbox = %+v, want %+v", got, want)
+		}
+	})
+	t.Run("cpus", func(t *testing.T) {
+		cfg, err := Parse([]byte(minimalConfig + "[machine.sandbox]\ncpus = 6\n"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := cfg.Machine.Sandbox; got.CPUs != 6 || got.MemoryMiB != 2048 {
+			t.Errorf("sandbox = %+v", got)
+		}
+	})
 }
 
 func TestParseOverrides(t *testing.T) {
@@ -132,8 +159,17 @@ func TestParseErrors(t *testing.T) {
 		{"missing gate cmd", "[forge]\nkind = \"github\"\nrepo = \"a/b\"\n", []string{"gate.cmd: required"}},
 		{"empty gate cmd", "[forge]\nkind = \"github\"\nrepo = \"a/b\"\n[gate]\ncmd = \" \"\n", []string{"5:1: gate.cmd: required"}},
 		{"negative max_fixes", minimalConfig + "max_fixes = -1\n", []string{"6:1: gate.max_fixes: want >= 0, got -1"}},
-		{"bad max_age", minimalConfig + "[image]\nmax_age = \"week\"\n", []string{`7:1: image.max_age: want a duration like "168h" or "0", got "week"`}},
-		{"unknown template", minimalConfig + "[image]\ntemplate = \"arch\"\n", []string{`7:1: image.template: want one of [debian13], got "arch"`}},
+		{"image section is gone", minimalConfig + "[image]\ntemplate = \"debian13\"\n", []string{`unknown key "image"`}},
+		{"unknown machine key", minimalConfig + "[machine.sandbox]\nprovision = []\n", []string{`7:1: unknown key "machine.sandbox.provision"`}},
+		{"bad max_age", minimalConfig + "[machine.sandbox]\nmax_age = \"week\"\n", []string{`7:1: machine.sandbox.max_age: want a duration like "168h" or "0", got "week"`}},
+		{"negative max_age", minimalConfig + "[machine.sandbox]\nmax_age = \"-1h\"\n", []string{`7:1: machine.sandbox.max_age: want a duration`}},
+		{"unknown template", minimalConfig + "[machine.sandbox]\ntemplate = \"arch\"\n", []string{`7:1: machine.sandbox.template: want one of [debian13], got "arch"`}},
+		{"empty template", minimalConfig + "[machine.sandbox]\ntemplate = \"\"\n", []string{`7:1: machine.sandbox.template: required`}},
+		{"zero memory", minimalConfig + "[machine.sandbox]\nmemory = 0\n", []string{`7:1: machine.sandbox.memory: want MiB > 0, got 0`}},
+		{"negative memory", minimalConfig + "[machine.sandbox]\nmemory = -5\n", []string{`machine.sandbox.memory: want MiB > 0, got -5`}},
+		{"zero cpus", minimalConfig + "[machine.sandbox]\ncpus = 0\n", []string{`7:1: machine.sandbox.cpus: want > 0, got 0`}},
+		{"fractional memory", minimalConfig + "[machine.sandbox]\nmemory = 1.5\n", []string{`7:10: machine.sandbox.memory: `}},
+		{"other machine", minimalConfig + "[machine.db]\nmemory = 512\n", []string{`machine.db: Tool VM is not supported yet`}},
 		{"allow with scheme", minimalConfig + "[network]\nallow = [\"ok.com\", \"https://a.com\"]\n", []string{`7:20: network.allow[1]: invalid allowlist entry "https://a.com"`}},
 		{"allow with port", minimalConfig + "[network]\nallow = [\"a.com:443\"]\n", []string{`7:10: network.allow[0]: invalid allowlist entry "a.com:443"`}},
 		{"allow with path", minimalConfig + "[network]\nallow = [\"a.com/x\"]\n", []string{`7:10: network.allow[0]: invalid allowlist entry "a.com/x"`}},

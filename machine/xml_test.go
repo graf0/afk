@@ -12,6 +12,8 @@ func testDefinition() (def definition) {
 		Name:       "afk-run-abc",
 		Disk:       "/var/lib/afk/runs/abc/disk.qcow2",
 		Credential: base64.StdEncoding.EncodeToString([]byte("f+~ /x 0600 root root - eA==\n")),
+		MemoryMiB:  4096,
+		CPUs:       6,
 		Net:        5,
 		Meta: metadata{
 			Project: "graf0-dfmx",
@@ -46,7 +48,12 @@ func TestDomainXML(t *testing.T) {
 	data := mustRender(t, "domain", def)
 
 	var domain struct {
-		Name     string `xml:"name"`
+		Name   string `xml:"name"`
+		Memory struct {
+			Unit  string `xml:"unit,attr"`
+			Value int    `xml:",chardata"`
+		} `xml:"memory"`
+		VCPU     int `xml:"vcpu"`
 		Metadata struct {
 			Inner string `xml:",innerxml"`
 		} `xml:"metadata"`
@@ -86,6 +93,9 @@ func TestDomainXML(t *testing.T) {
 	}
 	if domain.Name != def.Name {
 		t.Errorf("name = %q", domain.Name)
+	}
+	if domain.Memory.Unit != "MiB" || domain.Memory.Value != def.MemoryMiB || domain.VCPU != def.CPUs {
+		t.Errorf("memory = %d %s, vcpu = %d; want %d MiB and %d vCPUs", domain.Memory.Value, domain.Memory.Unit, domain.VCPU, def.MemoryMiB, def.CPUs)
 	}
 	if len(domain.Seclabel) != 0 {
 		t.Error("seclabel on the domain breaks swtpm; it belongs on the disk source")

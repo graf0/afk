@@ -127,3 +127,18 @@ func TestTemplatesMatchConfig(t *testing.T) {
 		t.Errorf("templates = %v, config.ImageTemplates = %v", got, config.ImageTemplates)
 	}
 }
+
+func TestMachineBuildRunsBeforeFinalSteps(t *testing.T) {
+	provision, final := provisionSteps([]string{"plugin"}, []string{"machine-build-1", "machine-build-2"})
+	if n := len(provision); provision[n-2] != "machine-build-1" || provision[n-1] != "machine-build-2" {
+		t.Errorf("machine build must end the first provisioner: %q", provision)
+	}
+	for _, step := range final {
+		if strings.HasPrefix(step, "machine-build") {
+			t.Errorf("machine build step %q in the final steps", step)
+		}
+	}
+	if len(final) == 0 || !strings.Contains(final[len(final)-1], "machine-id") {
+		t.Errorf("final steps = %q, want afk's steps after the machine build", final)
+	}
+}

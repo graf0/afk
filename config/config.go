@@ -15,8 +15,25 @@ import (
 // FileName is the Project config file name, located at the repository root.
 const FileName = ".afk.toml"
 
-// defaultMaxFixes is the default number of fix attempts after a failed gate.
-const defaultMaxFixes = 3
+const (
+	// SandboxMachine is the name of the Sandbox VM in [machine.<name>].
+	SandboxMachine = "sandbox"
+
+	// defaultMaxFixes is the default number of fix attempts after a failed gate.
+	defaultMaxFixes = 3
+
+	// defaultTemplate is the default Template of the Sandbox VM's Base image.
+	defaultTemplate = "debian13"
+
+	// defaultMaxAge is the default Expiry of the Sandbox VM's Base image.
+	defaultMaxAge = "168h"
+
+	// defaultMemoryMiB is the default RAM of the Sandbox VM.
+	defaultMemoryMiB = 2048
+
+	// defaultCPUs is the default number of vCPUs of the Sandbox VM.
+	defaultCPUs = 2
+)
 
 var (
 	// requiredProtectPaths are always protected, regardless of the user's list.
@@ -31,7 +48,7 @@ type Config struct {
 	Labels  Labels          `toml:"labels"`
 	Agent   Agent           `toml:"agent"`
 	Gate    Gate            `toml:"gate"`
-	Image   Image           `toml:"image"`
+	Machine Machines        `toml:"machine"`
 	Network Network         `toml:"network"`
 	Protect Protect         `toml:"protect"`
 	Tool    map[string]Tool `toml:"tool"`
@@ -69,11 +86,20 @@ type Gate struct {
 	MaxFixes int    `toml:"max_fixes"`
 }
 
-// Image configures the Base image.
-type Image struct {
+// Machines are the machines of the Project. Only the Sandbox VM is supported
+// for now; any other [machine.<name>] is rejected.
+type Machines struct {
+	Sandbox Machine `toml:"sandbox"`
+}
+
+// Machine describes a machine and its Base image. Only SandboxMachine is
+// supported for now.
+type Machine struct {
 	Template  string   `toml:"template"`
-	MaxAge    string   `toml:"max_age"`
-	Provision []string `toml:"provision"`
+	Build     []string `toml:"build"`
+	MaxAge    string   `toml:"max_age"` // Expiry of the Base image; "0": none
+	MemoryMiB int      `toml:"memory"`
+	CPUs      int      `toml:"cpus"`
 }
 
 // Network is the Run's network allowlist.
@@ -166,8 +192,13 @@ func defaults() (cfg Config) {
 			Wontfix:       "wontfix",
 			Spec:          "spec",
 		},
-		Gate:  Gate{MaxFixes: defaultMaxFixes},
-		Image: Image{Template: "debian13"},
+		Gate: Gate{MaxFixes: defaultMaxFixes},
+		Machine: Machines{Sandbox: Machine{
+			Template:  defaultTemplate,
+			MaxAge:    defaultMaxAge,
+			MemoryMiB: defaultMemoryMiB,
+			CPUs:      defaultCPUs,
+		}},
 	}
 	return
 }

@@ -21,6 +21,7 @@ import (
 	"github.com/digitalocean/go-libvirt"
 	"golang.org/x/crypto/ssh"
 
+	"github.com/graf0/afk/config"
 	"github.com/graf0/afk/egress"
 	"github.com/graf0/afk/image"
 )
@@ -53,7 +54,7 @@ func setupIntegration(t *testing.T) (env integrationEnv) {
 	if env.paths, err = image.DefaultPaths(); err != nil {
 		t.Fatal(err)
 	}
-	if env.disk, err = image.LatestDisk(env.paths, env.project); err != nil {
+	if env.disk, err = image.LatestDisk(env.paths, env.project, config.SandboxMachine); err != nil {
 		t.Fatal(err)
 	}
 	if env.conn, err = Connect(); err != nil {
@@ -67,7 +68,7 @@ func (env integrationEnv) spec(t *testing.T) (spec Spec) {
 	t.Helper()
 	id := make([]byte, 4)
 	_, _ = rand.Read(id)
-	return Spec{Project: env.project, Kind: KindRun, ID: "it-" + hex.EncodeToString(id), BaseDisk: env.disk}
+	return Spec{Project: env.project, Kind: KindRun, ID: "it-" + hex.EncodeToString(id), BaseDisk: env.disk, MemoryMiB: 2048, CPUs: 2}
 }
 
 // assertGone checks that nothing of machine name is left: domain, network,
