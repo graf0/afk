@@ -201,7 +201,7 @@ func TestIntegrationIsolation(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		stop, err := ServeEgress(ctx, client, policy)
+		stop, err := ServeEgress(ctx, client, policy, nil)
 		if err != nil {
 			t.Fatal(err)
 		}

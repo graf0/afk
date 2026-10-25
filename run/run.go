@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -73,8 +74,9 @@ type run struct {
 	branch     string // ticket-N, in the guest and the Quarantine repo
 	quarantine Quarantine
 	log        *rotatingLog
-	id         string // machine id of the VM, random when empty
-	resumed    bool   // the guest holds the Agent's earlier work: the next prompt says so
+	denials    *denialLog // Egress proxy denials of the session, next to log
+	id         string     // machine id of the VM, random when empty
+	resumed    bool       // the guest holds the Agent's earlier work: the next prompt says so
 
 	// tip is the end of the Spec's branch in the Quarantine repo: the commit
 	// the Run continues from and the one Accept moves the branch from. Empty
@@ -145,7 +147,7 @@ func Execute(ctx context.Context, opts Options) (err error) {
 	if err != nil {
 		return
 	}
-	defer func() { _ = r.log.Close() }()
+	defer r.closeLogs()
 	r.say("ticket #%d %s", opts.Ticket.Number, agent.Sanitize(opts.Ticket.Title))
 	r.say("base origin/%s %s, log %s", opts.Base.Branch, opts.Base.Commit, logPath)
 
@@ -238,7 +240,7 @@ func (r run) inVM(ctx context.Context, conn *machine.Conn, m machine.Machine, se
 	defer func() { _ = client.Close() }()
 	// Ctrl-C ends every session at once; the VM then stays like on failure.
 	defer context.AfterFunc(ctx, func() { _ = client.Close() })()
-	stop, err := machine.ServeEgress(ctx, client, setup.policy)
+	stop, err := machine.ServeEgress(ctx, client, setup.policy, r.denials)
 	if err != nil {
 		return
 	}
@@ -337,10 +339,20 @@ func (r *run) openLog(name string) (path string, err error) {
 	}
 	path = filepath.Join(dir, fmt.Sprintf("%s-%s.jsonl", name, time.Now().UTC().Format("20060102T150405Z")))
 	r.log = &rotatingLog{path: path, max: logRotateSize}
+	r.denials = &denialLog{path: strings.TrimSuffix(path, ".jsonl") + "-egress.txt"}
 	if r.log.file, err = os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600); err != nil {
 		err = fmt.Errorf("creating log: %w", err)
 	}
 	return
+}
+
+// closeLogs closes the logs of the session and, when the Egress proxy denied
+// anything, says how many times and where the denials are.
+func (r run) closeLogs() {
+	_ = r.log.Close()
+	if denied, _ := r.denials.Close(); denied > 0 {
+		r.say("egress: %d denied, see %s", denied, r.denials.path)
+	}
 }
 
 // say prints a line of afk itself, prefixed "= " like ralph.sh.
@@ -441,5 +453,43 @@ func (l *limitWriter) Write(p []byte) (n int, err error) {
 	}
 	n, err = l.w.Write(p)
 	l.left -= int64(n)
+	return
+}
+
+// denialLog is the file of the Egress proxy's denials, one line per Write.
+// The file is created by the first denial: a Run without any leaves none.
+type denialLog struct {
+	path string
+
+	mu    sync.Mutex
+	out   *rotatingLog // bounded like the log: the guest decides how many it causes
+	count int
+}
+
+func (l *denialLog) Write(p []byte) (n int, err error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.out == nil {
+		var file *os.File
+		if file, err = os.OpenFile(l.path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600); err != nil {
+			err = fmt.Errorf("creating egress denials file: %w", err)
+			return
+		}
+		l.out = &rotatingLog{path: l.path, max: logRotateSize, file: file}
+	}
+	if n, err = l.out.Write(p); err == nil {
+		l.count++
+	}
+	return
+}
+
+// Close closes the file and returns the number of denials written.
+func (l *denialLog) Close() (denied int, err error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	denied = l.count
+	if l.out != nil {
+		err = l.out.Close()
+	}
 	return
 }

@@ -8,6 +8,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"time"
 
@@ -144,7 +145,8 @@ func dialSSH(ctx context.Context, addr string, config *ssh.ClientConfig) (client
 // ServeEgress serves an Egress proxy with policy on ProxyAddr inside the guest,
 // through a reverse tunnel on client; no port is opened on the host. stop
 // shuts the proxy down and waits for it; so do cancelling ctx and closing client.
-func ServeEgress(ctx context.Context, client *ssh.Client, policy egress.Policy) (stop func(), err error) {
+// denials gets a line per denied target (nil discards them).
+func ServeEgress(ctx context.Context, client *ssh.Client, policy egress.Policy, denials io.Writer) (stop func(), err error) {
 	ln, err := client.Listen("tcp", ProxyAddr)
 	if err != nil {
 		err = fmt.Errorf("opening proxy tunnel on guest %s: %w", ProxyAddr, err)
@@ -154,7 +156,9 @@ func ServeEgress(ctx context.Context, client *ssh.Client, policy egress.Policy) 
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_ = egress.New(policy).Serve(proxyCtx, ln)
+		proxy := egress.New(policy)
+		proxy.Denials = denials
+		_ = proxy.Serve(proxyCtx, ln)
 	}()
 	stop = func() {
 		cancel()

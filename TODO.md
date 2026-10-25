@@ -9,8 +9,8 @@ Cel: Project opisuje swoje maszyny i Toole (Postgres, Playwright w Sandbox VM); 
 Domknięcie M1:
 
 - [ ] `.afk.toml` dla dfmx na `main`: `[network].allow` dla Go (`proxy.golang.org`, `sum.golang.org`), `[machine.sandbox].build` z toolchainem, `[gate].cmd`. Warunek zastąpienia `ralph.sh`.
-- [ ] Odmowy Egress proxy (host, port, powód) do `<log>-egress.txt`, podsumowanie na koniec Run; ścieżka logu wypisywana na starcie Run.
-- [ ] `disk_size = "64G"` w Template Debian (partycja w gościu dziś 10G).
+- [x] Odmowy Egress proxy (host, port, powód) do `<log>-egress.txt`, podsumowanie na koniec Run; ścieżka logu wypisywana na starcie Run.
+- [x] `disk_size = "64G"` w Template Debian (partycja w gościu dziś 10G).
 - [ ] `afk vm shell` dla VM po porażce: Egress proxy z tą samą polityką co Run.
 
 `.afk.toml`:

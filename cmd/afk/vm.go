@@ -133,7 +133,7 @@ func vmShell(ctx context.Context, conn *machine.Conn, cfg config.Config, name st
 		return
 	}
 	defer func() { _ = client.Close() }()
-	stop, err := machine.ServeEgress(ctx, client, policy)
+	stop, err := machine.ServeEgress(ctx, client, policy, nil)
 	if err != nil {
 		return
 	}

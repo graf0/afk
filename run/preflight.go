@@ -49,7 +49,7 @@ func preflight(ctx context.Context, opts Options, claims Claims) (err error) {
 	if _, err = r.openLog(r.branch); err != nil {
 		return
 	}
-	defer func() { _ = r.log.Close() }()
+	defer r.closeLogs()
 	r.say("preflight: the gate on a clean origin/%s %s", opts.Base.Branch, opts.Base.Commit[:12])
 	var failed string
 	_, err = r.session(ctx, setup, func(ctx context.Context, g guest) (res result, err error) {

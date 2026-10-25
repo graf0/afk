@@ -212,7 +212,7 @@ func (s *specRun) runChild(ctx context.Context, child forge.Ticket) (err error) 
 	if err != nil {
 		return
 	}
-	defer func() { _ = r.log.Close() }()
+	defer r.closeLogs()
 	s.say("start %s, log %s", r.start()[:12], logPath)
 	s.takeLeftover(&r)
 	res, err := s.open(ctx, r, r.workChild)
@@ -337,7 +337,7 @@ func (s *specRun) finish(ctx context.Context) (err error) {
 	if err != nil {
 		return
 	}
-	defer func() { _ = r.log.Close() }()
+	defer r.closeLogs()
 	s.say("start %s, log %s", r.tip[:12], logPath)
 	s.takeLeftover(&r)
 	res, err := s.open(ctx, r, r.workReview)
