@@ -24,8 +24,8 @@ Base image:
 
 - [ ] Konfiguracja z gałęzi bazowej także w `afk image build` i `afk vm up` (ADR-0010).
 - [x] Base image w katalogu per maszyna `/var/lib/afk/base/<project>/<maszyna>/<wersja>/`.
-- [ ] Hash konfiguracji obrazu w katalogu wersji.
-- [ ] Factory buduje obraz przed Run (brak / Expiry / inny hash) pod `flock` per Project, log `image-<maszyna>-<wersja>.log`.
+- [x] Hash konfiguracji obrazu w katalogu wersji.
+- [x] Factory buduje obraz przed Run (brak / Expiry / inny hash) pod `flock` per Project, log `image-<maszyna>-<wersja>.log`.
 - [ ] Sprzątanie po udanej budowie: wersje nie najnowsze, niebędące backing file overlayu w `runs/` ani `chats/`.
 
 Forge:

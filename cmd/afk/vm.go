@@ -70,6 +70,9 @@ func vmUp(ctx context.Context, conn *machine.Conn, cfg config.Config, stdout io.
 		return
 	}
 	disk, err := image.LatestDisk(paths, project, config.SandboxMachine)
+	if errors.Is(err, image.ErrNoImage) {
+		err = fmt.Errorf("%w: run `afk image build` (or `afk factory`, which builds it)", err)
+	}
 	if err != nil {
 		return
 	}

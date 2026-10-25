@@ -6,14 +6,12 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"maps"
 	"net"
 	"net/http"
 	"os"
 	"os/user"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -24,6 +22,7 @@ import (
 
 const (
 	varFile    = "vars.json"
+	hashFile   = "config-hash" // in the version directory: ConfigHash of the build
 	imageGroup = "kvm"
 )
 
@@ -38,6 +37,9 @@ type Options struct {
 	// ProjectSettings is the Project's .claude/settings.json (nil: none);
 	// its plugins are installed into the image.
 	ProjectSettings []byte
+
+	// Version names the new version directory (empty: by the current time).
+	Version string
 
 	// Abort, once closed, kills Packer and everything it started right away
 	// instead of waiting for it to stop QEMU after ctx is cancelled (nil: never).
@@ -71,10 +73,9 @@ func Build(ctx context.Context, opts Options) (imageDir string, err error) {
 	if opts.Out == nil {
 		opts.Out = io.Discard
 	}
-	machineCfg := cfg.Machine.Sandbox
-	tmpl, ok := templates[machineCfg.Template]
-	if !ok {
-		err = fmt.Errorf("unsupported machine.%s.template %q: only %q are implemented", config.SandboxMachine, machineCfg.Template, slices.Sorted(maps.Keys(templates)))
+	// The same steps go to Packer and into the hash (ConfigHash).
+	tmpl, provision, final, err := guestScript(cfg, opts.ProjectSettings)
+	if err != nil {
 		return
 	}
 	project, err := ProjectName(cfg.Forge.Repo)
@@ -137,11 +138,6 @@ func Build(ctx context.Context, opts Options) (imageDir string, err error) {
 		return
 	}
 	outputDir := filepath.Join(buildDir, "out")
-	pluginSteps, err := pluginInstallSteps(cfg.Agent, opts.ProjectSettings)
-	if err != nil {
-		return
-	}
-	provision, final := provisionSteps(pluginSteps, machineCfg.Build, cfg.Tool)
 	vars := packerVars{
 		BaseImage:      tmpl.ImageURL,
 		BaseChecksum:   tmpl.ChecksumURL,
@@ -175,7 +171,15 @@ func Build(ctx context.Context, opts Options) (imageDir string, err error) {
 		return
 	}
 
-	imageDir = filepath.Join(machineDir, newVersion(time.Now()))
+	hash := configHash(tmpl, provision, final)
+	if err = os.WriteFile(filepath.Join(outputDir, hashFile), []byte(hash+"\n"), 0o600); err != nil {
+		err = fmt.Errorf("writing %s: %w", hashFile, err)
+		return
+	}
+	if opts.Version == "" {
+		opts.Version = newVersion(time.Now())
+	}
+	imageDir = filepath.Join(machineDir, opts.Version)
 	if err = installArtifact(outputDir, imageDir, gid); err != nil {
 		imageDir = ""
 		return

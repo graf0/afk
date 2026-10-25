@@ -1,6 +1,7 @@
 package image
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -65,8 +66,8 @@ func TestLatestWithoutImages(t *testing.T) {
 	}
 	for _, project := range []string{"missing", "building"} {
 		_, err := Latest(paths, project, "sandbox")
-		if err == nil || !strings.Contains(err.Error(), "afk image build") {
-			t.Errorf("%s: err = %v, want a hint to build", project, err)
+		if !errors.Is(err, ErrNoImage) || strings.Contains(err.Error(), "afk image build") {
+			t.Errorf("%s: err = %v, want ErrNoImage without a hint to build", project, err)
 		}
 	}
 }

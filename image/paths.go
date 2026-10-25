@@ -25,6 +25,9 @@ const (
 	sharedDirMode = os.ModeSetgid | 0o775
 )
 
+// ErrNoImage means the machine has no Base image yet.
+var ErrNoImage = errors.New("no Base image")
+
 var versionPattern = regexp.MustCompile(`^\d{8}T\d{6}Z$`)
 
 // Paths are the directories afk uses for building images.
@@ -66,7 +69,7 @@ func Latest(paths Paths, project, machine string) (dir string, err error) {
 		}
 	}
 	if len(versions) == 0 {
-		err = fmt.Errorf("no Base image of machine %q for project %q in %s: run `afk image build`", machine, project, machineDir)
+		err = fmt.Errorf("%w of machine %q for project %q in %s", ErrNoImage, machine, project, machineDir)
 		return
 	}
 	dir = filepath.Join(machineDir, slices.Max(versions))

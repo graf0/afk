@@ -119,6 +119,10 @@ exit 0 # must not skip the mandatory final steps
 	if latest, err := Latest(paths, integrationProject, config.SandboxMachine); err != nil || latest != got || filepath.Dir(got) != machineDir {
 		t.Errorf("Latest = %q, %v; want the built version %q in %s", latest, err, got, machineDir)
 	}
+	wantHash, _ := ConfigHash(integrationConfig([]string{probe}), nil)
+	if data, err := os.ReadFile(filepath.Join(got, hashFile)); err != nil || strings.TrimSpace(string(data)) != wantHash {
+		t.Errorf("%s = %q, %v; want %q", hashFile, data, err, wantHash)
+	}
 	disk := filepath.Join(got, templates["debian13"].DiskName)
 	if info, err := os.Stat(disk); err != nil || info.Size() == 0 {
 		t.Errorf("image missing or empty: %v", err)

@@ -25,6 +25,8 @@ type factoryEnv struct {
 	events    []string
 	leftovers []Leftover
 	fail      map[int]error
+	reads     int   // ReadBase calls
+	imageErr  error // what EnsureImage fails with
 	unclaimed []int // claims a resumed Run did not hold
 }
 
@@ -37,7 +39,15 @@ func newFactoryEnv(t *testing.T, issues map[int]*fakeIssue, selector ...int) (en
 		Selector: selector,
 		Claims:   Claims{Dir: t.TempDir()},
 		Out:      env.out,
-		Preflight: func(ctx context.Context) (err error) {
+		EnsureImage: func(ctx context.Context, base Base) (err error) {
+			env.events = append(env.events, "image")
+			return env.imageErr
+		},
+		ReadBase: func(ctx context.Context) (base Base, err error) {
+			env.reads++
+			return
+		},
+		Preflight: func(ctx context.Context, base Base) (err error) {
 			env.events = append(env.events, "preflight")
 			return
 		},
@@ -50,7 +60,7 @@ func newFactoryEnv(t *testing.T, issues map[int]*fakeIssue, selector ...int) (en
 			}
 			return
 		},
-		Execute: func(ctx context.Context, ticket forge.Ticket, resume *Leftover) (err error) {
+		Execute: func(ctx context.Context, base Base, ticket forge.Ticket, resume *Leftover) (err error) {
 			env.events = append(env.events, "execute")
 			env.executed = append(env.executed, ticket.Number)
 			if resume != nil {
@@ -115,8 +125,8 @@ func TestFactoryPick(t *testing.T) {
 			t.Errorf("want one %q in:\n%s", want, got)
 		}
 	}
-	if got := env.events; !slices.Equal(got, []string{"preflight", "execute", "execute", "execute"}) {
-		t.Errorf("events %v, want one preflight before the first Run", got)
+	if got := env.events; !slices.Equal(got, []string{"image", "preflight", "execute", "image", "execute", "image", "execute"}) {
+		t.Errorf("events %v, want an image check before every Run and one preflight before the first", got)
 	}
 }
 
@@ -208,6 +218,37 @@ func TestFactoryFailureStops(t *testing.T) {
 	}
 }
 
+func TestFactoryEnsuresImageBeforeEveryRun(t *testing.T) {
+	env := newFactoryEnv(t, map[int]*fakeIssue{
+		1: {title: "One", open: true, labels: ready()},
+		2: {title: "Two", open: true, labels: ready()},
+	})
+	if err := env.factory.Run(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"image", "preflight", "execute", "image", "execute"}
+	if !slices.Equal(env.events, want) {
+		t.Errorf("events = %v, want %v", env.events, want)
+	}
+}
+
+func TestFactoryImageFailureStops(t *testing.T) {
+	env := newFactoryEnv(t, map[int]*fakeIssue{
+		1: {title: "One", open: true, labels: ready()},
+		2: {title: "Two", open: true, labels: ready()},
+	})
+	boom := errors.New("packer failed")
+	env.imageErr = boom
+
+	err := env.factory.Run(t.Context())
+	if !errors.Is(err, boom) {
+		t.Errorf("err = %v, want the build error", err)
+	}
+	if len(env.executed) != 0 || slices.Contains(env.events, "preflight") {
+		t.Errorf("events = %v, executed = %v; want nothing run on a failed build", env.events, env.executed)
+	}
+}
+
 func TestFactoryNeedsInfoGoesOn(t *testing.T) {
 	env := newFactoryEnv(t, map[int]*fakeIssue{
 		1: {title: "Spec", open: true, labels: ready()},
@@ -217,8 +258,8 @@ func TestFactoryNeedsInfoGoesOn(t *testing.T) {
 	env.fail[1] = fmt.Errorf("spec #1: child #2: %w", ErrNeedsInfo)
 	// A Spec stopped by needs_info loses its label on the Forge.
 	execute := env.factory.Execute
-	env.factory.Execute = func(ctx context.Context, ticket forge.Ticket, resume *Leftover) (err error) {
-		err = execute(ctx, ticket, resume)
+	env.factory.Execute = func(ctx context.Context, base Base, ticket forge.Ticket, resume *Leftover) (err error) {
+		err = execute(ctx, base, ticket, resume)
 		env.fake.issues[ticket.Number].labels = nil
 		return
 	}
@@ -233,7 +274,7 @@ func TestFactoryNeedsInfoGoesOn(t *testing.T) {
 func TestFactoryInterrupted(t *testing.T) {
 	env := newFactoryEnv(t, map[int]*fakeIssue{1: {title: "One", open: true, labels: ready()}, 2: {title: "Two", open: true, labels: ready()}})
 	ctx, cancel := context.WithCancel(t.Context())
-	env.factory.Execute = func(ctx context.Context, ticket forge.Ticket, resume *Leftover) (err error) {
+	env.factory.Execute = func(ctx context.Context, base Base, ticket forge.Ticket, resume *Leftover) (err error) {
 		cancel()
 		return ctx.Err()
 	}
@@ -273,6 +314,27 @@ func TestFactoryResume(t *testing.T) {
 	}
 	if !strings.Contains(env.out.String(), "VM vm-7 stays") {
 		t.Errorf("output does not say that vm-7 stays:\n%s", env.out)
+	}
+}
+
+// A resumed Run continues in its VM: the image is needed only for a new VM,
+// here the preflight (the first Run of the Factory), and the fresh Run.
+func TestFactoryResumeEnsuresImageOnlyForNewVMs(t *testing.T) {
+	env := newFactoryEnv(t, map[int]*fakeIssue{
+		5: {title: "Resumed one", open: true, labels: ready()},
+		6: {title: "Resumed two", open: true, labels: ready()},
+		7: {title: "Fresh", open: true, labels: ready()},
+	})
+	env.leftovers = []Leftover{{"vm-5", 5}, {"vm-6", 6}}
+	if err := env.factory.Run(t.Context()); err != nil {
+		t.Fatalf("%v\n%s", err, env.out)
+	}
+	want := []string{"image", "preflight", "execute", "execute", "image", "execute"}
+	if !slices.Equal(env.events, want) {
+		t.Errorf("events = %v, want %v", env.events, want)
+	}
+	if env.reads != 3 {
+		t.Errorf("ReadBase calls = %d, want one per Run (3)", env.reads)
 	}
 }
 

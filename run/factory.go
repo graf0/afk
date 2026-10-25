@@ -27,8 +27,15 @@ type Factory struct {
 	Claims   Claims
 	Out      io.Writer
 
+	// ReadBase reads the base branch, once per Run: the same Base goes to
+	// EnsureImage, Preflight and Execute, so they agree on the configuration.
+	ReadBase func(ctx context.Context) (base Base, err error)
+	// EnsureImage makes sure the Base image is there and current, building
+	// it when not, whenever a new VM is to start from it. Its failure stops
+	// the Factory.
+	EnsureImage func(ctx context.Context, base Base) (err error)
 	// Preflight checks that a Run can succeed, once, before the first one.
-	Preflight func(ctx context.Context) (err error)
+	Preflight func(ctx context.Context, base Base) (err error)
 	// Leftovers lists the Runs earlier Factories left in VMs.
 	Leftovers func() (leftovers []Leftover, err error)
 	// Cleanup destroys the VM of a leftover Run and, unless vmOnly, what it
@@ -36,7 +43,7 @@ type Factory struct {
 	Cleanup func(ctx context.Context, l Leftover, vmOnly bool) (err error)
 	// Execute runs the ticket: a Spec when it has sub-issues. With resume it
 	// continues in that VM.
-	Execute func(ctx context.Context, ticket forge.Ticket, resume *Leftover) (err error)
+	Execute func(ctx context.Context, base Base, ticket forge.Ticket, resume *Leftover) (err error)
 
 	handled     map[int]bool // run in this Factory: the list by label lags
 	warned      map[int]bool
@@ -55,10 +62,8 @@ func NewFactory(ctx context.Context, base Base, gitForge forge.Forge, paths imag
 	if err != nil {
 		return
 	}
-	options := func(ctx context.Context, ticket forge.Ticket) (opts Options, err error) {
-		opts = Options{Ticket: ticket, ClaudeToken: claudeToken, Paths: paths, Out: out, Forge: gitForge}
-		opts.Base, err = ReadBase(ctx, base.Repo)
-		return
+	options := func(base Base, ticket forge.Ticket) (opts Options) {
+		return Options{Ticket: ticket, Base: base, ClaudeToken: claudeToken, Paths: paths, Out: out, Forge: gitForge}
 	}
 	claims := Claims{Dir: filepath.Join(paths.StateDir, "claims", project)}
 	f = &Factory{
@@ -67,23 +72,21 @@ func NewFactory(ctx context.Context, base Base, gitForge forge.Forge, paths imag
 		Selector: selector,
 		Claims:   claims,
 		Out:      out,
-		Preflight: func(ctx context.Context) (err error) {
-			opts, err := options(ctx, forge.Ticket{})
-			if err != nil {
-				return
-			}
-			err = preflight(ctx, opts, claims)
+		ReadBase: func(ctx context.Context) (current Base, err error) { return ReadBase(ctx, base.Repo) },
+		EnsureImage: func(ctx context.Context, current Base) (err error) {
+			err = ensureSandboxImage(ctx, current, paths, out, image.Build)
+			return
+		},
+		Preflight: func(ctx context.Context, current Base) (err error) {
+			err = preflight(ctx, options(current, forge.Ticket{}), claims)
 			return
 		},
 		Leftovers: func() (leftovers []Leftover, err error) { return ListLeftovers(project) },
 		Cleanup: func(ctx context.Context, l Leftover, vmOnly bool) (err error) {
 			return cleanLeftover(ctx, gitForge, q, l, vmOnly, out)
 		},
-		Execute: func(ctx context.Context, ticket forge.Ticket, resume *Leftover) (err error) {
-			opts, err := options(ctx, ticket)
-			if err != nil {
-				return
-			}
+		Execute: func(ctx context.Context, current Base, ticket forge.Ticket, resume *Leftover) (err error) {
+			opts := options(current, ticket)
 			opts.Resume = resume
 			if ticket.SubIssues > 0 {
 				err = ExecuteSpec(ctx, opts)
@@ -298,7 +301,8 @@ func (f *Factory) ready(ticket forge.Ticket) (ok bool) {
 // --- take ---
 
 // take runs ticket under the claim of it (and of the children of a Spec),
-// after the preflight, which runs once. held are claims the caller has
+// after the Base image is ensured (whenever a new VM starts from it) and
+// the preflight, which runs once. held are claims the caller has
 // taken already, release gives them back: take owns them from here. taken
 // is false when another Factory holds a claim or finished the ticket meanwhile.
 func (f *Factory) take(ctx context.Context, ticket forge.Ticket, resume *Leftover, held []string, release func()) (taken bool, err error) {
@@ -339,9 +343,21 @@ func (f *Factory) take(ctx context.Context, ticket forge.Ticket, resume *Leftove
 	if ticket, err = f.Forge.ReadyTicket(ctx, ticket.Number, f.Label); err != nil {
 		return
 	}
+	base, err := f.ReadBase(ctx)
+	if err != nil {
+		return
+	}
+	// A resumed Run continues in its VM, which has its own backing file; only
+	// a new VM (a fresh Run, or the preflight) needs a current image.
+	if resume == nil || !f.preflighted {
+		if err = f.EnsureImage(ctx, base); err != nil {
+			err = fmt.Errorf("ensuring the Base image: %w", err)
+			return
+		}
+	}
 	if !f.preflighted {
 		f.say("preflight")
-		if err = f.Preflight(ctx); err != nil {
+		if err = f.Preflight(ctx, base); err != nil {
 			return
 		}
 		f.preflighted = true
@@ -349,7 +365,7 @@ func (f *Factory) take(ctx context.Context, ticket forge.Ticket, resume *Leftove
 	taken = true
 	f.handled[ticket.Number] = true
 	f.say("#%d %s", ticket.Number, ticket.Title)
-	err = f.Execute(ctx, ticket, resume)
+	err = f.Execute(ctx, base, ticket, resume)
 	switch {
 	case err == nil:
 	case ctx.Err() != nil:

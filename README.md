@@ -108,7 +108,7 @@ Maszyna i jej Base image. `sandbox` to Sandbox VM, w której pracuje Agent; bez 
 | `memory` | int | `2048` | RAM w MiB |
 | `cpus` | int | `2` | vCPU |
 
-Obraz jest budowany od nowa przed Run, gdy go brak, minęło `max_age` albo zmieniła się jego konfiguracja (`template`, `build` maszyny i jej Tooli, pluginy). `memory`, `cpus`, `env`, `prompt` i `setup` nie wymagają przebudowy.
+Obraz jest budowany od nowa przed Run, gdy go brak, minęło `max_age` albo zmieniła się jego konfiguracja (`template`, `build` maszyny i jej Tooli, pluginy). `memory`, `cpus`, `max_age`, `env`, `prompt` i `setup` nie wymagają przebudowy (`max_age` działa przez wiek obrazu). `afk image build` zapisuje ten sam hash, więc ręczna budowa też jest aktualna; `afk vm up` niczego nie buduje.
 
 ### `[tool.<nazwa>]`
 
