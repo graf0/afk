@@ -25,14 +25,20 @@ memory = 4096
 build = [
   "sudo apt-get install -y postgresql",
   "sudo -u postgres createuser -s agent",
+  "sudo -u postgres createdb -O agent app",
 ]
 setup = ["task db:migrate", "task db:seed"]
 env = { DATABASE_URL = "postgres:///app" }
 prompt = "PostgreSQL na localhost (unix socket, rola agent, bez hasła), baza app. Świeże dane: task db:seed."
 
 [tool.playwright]
-build = ["npx -y playwright install --with-deps chromium"]
-prompt = "Zrzut ekranu: npx playwright screenshot <url> shot.png"
+build = [
+  "sudo apt-get install -y nodejs npm",
+  "sudo npm install -g playwright",
+  "sudo PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright playwright install --with-deps chromium",
+]
+env = { PLAYWRIGHT_BROWSERS_PATH = "/opt/ms-playwright" }
+prompt = "Zrzut ekranu: playwright screenshot <url> shot.png (globalne CLI, przeglądarka w /opt/ms-playwright)."
 ```
 
 ### `[forge]`
@@ -116,4 +122,4 @@ Tool to narzędzie, którego Agent może użyć (ADR-0011).
 | `env` | table | `{}` | Zmienne dla `setup`, sesji Agenta i bramki; ta sama nazwa w dwóch Toolach to błąd |
 | `prompt` | string | `""` | Co Agent dostaje w sekcji „Narzędzia” promptu |
 
-Usługi Toola w Sandbox VM działają od startu VM, każdy Run ma własną instancję. Dane dostępowe to nie sekrety — w `build` i `prompt` wpisuj je wprost; prawdziwych sekretów nie umieszczaj w `.afk.toml`.
+Usługi Toola w Sandbox VM działają od startu VM, każdy Run ma własną instancję. `afk` nie dodaje własnego menedżera usług: usługę uruchamia to, co zainstaluje `build` (pakiet apt z jednostką systemd startuje przy bootowaniu; w innym przypadku dodaj `sudo systemctl enable <usługa>` do `build`). Każdy Tool trafia do sekcji „Narzędzia” (bez `prompt` — samą nazwą); bez Tooli sekcji nie ma. `build` wykonuje użytkownik `agent` w bashu z `-e`, więc polecenia wymagające roota potrzebują `sudo`. Dane dostępowe to nie sekrety — w `build` i `prompt` wpisuj je wprost; prawdziwych sekretów nie umieszczaj w `.afk.toml`.

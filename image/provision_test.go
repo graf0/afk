@@ -11,7 +11,7 @@ import (
 )
 
 func TestProvisionStepsOrder(t *testing.T) {
-	provision, final := provisionSteps([]string{"claude plugin install p"}, []string{"project-step-1", "project-step-2"})
+	provision, final := provisionSteps([]string{"claude plugin install p"}, []string{"project-step-1", "project-step-2"}, nil)
 
 	index := func(needle string) (position int) {
 		for i, step := range provision {
@@ -42,7 +42,7 @@ func TestProvisionStepsOrder(t *testing.T) {
 }
 
 func TestProvisionStepsAlwaysInstallAfkRequirements(t *testing.T) {
-	provision, final := provisionSteps(nil, nil)
+	provision, final := provisionSteps(nil, nil, nil)
 	for _, want := range []string{"openssh-server", "git", "claude.ai/install.sh"} {
 		if !strings.Contains(strings.Join(provision, "\n"), want) {
 			t.Errorf("provision lacks %q", want)
@@ -58,7 +58,7 @@ func TestProvisionStepsAlwaysInstallAfkRequirements(t *testing.T) {
 // The final steps must run in their own, last provisioner, so a project's
 // `exit 0` or `exec` cannot skip them.
 func TestFinalStepsAreTheLastProvisionerAndNotInProvision(t *testing.T) {
-	provision, final := provisionSteps(nil, []string{"exit 0"})
+	provision, final := provisionSteps(nil, []string{"exit 0"}, nil)
 
 	if !slices.Equal(final, finalSteps) {
 		t.Errorf("final = %q", final)
@@ -129,7 +129,7 @@ func TestTemplatesMatchConfig(t *testing.T) {
 }
 
 func TestMachineBuildRunsBeforeFinalSteps(t *testing.T) {
-	provision, final := provisionSteps([]string{"plugin"}, []string{"machine-build-1", "machine-build-2"})
+	provision, final := provisionSteps([]string{"plugin"}, []string{"machine-build-1", "machine-build-2"}, nil)
 	if n := len(provision); provision[n-2] != "machine-build-1" || provision[n-1] != "machine-build-2" {
 		t.Errorf("machine build must end the first provisioner: %q", provision)
 	}
@@ -140,5 +140,21 @@ func TestMachineBuildRunsBeforeFinalSteps(t *testing.T) {
 	}
 	if len(final) == 0 || !strings.Contains(final[len(final)-1], "machine-id") {
 		t.Errorf("final steps = %q, want afk's steps after the machine build", final)
+	}
+}
+
+func TestToolBuildRunsAfterMachineBuildAlphabeticallyBeforeFinalSteps(t *testing.T) {
+	tools := map[string]config.Tool{
+		"postgres":   {Build: []string{"pg-1", "pg-2"}},
+		"playwright": {Build: []string{"pw-1"}},
+		"empty":      {},
+	}
+	provision, final := provisionSteps([]string{"plugin"}, []string{"machine-1", "machine-2"}, tools)
+	want := []string{"machine-1", "machine-2", "pw-1", "pg-1", "pg-2"}
+	if n := len(provision); !slices.Equal(provision[n-len(want):], want) {
+		t.Errorf("provision tail = %q, want %q", provision[len(provision)-len(want):], want)
+	}
+	if !slices.Equal(final, finalSteps) {
+		t.Errorf("final = %q, want %q", final, finalSteps)
 	}
 }

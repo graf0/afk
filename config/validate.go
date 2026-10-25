@@ -18,7 +18,6 @@ import (
 
 var (
 	forgeKinds = []string{"github", "gitea"}
-	toolKinds  = []string{"package", "host-port", "vm"}
 
 	// ImageTemplates are the [machine.<name>].template values the image package can
 	// build; image's tests assert that it knows exactly these.
@@ -263,8 +262,8 @@ func (c Config) validateProtect(v *validator) {
 
 func (c Config) validateTools(v *validator) {
 	for _, name := range slices.Sorted(maps.Keys(c.Tool)) {
-		if kind := c.Tool[name].Kind; !slices.Contains(toolKinds, kind) {
-			v.reportChoice("tool."+name+".kind", toolKinds, kind)
+		if on := c.Tool[name].On; on != SandboxMachine {
+			v.report("tool."+name+".on", "want %q (Tool VM is not supported yet), got %q", SandboxMachine, on)
 		}
 	}
 }

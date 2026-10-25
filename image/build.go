@@ -141,7 +141,7 @@ func Build(ctx context.Context, opts Options) (imageDir string, err error) {
 	if err != nil {
 		return
 	}
-	provision, final := provisionSteps(pluginSteps, machineCfg.Build)
+	provision, final := provisionSteps(pluginSteps, machineCfg.Build, cfg.Tool)
 	vars := packerVars{
 		BaseImage:      tmpl.ImageURL,
 		BaseChecksum:   tmpl.ChecksumURL,

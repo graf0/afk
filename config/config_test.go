@@ -91,9 +91,10 @@ max_fixes = 5
 [network]
 allow = ["proxy.golang.org"]
 [tool.postgres]
-kind = "package"
+build = ["apt-get install postgresql"]
+prompt = "Postgres"
 [tool.redis]
-kind = "host-port"
+on = "sandbox"
 `))
 	if err != nil {
 		t.Fatal(err)
@@ -104,7 +105,7 @@ kind = "host-port"
 	if cfg.Gate.MaxFixes != 5 || cfg.Gate.Cmd != "make" {
 		t.Errorf("gate = %+v", cfg.Gate)
 	}
-	if cfg.Tool["postgres"].Kind != "package" || cfg.Tool["redis"].Kind != "host-port" {
+	if cfg.Tool["postgres"].On != "sandbox" || cfg.Tool["postgres"].Prompt != "Postgres" || !slices.Equal(cfg.Tool["postgres"].Build, []string{"apt-get install postgresql"}) || cfg.Tool["redis"].On != "sandbox" {
 		t.Errorf("tool = %+v", cfg.Tool)
 	}
 	if !slices.Equal(cfg.Agent.Plugins, []string{"p@x"}) || !slices.Equal(cfg.Agent.Marketplaces, []string{"o/r"}) {
@@ -141,7 +142,7 @@ func TestParseErrors(t *testing.T) {
 		toml string
 		want []string // every line of the error, in order
 	}{
-		{"unknown key", minimalConfig + "[tool.pg]\nkind = \"vm\"\nfoo = 1\n", []string{`8:1: unknown key "tool.pg.foo"`}},
+		{"unknown key", minimalConfig + "[tool.pg]\nfoo = 1\n", []string{`7:1: unknown key "tool.pg.foo"`}},
 		{"unknown section", minimalConfig + "[netwrok]\nallow = []\n", []string{`6:2: unknown key "netwrok"`}},
 		{"invalid toml", "[forge", []string{"1:"}},
 		{"wrong type", "[forge]\nkind = 1\n", []string{"2:8: forge.kind: "}},
@@ -180,8 +181,8 @@ func TestParseErrors(t *testing.T) {
 		{"protect empty", minimalConfig + "[protect]\npaths = [\"\"]\n", []string{"7:10: protect.paths[0]: must not be empty"}},
 		{"protect dotdot", minimalConfig + "[protect]\npaths = [\"a/../b\"]\n", []string{`7:10: protect.paths[0]: must not contain "..", got "a/../b"`}},
 		{"protect absolute", minimalConfig + "[protect]\npaths = [\"/etc\"]\n", []string{`7:10: protect.paths[0]: must be relative, got "/etc"`}},
-		{"bad tool kind", minimalConfig + "[tool.pg]\nkind = \"docker\"\n", []string{`7:1: tool.pg.kind: want one of [package host-port vm], got "docker"`}},
-		{"missing tool kind", minimalConfig + "[tool.pg]\n", []string{"tool.pg.kind: required"}},
+		{"tool kind is gone", minimalConfig + "[tool.pg]\nkind = \"package\"\n", []string{`7:1: unknown key "tool.pg.kind"`}},
+		{"tool on other machine", minimalConfig + "[tool.pg]\non = \"db\"\n", []string{`7:1: tool.pg.on: want "sandbox"`}},
 		{"inline table position", "forge = { kind = \"gitlab\", repo = \"a/b\" }\n[gate]\ncmd = \"x\"\n", []string{`1:11: forge.kind: want one of`}},
 		{"all errors at once", "[forge]\nkind = \"github\"\nrepo = \"x\"\nbogus = 1\n[labels]\nwontfix = \"\"\n", []string{`4:1: unknown key "forge.bogus"`, `3:1: forge.repo`, "6:1: labels.wontfix", "gate.cmd: required"}},
 	}
@@ -263,7 +264,7 @@ func TestLoad(t *testing.T) {
 }
 
 func TestMarshalRoundTrip(t *testing.T) {
-	cfg, err := Parse([]byte(minimalConfig + "[tool.pg]\nkind = \"vm\"\n"))
+	cfg, err := Parse([]byte(minimalConfig + "[tool.pg]\nprompt = \"p\"\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -275,7 +276,7 @@ func TestMarshalRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reparsing %q: %v", out, err)
 	}
-	if !slices.Equal(again.Protect.Paths, cfg.Protect.Paths) || again.Tool["pg"] != cfg.Tool["pg"] || again.Gate != cfg.Gate {
+	if !slices.Equal(again.Protect.Paths, cfg.Protect.Paths) || again.Tool["pg"].On != cfg.Tool["pg"].On || again.Tool["pg"].Prompt != "p" || again.Gate != cfg.Gate {
 		t.Errorf("round trip mismatch:\n%s", out)
 	}
 }

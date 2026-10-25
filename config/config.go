@@ -113,9 +113,11 @@ type Protect struct {
 	Paths []string `toml:"paths"`
 }
 
-// Tool is a dependency available to a Run.
+// Tool is a tool the Agent can use (ADR-0011).
 type Tool struct {
-	Kind string `toml:"kind"` // package | host-port | vm
+	On     string   `toml:"on"`     // machine the Tool runs on; only SandboxMachine for now
+	Build  []string `toml:"build"`  // shell commands in the machine's Base image, after the machine's build
+	Prompt string   `toml:"prompt"` // what the Agent is told about the Tool
 }
 
 // --- loading ---
@@ -165,6 +167,7 @@ func parse(prefix string, data []byte) (cfg Config, err error) {
 		// Unknown keys do not stop the decoding: the rest is validated too.
 		v.reportUnknownKeys(strictErr)
 	}
+	toolDefaults(&cfg)
 	cfg.validate(&v)
 	if err = v.err(prefix); err != nil {
 		return
@@ -201,6 +204,16 @@ func defaults() (cfg Config) {
 		}},
 	}
 	return
+}
+
+// toolDefaults sets the machine of Tools that name none.
+func toolDefaults(cfg *Config) {
+	for name, tool := range cfg.Tool {
+		if tool.On == "" {
+			tool.On = SandboxMachine
+			cfg.Tool[name] = tool
+		}
+	}
 }
 
 // FindRoot walks up from dir to the first directory containing .git

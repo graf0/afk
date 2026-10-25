@@ -4,7 +4,11 @@ import (
 	"bytes"
 	_ "embed"
 	"fmt"
+	"maps"
+	"slices"
 	"text/template"
+
+	"github.com/graf0/afk/config"
 )
 
 // guestProxy is where the build tunnel appears inside the guest.
@@ -66,13 +70,19 @@ type imageTemplate struct {
 func (t imageTemplate) hclFile() (name string) { return t.Name + ".pkr.hcl" }
 
 // provisionSteps splits the guest script in two provisioners: afk's steps,
-// the Project's Claude Code plugins (pluginSteps), then the machine's own
-// ([machine.<name>].build), and the mandatory final steps.
-func provisionSteps(pluginSteps, machineBuild []string) (provision, final []string) {
+// the Project's Claude Code plugins (pluginSteps), the machine's own
+// ([machine.<name>].build), the build of its Tools (alphabetically by name),
+// and the mandatory final steps. A Tool's services are started by whatever
+// its build installs (systemd units of apt packages start at boot); afk adds
+// no service manager.
+func provisionSteps(pluginSteps, machineBuild []string, tools map[string]config.Tool) (provision, final []string) {
 	provision = make([]string, 0, len(initialSteps)+len(pluginSteps)+len(machineBuild))
 	provision = append(provision, initialSteps...)
 	provision = append(provision, pluginSteps...)
 	provision = append(provision, machineBuild...)
+	for _, name := range slices.Sorted(maps.Keys(tools)) {
+		provision = append(provision, tools[name].Build...)
+	}
 	final = append([]string(nil), finalSteps...)
 	return
 }

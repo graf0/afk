@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
+	"slices"
 	"strings"
 
 	"golang.org/x/crypto/ssh"
@@ -350,9 +352,13 @@ func (r run) start() (commit string) { return cmp.Or(r.tip, r.Base.Commit) }
 
 func (r run) task() (task agent.Task) {
 	var names []string
+	var tools []agent.Tool
 	for _, id := range r.Base.Plugins {
 		name, _, _ := strings.Cut(id, "@")
 		names = append(names, name)
+	}
+	for _, name := range slices.Sorted(maps.Keys(r.Base.Config.Tool)) {
+		tools = append(tools, agent.Tool{Name: name, Prompt: strings.TrimSpace(r.Base.Config.Tool[name].Prompt)})
 	}
 	task = agent.Task{
 		RepoDir:    guestRepo,
@@ -361,6 +367,7 @@ func (r run) task() (task agent.Task) {
 		TicketPath: guestTicket,
 		Protected:  r.Base.Config.Protect.Paths,
 		Plugins:    names,
+		Tools:      tools,
 		Resumed:    r.resumed,
 	}
 	if r.spec != nil {

@@ -319,3 +319,35 @@ func TestWorkResumedNote(t *testing.T) {
 		t.Errorf("prompts %q: want the note in the implementation's only", g.prompts)
 	}
 }
+
+func TestTaskSpec(t *testing.T) {
+	r := run{branch: "ticket-9"}
+	if got := r.task().SpecPath; got != "" {
+		t.Errorf("SpecPath without a Spec = %q", got)
+	}
+	r.spec = &forge.Ticket{Number: 9}
+	if got := r.task().SpecPath; got != guestSpec {
+		t.Errorf("SpecPath = %q, want %q", got, guestSpec)
+	}
+}
+
+func TestTaskPlugins(t *testing.T) {
+	r := run{Options: Options{Base: Base{Plugins: []string{"b@y", "mattpocock-skills@claude-plugins-official"}}}}
+	if got := r.task().Plugins; !slices.Equal(got, []string{"b", "mattpocock-skills"}) {
+		t.Errorf("task plugins = %q", got)
+	}
+}
+
+func TestTaskTools(t *testing.T) {
+	cfg := config.Config{Tool: map[string]config.Tool{
+		"postgres":   {Prompt: "  psql\n"},
+		"playwright": {Prompt: "shot"},
+		"silent":     {Build: []string{"x"}},
+		"blank":      {Prompt: " \n\t"},
+	}}
+	r := run{Options: Options{Base: Base{Config: cfg}}}
+	want := []agent.Tool{{Name: "blank"}, {Name: "playwright", Prompt: "shot"}, {Name: "postgres", Prompt: "psql"}, {Name: "silent"}}
+	if got := r.task().Tools; !slices.Equal(got, want) {
+		t.Errorf("task tools = %v, want %v", got, want)
+	}
+}

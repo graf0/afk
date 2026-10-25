@@ -106,3 +106,39 @@ func TestPromptResumed(t *testing.T) {
 		task.Resumed = false
 	}
 }
+
+func TestToolsSection(t *testing.T) {
+	task := Task{BaseRef: "origin/main", Tools: []Tool{{Name: "playwright", Prompt: "npx playwright screenshot"}, {Name: "postgres", Prompt: "psql app"}}}
+	prompts := map[string]string{
+		"work":   Prompt(task),
+		"fix":    FixPrompt(task, "make", "out"),
+		"review": ReviewPrompt(task),
+	}
+	for name, prompt := range prompts {
+		for _, want := range []string{"Narzędzia", "`playwright`: npx playwright screenshot", "`postgres`: psql app"} {
+			if !strings.Contains(prompt, want) {
+				t.Errorf("%s prompt lacks %q:\n%s", name, want, prompt)
+			}
+		}
+		if strings.Index(prompt, "`playwright`") > strings.Index(prompt, "`postgres`") {
+			t.Errorf("%s prompt: tools out of order", name)
+		}
+	}
+}
+
+func TestToolsSectionNamesOnlyAndIndentsContinuation(t *testing.T) {
+	task := Task{BaseRef: "origin/main", Tools: []Tool{{Name: "bare"}, {Name: "multi", Prompt: "line1\nline2"}}}
+	got := Prompt(task)
+	if want := "- `bare`\n- `multi`: line1\n  line2\n"; !strings.Contains(got, want) {
+		t.Errorf("prompt lacks %q:\n%s", want, got)
+	}
+}
+
+func TestNoToolsSectionWithoutTools(t *testing.T) {
+	task := Task{BaseRef: "origin/main"}
+	for name, prompt := range map[string]string{"work": Prompt(task), "fix": FixPrompt(task, "make", "out"), "review": ReviewPrompt(task)} {
+		if strings.Contains(prompt, "Narzędzia") {
+			t.Errorf("%s prompt has a tools section without Tools:\n%s", name, prompt)
+		}
+	}
+}

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 
@@ -76,24 +75,6 @@ func TestExecuteRefusesSpec(t *testing.T) {
 	err := Execute(t.Context(), Options{Ticket: forge.Ticket{Number: 9, SubIssues: 2}})
 	if err == nil || !strings.Contains(err.Error(), "is a Spec") {
 		t.Errorf("err = %v", err)
-	}
-}
-
-func TestTaskSpec(t *testing.T) {
-	r := run{branch: "ticket-9"}
-	if got := r.task().SpecPath; got != "" {
-		t.Errorf("SpecPath without a Spec = %q", got)
-	}
-	r.spec = &forge.Ticket{Number: 9}
-	if got := r.task().SpecPath; got != guestSpec {
-		t.Errorf("SpecPath = %q, want %q", got, guestSpec)
-	}
-}
-
-func TestTaskPlugins(t *testing.T) {
-	r := run{Options: Options{Base: Base{Plugins: []string{"b@y", "mattpocock-skills@claude-plugins-official"}}}}
-	if got := r.task().Plugins; !slices.Equal(got, []string{"b", "mattpocock-skills"}) {
-		t.Errorf("task plugins = %q", got)
 	}
 }
 
