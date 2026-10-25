@@ -23,6 +23,7 @@ type fakeVMs struct {
 	t       *testing.T
 	scripts []func(g *fakeGuest)
 	guests  []*fakeGuest
+	resumes []*Leftover // per VM: the VM it continues, nil for a fresh one
 }
 
 func (v *fakeVMs) open(ctx context.Context, r run, work workFunc) (res result, err error) {
@@ -35,7 +36,7 @@ func (v *fakeVMs) open(ctx context.Context, r run, work workFunc) (res result, e
 	g := &fakeGuest{t: v.t, dir: dir}
 	v.scripts[0](g)
 	v.scripts = v.scripts[1:]
-	v.guests = append(v.guests, g)
+	v.guests, v.resumes = append(v.guests, g), append(v.resumes, r.Resume)
 	return work(ctx, g)
 }
 
@@ -355,6 +356,58 @@ func TestSpecResume(t *testing.T) {
 	}
 }
 
+// The VM an earlier Factory left for a child takes the Run of that child
+// and nothing else; it holds the base of the earlier Run, not today's.
+func TestSpecLeftover(t *testing.T) {
+	env := newSpecEnv(t)
+	q, err := OpenQuarantine(t.Context(), filepath.Join(t.TempDir(), "quarantine.git"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = q.FetchBase(t.Context(), env.user, env.base, "ticket-9"); err != nil {
+		t.Fatal(err)
+	}
+	sh(t, env.user, "echo m > moved && git add moved && git commit -qm moved")
+	moved := sh(t, env.user, "git rev-parse HEAD")
+
+	vms := &fakeVMs{scripts: []func(g *fakeGuest){child("c1"), child("c2"), child("c3"), review("")}}
+	s := env.specOn(t, vms, q)
+	s.Base.Commit = moved
+	leftover := Leftover{Machine: "afk-run-10-ab12", Ticket: 10}
+	s.leftover = &leftover
+	if err = s.execute(t.Context()); err != nil {
+		t.Fatalf("%v\n%s", err, s.Out)
+	}
+	if len(vms.resumes) != 4 || vms.resumes[0] == nil || *vms.resumes[0] != leftover || slices.ContainsFunc(vms.resumes[1:], func(l *Leftover) bool { return l != nil }) {
+		t.Errorf("resumes %v, want only the VM of #10 continued", vms.resumes)
+	}
+	if !strings.Contains(vms.guests[0].prompts[0], "Wznawiasz przerwaną pracę") || strings.Contains(vms.guests[1].prompts[0], "Wznawiasz") {
+		t.Errorf("the note belongs in the first prompt only:\n%s\n---\n%s", vms.guests[0].prompts[0], vms.guests[1].prompts[0])
+	}
+	if s.Base.Commit != env.base {
+		t.Errorf("base %s, want %s of the earlier Run, not the moved main %s", s.Base.Commit, env.base, moved)
+	}
+	if s.leftover != nil || strings.Contains(s.Out.(*bytes.Buffer).String(), "was not used") {
+		t.Errorf("the leftover was used:\n%s", s.Out)
+	}
+}
+
+func TestSpecLeftoverOfNothing(t *testing.T) {
+	env := newSpecEnv(t)
+	vms := &fakeVMs{scripts: []func(g *fakeGuest){child("c1"), child("c2"), child("c3"), review("")}}
+	s := env.spec(t, vms)
+	if err := s.quarantine.FetchBase(t.Context(), env.user, env.base, "ticket-9"); err != nil {
+		t.Fatal(err)
+	}
+	s.leftover = &Leftover{Machine: "afk-run-99-ab12", Ticket: 99}
+	if err := s.execute(t.Context()); err != nil {
+		t.Fatalf("%v\n%s", err, s.Out)
+	}
+	if !strings.Contains(s.Out.(*bytes.Buffer).String(), "VM afk-run-99-ab12 of #99 was not used") {
+		t.Errorf("output does not say that the VM was not used:\n%s", s.Out)
+	}
+}
+
 // A Forge step fails after the push: the commit is on the branch, the child
 // is open. The next run finishes the child instead of running it again.
 func TestSpecResumeHalfFinishedChild(t *testing.T) {
@@ -481,6 +534,19 @@ func (fake *fakeGitHub) answer(req *http.Request, body map[string]any) (reply an
 		return
 	}
 	switch route {
+	case "GET /repos/o/r/issues":
+		// By label, as GitHub lists them: stale when listed is set, and with pull requests.
+		var items []map[string]any
+		if fake.listed != nil {
+			for _, number := range fake.listed {
+				items = append(items, fake.json(number))
+			}
+		} else {
+			items = list(func(issue *fakeIssue) bool {
+				return issue.open && slices.Contains(issue.labels, req.URL.Query().Get("labels"))
+			})
+		}
+		return append(items, map[string]any{"number": 999, "state": "open", "pull_request": map[string]string{}}), true
 	case "GET /repos/o/r/issues/{n}":
 		return fake.json(n), true
 	case "GET /repos/o/r/issues/{n}/comments":
@@ -541,5 +607,9 @@ func (fake *fakeGitHub) json(n int) (issue map[string]any) {
 			children++
 		}
 	}
-	return map[string]any{"number": n, "title": i.title, "body": i.body, "state": state, "labels": labels, "sub_issues_summary": map[string]int{"total": children}}
+	issue = map[string]any{"number": n, "title": i.title, "body": i.body, "state": state, "labels": labels, "sub_issues_summary": map[string]int{"total": children}}
+	if i.parent != 0 {
+		issue["parent_issue_url"] = fmt.Sprintf("https://api.github.com/repos/o/r/issues/%d", i.parent)
+	}
+	return
 }

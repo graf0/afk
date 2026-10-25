@@ -45,6 +45,8 @@ func fakeGitHub(t *testing.T) (g *GitHub) {
 			issue(w, `{"number":9,"title":"Closed","state":"closed"}`)
 		case "10":
 			issue(w, `{"number":10,"title":"Spec","state":"open","sub_issues_summary":{"total":2}}`)
+		case "14":
+			issue(w, `{"number":14,"title":"Child","state":"open","parent_issue_url":"https://api.github.com/repos/o/r/issues/10"}`)
 		case "20":
 			issue(w, `{"number":20,"title":"Done blocker","state":"closed"}`)
 		case "21":
@@ -53,6 +55,14 @@ func fakeGitHub(t *testing.T) (g *GitHub) {
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = fmt.Fprint(w, `{"message":"Not Found"}`)
 		}
+	})
+	mux.HandleFunc("GET /repos/o/r/issues", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("labels") != "ready-for-agent" || r.URL.Query().Get("state") != "open" {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		// Descending, with a pull request: ListLabeled sorts and filters.
+		issue(w, `[{"number":14,"state":"open"},{"number":8,"state":"open","pull_request":{"url":"x"}},{"number":7,"state":"open"}]`)
 	})
 	mux.HandleFunc("GET /repos/o/r/issues/10/sub_issues", func(w http.ResponseWriter, r *http.Request) {
 		issue(w, `[{"number":13,"state":"closed","labels":[]},{"number":11,"state":"open","labels":[{"name":"ready-for-agent"}]}]`)
@@ -116,6 +126,32 @@ func TestGitHubReadyTicket(t *testing.T) {
 	}
 	if _, err = g.ReadyTicket(t.Context(), 7, "go"); err == nil || !strings.Contains(err.Error(), `"go"`) {
 		t.Errorf("custom label: err = %v", err)
+	}
+}
+
+func TestGitHubPeek(t *testing.T) {
+	g := fakeGitHub(t)
+	ticket, open, err := g.Peek(t.Context(), 14)
+	if err != nil || !open || ticket.Parent != 10 || ticket.Comments != nil {
+		t.Errorf("Peek(14) = %+v, %v, %v; want an open child of #10 without comments", ticket, open, err)
+	}
+	ticket, open, err = g.Peek(t.Context(), 9)
+	if err != nil || open || ticket.Number != 9 {
+		t.Errorf("Peek(9) = %+v, %v, %v; want closed #9", ticket, open, err)
+	}
+	if ticket, _, err = g.Peek(t.Context(), 7); err != nil || ticket.Parent != 0 || !slices.Contains(ticket.Labels, "ready-for-agent") {
+		t.Errorf("Peek(7) = %+v, %v", ticket, err)
+	}
+	if _, _, err = g.Peek(t.Context(), 8); err == nil || !strings.Contains(err.Error(), "pull request") {
+		t.Errorf("Peek(8): err = %v", err)
+	}
+}
+
+func TestGitHubListLabeled(t *testing.T) {
+	g := fakeGitHub(t)
+	numbers, err := g.ListLabeled(t.Context(), "ready-for-agent")
+	if err != nil || !slices.Equal(numbers, []int{7, 14}) {
+		t.Errorf("ListLabeled = %v, %v; want [7 14]", numbers, err)
 	}
 }
 

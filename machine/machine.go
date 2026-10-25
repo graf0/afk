@@ -4,6 +4,7 @@
 package machine
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/digitalocean/go-libvirt"
@@ -249,6 +251,34 @@ func (c *Conn) Get(name string) (m Machine, err error) {
 		return
 	}
 	m = Machine{Name: name, Project: meta.Project, Kind: meta.Kind, ID: meta.ID, Addr: meta.Addr, HostKey: hostKey}
+	return
+}
+
+// List returns the machines of project, running or not, from domain
+// metadata, ordered by name.
+func (c *Conn) List(project string) (machines []Machine, err error) {
+	domains, _, err := c.lv.ConnectListAllDomains(1, 0)
+	if err != nil {
+		err = fmt.Errorf("listing domains: %w", err)
+		return
+	}
+	for _, dom := range domains {
+		if _, _, nameErr := parseName(dom.Name); nameErr != nil { // not afk's
+			continue
+		}
+		var m Machine
+		if m, err = c.Get(dom.Name); isCode(err, libvirt.ErrNoDomain) { // removed meanwhile
+			err = nil
+			continue
+		}
+		if err != nil {
+			return
+		}
+		if m.Project == project {
+			machines = append(machines, m)
+		}
+	}
+	slices.SortFunc(machines, func(a, b Machine) int { return cmp.Compare(a.Name, b.Name) })
 	return
 }
 

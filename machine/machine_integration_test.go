@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -168,6 +169,14 @@ func TestIntegrationIsolation(t *testing.T) {
 	}
 	if got.Addr != m.Addr || got.Project != spec.Project || got.Kind != spec.Kind || got.ID != spec.ID || !keysEqual(got.HostKey, m.HostKey) {
 		t.Errorf("Get = %+v, want %+v", got, m)
+	}
+
+	listed, err := env.conn.List(spec.Project)
+	if err != nil || !slices.ContainsFunc(listed, func(l Machine) bool { return l.Name == name && l.Addr == m.Addr }) {
+		t.Errorf("List(%q) = %+v, %v; want %s", spec.Project, listed, err, name)
+	}
+	if other, err := env.conn.List("no-such-project"); err != nil || len(other) != 0 {
+		t.Errorf("List(other project) = %+v, %v; want none", other, err)
 	}
 
 	t.Run("wrong host key is rejected", func(t *testing.T) {

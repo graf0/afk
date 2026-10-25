@@ -52,6 +52,10 @@ type Options struct {
 	Out         io.Writer
 	Forge       *forge.GitHub // GitURL is where ticket-N is pushed
 	AgentBinary string        // "claude" unless set (tests)
+	// Resume is the VM an earlier Factory left for this Ticket (or, in a
+	// Spec, for one of its children or its review); the Run continues in it
+	// instead of starting a fresh one (docs/workflow.md).
+	Resume *Leftover
 }
 
 // vmSetup is what a Run needs to bring up a Sandbox VM.
@@ -69,6 +73,8 @@ type run struct {
 	branch     string // ticket-N, in the guest and the Quarantine repo
 	quarantine Quarantine
 	log        *rotatingLog
+	id         string // machine id of the VM, random when empty
+	resumed    bool   // the guest holds the Agent's earlier work: the next prompt says so
 
 	// tip is the end of the Spec's branch in the Quarantine repo: the commit
 	// the Run continues from and the one Accept moves the branch from. Empty
@@ -127,7 +133,12 @@ func Execute(ctx context.Context, opts Options) (err error) {
 	if err = r.checkRemote(ctx); err != nil {
 		return
 	}
-	if err = r.quarantine.FetchBase(ctx, opts.Base.Repo, opts.Base.Commit, r.branch); err != nil {
+	if opts.Resume != nil {
+		// The guest cloned the base of the earlier Run, not today's.
+		if r.Base.Commit, err = r.quarantine.Base(ctx, r.branch); err != nil {
+			return
+		}
+	} else if err = r.quarantine.FetchBase(ctx, opts.Base.Repo, opts.Base.Commit, r.branch); err != nil {
 		return
 	}
 	logPath, err := r.openLog(r.branch)
@@ -138,11 +149,21 @@ func Execute(ctx context.Context, opts Options) (err error) {
 	r.say("ticket #%d %s", opts.Ticket.Number, agent.Sanitize(opts.Ticket.Title))
 	r.say("base origin/%s %s, log %s", opts.Base.Branch, opts.Base.Commit, logPath)
 
-	res, err := r.session(ctx, setup, r.work)
+	res, err := r.enter(ctx, setup, r.work)
 	if err != nil {
 		return
 	}
 	err = r.publish(ctx, res)
+	return
+}
+
+// enter is session in the VM of opts.Resume when there is one, else in a fresh VM.
+func (r run) enter(ctx context.Context, setup vmSetup, work workFunc) (res result, err error) {
+	if r.Resume == nil {
+		res, err = r.session(ctx, setup, work)
+		return
+	}
+	res, err = r.resume(ctx, setup, *r.Resume, work)
 	return
 }
 
@@ -154,18 +175,48 @@ func (r run) session(ctx context.Context, setup vmSetup, work workFunc) (res res
 		return
 	}
 	defer func() { _ = conn.Close() }()
-	id := make([]byte, 4)
-	_, _ = rand.Read(id)
+	id := r.id
+	if id == "" {
+		random := make([]byte, 4)
+		_, _ = rand.Read(random)
+		id = fmt.Sprintf("%d-%s", r.Ticket.Number, hex.EncodeToString(random))
+	}
 	m, err := conn.Up(ctx, machine.Spec{
 		Project:  r.project,
 		Kind:     machine.KindRun,
-		ID:       fmt.Sprintf("%d-%s", r.Ticket.Number, hex.EncodeToString(id)),
+		ID:       id,
 		BaseDisk: setup.disk,
 	})
 	if err != nil {
 		return
 	}
 	r.say("VM %s started", m.Name)
+	res, err = r.inVM(ctx, conn, m, setup, true, work)
+	return
+}
+
+// resume continues the Run of leftover in its VM, which holds the clone of
+// the earlier Run with the Agent's work: nothing is prepared, the prompt of
+// the first session says so.
+func (r run) resume(ctx context.Context, setup vmSetup, leftover Leftover, work workFunc) (res result, err error) {
+	conn, err := machine.Connect()
+	if err != nil {
+		return
+	}
+	defer func() { _ = conn.Close() }()
+	m, err := conn.Get(leftover.Machine)
+	if err != nil {
+		return
+	}
+	r.say("resuming in VM %s", m.Name)
+	r.resumed = true
+	res, err = r.inVM(ctx, conn, m, setup, false, work)
+	return
+}
+
+// inVM runs work in the guest of m over ssh, after prepareGuest when
+// prepare is set. The VM is destroyed on success, kept on failure.
+func (r run) inVM(ctx context.Context, conn *machine.Conn, m machine.Machine, setup vmSetup, prepare bool, work workFunc) (res result, err error) {
 	var client *ssh.Client
 	defer func() {
 		if err != nil {
@@ -193,7 +244,13 @@ func (r run) session(ctx context.Context, setup vmSetup, work workFunc) (res res
 	}
 	defer stop()
 
-	if err = r.prepareGuest(ctx, client); err != nil {
+	if prepare {
+		err = r.prepareGuest(ctx, client)
+	} else {
+		// The ticket may have been edited since; the clone stays as it is.
+		err = r.writeTicketFiles(ctx, client)
+	}
+	if err != nil {
 		return
 	}
 	res, err = work(ctx, sshGuest{run: r, client: client})
@@ -243,6 +300,12 @@ func (r run) prepareGuest(ctx context.Context, client *ssh.Client) (err error) {
 		err = fmt.Errorf("cloning the base in the guest: %w", err)
 		return
 	}
+	err = r.writeTicketFiles(ctx, client)
+	return
+}
+
+// writeTicketFiles writes the ticket, and the Spec when there is one, next to the clone.
+func (r run) writeTicketFiles(ctx context.Context, client *ssh.Client) (err error) {
 	if err = remote(ctx, client, "cat > "+guestTicket, strings.NewReader(agent.TicketFile(r.Ticket)), nil); err != nil {
 		err = fmt.Errorf("writing the ticket in the guest: %w", err)
 		return

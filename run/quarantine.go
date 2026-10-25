@@ -85,6 +85,38 @@ func (q Quarantine) FetchBase(ctx context.Context, repo, commit, branch string) 
 	return
 }
 
+// Base returns the base of branch: what FetchBase last copied there, the
+// start of an earlier Run's guest.
+func (q Quarantine) Base(ctx context.Context, branch string) (commit string, err error) {
+	if commit, err = q.git(ctx, "rev-parse", "--verify", "--end-of-options", baseRef(branch)+"^{commit}"); err != nil {
+		err = fmt.Errorf("reading the base of %s in %s (was its Run started here?): %w", branch, q.Dir, err)
+	}
+	return
+}
+
+// Drop deletes every ref of branch in the Quarantine repo: the base, the
+// raw and the validated result. Missing ones are skipped.
+func (q Quarantine) Drop(ctx context.Context, branch string) (err error) {
+	for _, ref := range []string{baseRef(branch), incomingRef(branch), resultRef(branch)} {
+		if _, err = q.git(ctx, "update-ref", "-d", ref); err != nil {
+			err = fmt.Errorf("deleting %s: %w", ref, err)
+			return
+		}
+	}
+	return
+}
+
+// DeleteRemote deletes branch from remote, but only while it is still at
+// tip, the commit the caller read: a branch that got commits since stays.
+// The caller has checked that no pull request needs it.
+func (q Quarantine) DeleteRemote(ctx context.Context, remote forge.Remote, branch, tip string) (err error) {
+	ref := resultRef(branch)
+	if _, err = q.gitWith(ctx, remote.Env, "", "push", "--quiet", "--no-verify", "--force-with-lease="+ref+":"+tip, "--delete", "--end-of-options", remote.URL, ref); err != nil {
+		err = fmt.Errorf("deleting %s from %s: %w", branch, remote.URL, err)
+	}
+	return
+}
+
 // Bundle writes a git bundle of the base ref of branch and, when there is
 // one, of its result (the Spec's branch so far), with full history, to path.
 func (q Quarantine) Bundle(ctx context.Context, branch, path string) (err error) {

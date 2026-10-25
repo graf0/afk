@@ -3,6 +3,7 @@ package run
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -15,11 +16,19 @@ import (
 // Sandbox VM (run.session), in tests a local clone.
 type sessionFunc func(ctx context.Context, r run, work workFunc) (res result, err error)
 
+// ErrNeedsInfo is wrapped by the error of a Spec stopped by needs_info of a
+// child: the questions are on the Forge and the VM is gone, so the Factory goes on.
+var ErrNeedsInfo = errors.New("needs info")
+
 // specRun is the state of the Run of a Spec: its children, one Run each, on
 // the shared branch ticket-<spec>, then the review of the whole branch.
 type specRun struct {
 	run  // Ticket is the Spec; tip moves with every child
 	open sessionFunc
+
+	// leftover is the VM an earlier Factory left for one of the Runs of the
+	// Spec; the Run of its ticket goes there (takeLeftover).
+	leftover *Leftover
 
 	pushed   string            // commit of the branch on the Forge: what afk pushed or read last
 	pull     forge.PullRequest // zero until it exists
@@ -40,12 +49,15 @@ type specRun struct {
 // on the branch. The branch of a draft pull request is continued where it
 // ended; failures in a VM leave it as in Execute.
 func ExecuteSpec(ctx context.Context, opts Options) (err error) {
+	// Resume is per Run, set by takeLeftover.
+	leftover := opts.Resume
+	opts.Resume = nil
 	r, setup, err := newRun(ctx, opts)
 	if err != nil {
 		return
 	}
-	s := specRun{run: r, open: func(ctx context.Context, r run, work workFunc) (res result, err error) {
-		return r.session(ctx, setup, work)
+	s := specRun{run: r, leftover: leftover, open: func(ctx context.Context, r run, work workFunc) (res result, err error) {
+		return r.enter(ctx, setup, work)
 	}}
 	err = s.execute(ctx)
 	return
@@ -73,7 +85,9 @@ func (s *specRun) execute(ctx context.Context) (err error) {
 			return
 		}
 	}
-	err = s.finish(ctx)
+	if err = s.finish(ctx); err == nil && s.leftover != nil {
+		s.say("VM %s of #%d was not used (nothing of the Spec is left for it): `afk vm kill %s`", s.leftover.Machine, s.leftover.Ticket, s.leftover.Machine)
+	}
 	return
 }
 
@@ -104,7 +118,12 @@ func (s *specRun) start(ctx context.Context) (err error) {
 			return
 		}
 	}
-	if err = s.quarantine.FetchBase(ctx, s.Base.Repo, s.Base.Commit, s.branch); err != nil {
+	if remoteTip == "" && s.leftover != nil {
+		// The VM cloned the base of the earlier Run, not today's.
+		if s.Base.Commit, err = s.quarantine.Base(ctx, s.branch); err != nil {
+			return
+		}
+	} else if err = s.quarantine.FetchBase(ctx, s.Base.Repo, s.Base.Commit, s.branch); err != nil {
 		return
 	}
 	if remoteTip == "" {
@@ -195,6 +214,7 @@ func (s *specRun) runChild(ctx context.Context, child forge.Ticket) (err error) 
 	}
 	defer func() { _ = r.log.Close() }()
 	s.say("start %s, log %s", r.start()[:12], logPath)
+	s.takeLeftover(&r)
 	res, err := s.open(ctx, r, r.workChild)
 	if err != nil {
 		return
@@ -206,6 +226,16 @@ func (s *specRun) runChild(ctx context.Context, child forge.Ticket) (err error) 
 	s.tip = res.Commit
 	err = s.publishChild(ctx, child, res)
 	return
+}
+
+// takeLeftover sends the Run r to the VM an earlier Factory left for its
+// ticket, once: the next ones start fresh.
+func (s *specRun) takeLeftover(r *run) {
+	if s.leftover == nil || s.leftover.Ticket != r.Ticket.Number {
+		return
+	}
+	r.Resume, r.resumed = s.leftover, true
+	s.leftover = nil
 }
 
 // onBranch reports whether the commit of child is on the branch already: a
@@ -286,7 +316,7 @@ func (s *specRun) needsInfo(ctx context.Context, child forge.Ticket, report agen
 	if err = s.runSteps(steps); err != nil {
 		return
 	}
-	err = fmt.Errorf("spec #%d: child #%d needs info (%s); the finished children stay on %s", spec, child.Number, agent.Sanitize(report.Reason), s.branch)
+	err = fmt.Errorf("spec #%d: child #%d %w (%s); the finished children stay on %s", spec, child.Number, ErrNeedsInfo, agent.Sanitize(report.Reason), s.branch)
 	return
 }
 
@@ -309,6 +339,7 @@ func (s *specRun) finish(ctx context.Context) (err error) {
 	}
 	defer func() { _ = r.log.Close() }()
 	s.say("start %s, log %s", r.tip[:12], logPath)
+	s.takeLeftover(&r)
 	res, err := s.open(ctx, r, r.workReview)
 	if err != nil {
 		return
