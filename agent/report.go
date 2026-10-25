@@ -27,7 +27,9 @@ const Schema = `{"type":"object","properties":{` +
 	`"summary":{"type":"string"},` +
 	`"deviations":{"type":"array","items":{"type":"string"}},` +
 	`"doubts":{"type":"array","items":{"type":"string"}},` +
-	`"questions":{"type":"array","items":{"type":"string"}}},` +
+	`"questions":{"type":"array","items":{"type":"string"}},` +
+	`"findings_fixed":{"type":"array","items":{"type":"string"}},` +
+	`"findings_skipped":{"type":"array","items":{"type":"string"}}},` +
 	`"required":["status","reason","summary","deviations"]}`
 
 // toolArgKeys are tried in order for the one-line summary of a tool call
@@ -45,6 +47,10 @@ type Report struct {
 	Deviations []string `json:"deviations"`
 	Doubts     []string `json:"doubts"`
 	Questions  []string `json:"questions"`
+
+	// Only the review session fills these.
+	FindingsFixed   []string `json:"findings_fixed"`
+	FindingsSkipped []string `json:"findings_skipped"`
 }
 
 // streamEvent is the part of a Claude Code stream-json event afk reads.
@@ -184,7 +190,8 @@ func (r Report) String() (text string) {
 	for _, section := range []struct {
 		title string
 		items []string
-	}{{"Deviations", r.Deviations}, {"Doubts", r.Doubts}, {"Questions", r.Questions}} {
+	}{{"Deviations", r.Deviations}, {"Doubts", r.Doubts}, {"Questions", r.Questions},
+		{"Findings fixed", r.FindingsFixed}, {"Findings skipped", r.FindingsSkipped}} {
 		if len(section.items) == 0 {
 			continue
 		}

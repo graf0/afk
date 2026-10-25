@@ -57,11 +57,13 @@ type Labels struct {
 	Wontfix       string `toml:"wontfix"`
 }
 
-// Agent configures models and the Factory plugin allowlist.
+// Agent configures models and the Claude Code plugins installed in the
+// Base image (ADR-0009).
 type Agent struct {
-	Model          string   `toml:"model"`
-	ReviewModel    string   `toml:"review_model"`
-	FactoryPlugins []string `toml:"factory_plugins"`
+	Model        string   `toml:"model"`
+	ReviewModel  string   `toml:"review_model"`
+	Plugins      []string `toml:"plugins"`      // <name>@<marketplace>
+	Marketplaces []string `toml:"marketplaces"` // owner/repo or git URL
 }
 
 // Gate is the check an agent's change must pass.
@@ -97,7 +99,7 @@ type Tool struct {
 
 // Load finds the repository root at or above dir and loads its Project config.
 func Load(dir string) (cfg Config, err error) {
-	root, err := findRoot(dir)
+	root, err := FindRoot(dir)
 	if err != nil {
 		err = fmt.Errorf("finding project root: %w", err)
 		return
@@ -157,9 +159,9 @@ func defaults() (cfg Config) {
 	return
 }
 
-// findRoot walks up from dir to the first directory containing .git
+// FindRoot walks up from dir to the first directory containing .git
 // (a directory, or a file in worktrees).
-func findRoot(dir string) (root string, err error) {
+func FindRoot(dir string) (root string, err error) {
 	start, err := filepath.Abs(dir)
 	if err != nil {
 		err = fmt.Errorf("resolving %s: %w", dir, err)

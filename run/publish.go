@@ -51,12 +51,14 @@ func (r run) checkRemote(ctx context.Context) (err error) {
 // --- publish ---
 
 // publish writes the outcome of the Run to the Forge. done: push of
-// ticket-N, pull request, report comment, ready_for_human when the Agent
-// deviated or doubts, ready_for_agent off the ticket. needs_info: the
+// ticket-N, pull request, report comment, review report comment,
+// ready_for_human when a person must look (result.human), ready_for_agent
+// off the ticket. needs_info: the
 // questions on the ticket, needs_info on and ready_for_agent off; no push.
 // The steps run in order; a failure lists what is done and, one line per
 // step, what is left to do by hand.
-func (r run) publish(ctx context.Context, report agent.Report) (err error) {
+func (r run) publish(ctx context.Context, res result) (err error) {
+	report := res.Report
 	labels := r.Base.Config.Labels
 	n := r.Ticket.Number
 	ticket := fmt.Sprintf("#%d", n)
@@ -94,7 +96,14 @@ func (r run) publish(ctx context.Context, report agent.Report) (err error) {
 			todo: "comment the agent report (printed above) on the pull request",
 			do:   func() (err error) { return r.Forge.Comment(ctx, pull.Number, reportComment(report)) },
 		})
-		if labels.ReadyForHuman != "" && (len(report.Deviations) > 0 || len(report.Doubts) > 0) {
+		if res.Review != nil {
+			steps = append(steps, step{
+				name: "comment the review report on the pull request",
+				todo: "comment the review report (printed above) on the pull request",
+				do:   func() (err error) { return r.Forge.Comment(ctx, pull.Number, reviewComment(*res.Review)) },
+			})
+		}
+		if labels.ReadyForHuman != "" && res.human() {
 			steps = append(steps, step{
 				name: "add " + labels.ReadyForHuman + " to the pull request",
 				todo: "add the label " + labels.ReadyForHuman + " to the pull request",
@@ -158,6 +167,24 @@ func reportComment(report agent.Report) (text string) {
 	fmt.Fprintf(&b, "### Implementacja\n\n%s\n", report.Summary)
 	writeList(&b, "Odstępstwa od ticketu", report.Deviations)
 	writeList(&b, "Wątpliwości do sprawdzenia", report.Doubts)
+	return agentText(b.String())
+}
+
+// reviewMessage is the message of the commit with the review's fixes.
+func (r run) reviewMessage(review agent.Report) (message string) {
+	message = fmt.Sprintf("code review: %s\n", r.Ticket.Title)
+	if summary := strings.TrimSpace(review.Summary); summary != "" {
+		message += "\n" + agentText(summary) + "\n"
+	}
+	return
+}
+
+// reviewComment is the review's report on the pull request.
+func reviewComment(review agent.Report) (text string) {
+	var b strings.Builder
+	fmt.Fprintf(&b, "### Code review\n\n%s\n", strings.TrimSpace(review.Summary))
+	writeList(&b, "Poprawione w review", review.FindingsFixed)
+	writeList(&b, "Pominięte w review", review.FindingsSkipped)
 	return agentText(b.String())
 }
 

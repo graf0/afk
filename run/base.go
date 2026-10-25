@@ -14,6 +14,9 @@ const (
 
 	// defaultBranch is the base branch when origin/HEAD is not set.
 	defaultBranch = "main"
+
+	// settingsPath is the Project's Claude Code settings in the repository.
+	settingsPath = ".claude/settings.json"
 )
 
 // Base is the base branch of a Run in the user's repository.
@@ -22,7 +25,10 @@ type Base struct {
 	Branch string // e.g. main
 	Commit string
 	Config config.Config // .afk.toml at Commit, never the working tree (ADR-0002)
-	Ident  Ident         // the user's git identity: author of the squashed result
+	// Plugins are the effective plugin ids at Commit: [agent].plugins and the
+	// enabled ones of .claude/settings.json (ADR-0009).
+	Plugins []string
+	Ident   Ident // the user's git identity: author of the squashed result
 }
 
 // ReadBase fetches origin in the repository containing dir and reads the
@@ -55,6 +61,19 @@ func ReadBase(ctx context.Context, dir string) (base Base, err error) {
 	}
 	if base.Config, err = config.Parse([]byte(data)); err != nil {
 		err = fmt.Errorf("%s at origin/%s: %w", config.FileName, base.Branch, err)
+		return
+	}
+	// A missing settings.json is no plugins.
+	var settings string
+	if listed, listErr := git(ctx, "-C", base.Repo, "ls-tree", "--name-only", base.Commit, "--", settingsPath); listErr == nil && listed != "" {
+		if settings, err = git(ctx, "-C", base.Repo, "cat-file", "blob", base.Commit+":"+settingsPath); err != nil {
+			err = fmt.Errorf("reading %s from origin/%s: %w", settingsPath, base.Branch, err)
+			return
+		}
+	}
+	base.Plugins, _, err = config.EffectivePlugins(base.Config.Agent, []byte(settings))
+	if err != nil {
+		err = fmt.Errorf("plugins at origin/%s: %w", base.Branch, err)
 	}
 	return
 }

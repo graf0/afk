@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -66,5 +67,12 @@ func TestRunPrompt(t *testing.T) {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("prompt lacks %q", want)
 		}
+	}
+}
+
+func TestTaskPlugins(t *testing.T) {
+	r := run{Options: Options{Base: Base{Plugins: []string{"b@y", "mattpocock-skills@claude-plugins-official"}}}}
+	if got := r.task().Plugins; !slices.Equal(got, []string{"b", "mattpocock-skills"}) {
+		t.Errorf("task plugins = %q", got)
 	}
 }

@@ -35,6 +35,10 @@ type Options struct {
 	Config config.Config
 	Out    io.Writer // build progress, as it happens
 
+	// ProjectSettings is the Project's .claude/settings.json (nil: none);
+	// its plugins are installed into the image.
+	ProjectSettings []byte
+
 	// Abort, once closed, kills Packer and everything it started right away
 	// instead of waiting for it to stop QEMU after ctx is cancelled (nil: never).
 	Abort <-chan struct{}
@@ -131,7 +135,11 @@ func Build(ctx context.Context, opts Options) (imageDir string, err error) {
 		return
 	}
 	outputDir := filepath.Join(buildDir, "out")
-	provision, final := provisionSteps(cfg.Image.Provision)
+	pluginSteps, err := pluginInstallSteps(cfg.Agent, opts.ProjectSettings)
+	if err != nil {
+		return
+	}
+	provision, final := provisionSteps(pluginSteps, cfg.Image.Provision)
 	vars := packerVars{
 		BaseImage:      tmpl.ImageURL,
 		BaseChecksum:   tmpl.ChecksumURL,

@@ -34,8 +34,8 @@ func TestParseDefaults(t *testing.T) {
 	if cfg.Image.Template != "debian13" {
 		t.Errorf("image.template = %q", cfg.Image.Template)
 	}
-	if len(cfg.Network.Allow) != 0 || len(cfg.Agent.FactoryPlugins) != 0 {
-		t.Errorf("allow/factory_plugins should be empty: %v %v", cfg.Network.Allow, cfg.Agent.FactoryPlugins)
+	if len(cfg.Network.Allow) != 0 || len(cfg.Agent.Plugins) != 0 || len(cfg.Agent.Marketplaces) != 0 {
+		t.Errorf("allow/plugins/marketplaces should be empty: %v %v %v", cfg.Network.Allow, cfg.Agent.Plugins, cfg.Agent.Marketplaces)
 	}
 	if !slices.Equal(cfg.Protect.Paths, requiredProtect) {
 		t.Errorf("protect.paths = %v", cfg.Protect.Paths)
@@ -52,7 +52,8 @@ url = "https://gitea.example"
 ready_for_agent = "go"
 [agent]
 model = "m"
-factory_plugins = ["p@x"]
+plugins = ["p@x"]
+marketplaces = ["o/r"]
 [gate]
 cmd = "make"
 max_fixes = 5
@@ -75,8 +76,8 @@ kind = "host-port"
 	if cfg.Tool["postgres"].Kind != "package" || cfg.Tool["redis"].Kind != "host-port" {
 		t.Errorf("tool = %+v", cfg.Tool)
 	}
-	if !slices.Equal(cfg.Agent.FactoryPlugins, []string{"p@x"}) {
-		t.Errorf("factory_plugins = %v", cfg.Agent.FactoryPlugins)
+	if !slices.Equal(cfg.Agent.Plugins, []string{"p@x"}) || !slices.Equal(cfg.Agent.Marketplaces, []string{"o/r"}) {
+		t.Errorf("plugins = %v, marketplaces = %v", cfg.Agent.Plugins, cfg.Agent.Marketplaces)
 	}
 }
 

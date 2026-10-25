@@ -51,6 +51,10 @@ Wbudowany przepis, z którego `afk` buduje Base image (Debian, Windows).
 Zdefiniowana w projekcie możliwość, którą dostaje Agent: pakiet w obrazie, port hosta albo Tool VM.
 _Avoid_: plugin, dependency
 
+**Plugin**:
+Rozszerzenie Claude Code (skille), które Project deklaruje w Project config, a `afk` instaluje w Base image. Daje Agentowi instrukcje, nie możliwości w środowisku — to nie Tool.
+_Avoid_: skill (gdy chodzi o cały pakiet)
+
 **Tool VM**:
 Osobna maszyna wirtualna podnoszona na czas Run, z którą Agent łączy się standardowymi protokołami lub przez sterowanie ekranem.
 

@@ -25,8 +25,7 @@ Niesprawdzone albo nierozstrzygnięte. Po rozstrzygnięciu: przenieść wynik do
 - [ ] Limit równoczesnych VM: 31 GB RAM ≈ 8–10 maszyn z Chromium + Postgres. Odmowa nowej VM przy braku pamięci? Balloon dla bezczynnych Chat?
 - [ ] Protokół `afk-forge` po kanale ssh (subsystem ssh? JSON na stdin/stdout?) i jak skille typu `to-tickets` mają go używać zamiast `gh`.
 - [ ] Minimalna wersja tmux (bindy bez prefiksu, `swap-pane`/`join-pane`, konfiguracja przez `-f`).
-- [ ] Czy skille `synced/` konta claude.ai synchronizują się same w VM przy tokenie z `setup-token` (jeśli tak — w Chat/Factory pojawią się mimo pominięcia przy kopiowaniu).
-- [ ] Czy `--plugin-dir` uruchamia hooki pluginów (np. SessionStart) tak samo jak instalacja.
+- [ ] Czy skille `synced/` konta claude.ai synchronizują się same w VM przy tokenie z `setup-token` (jeśli tak — pojawią się w Chat/Factory mimo ADR-0009).
 - [ ] „Pack bomb” z VM: bundle wyniku ma limit 1 GiB, ale rozmiar po rozpakowaniu w Quarantine repo (delty, duże bloby) nie jest ograniczony — limit na obiekty (`fetch.unpackLimit`/`transfer` + kontrola rozmiaru), czy wystarczy kontrola miejsca na dysku?
 - [ ] Czy `M-…` dochodzi do tmux w popularnych terminalach (Alt jako Meta) i nie koliduje ze skrótami Claude Code.
 

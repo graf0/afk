@@ -3,6 +3,7 @@
 package run
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -63,8 +64,10 @@ type run struct {
 // --- run ---
 
 // Execute runs opts.Ticket in a fresh Sandbox VM, imports the result into
-// the Quarantine repo as refs/heads/ticket-N (one validated commit on the
-// base) and publishes it on the Forge: push, pull request, report, labels.
+// the Quarantine repo as refs/heads/ticket-N (validated commits on the base:
+// the implementation squashed into one and, when the review fixed anything,
+// a second one) and publishes it on the Forge: push, pull request, reports,
+// labels. The gate and the review run before that (work.go).
 // needs_info goes to the ticket instead. The branch must exist neither in
 // the Quarantine repo nor on the Forge. On success and on needs_info the VM
 // is destroyed before the Forge is written; on any failure in the VM (and
@@ -110,17 +113,17 @@ func Execute(ctx context.Context, opts Options) (err error) {
 	r.say("ticket #%d %s", opts.Ticket.Number, agent.Sanitize(opts.Ticket.Title))
 	r.say("base origin/%s %s, log %s", opts.Base.Branch, opts.Base.Commit, logPath)
 
-	report, err := r.session(ctx, policy, disk, signer, logPath)
+	res, err := r.session(ctx, policy, disk, signer)
 	if err != nil {
 		return
 	}
-	err = r.publish(ctx, report)
+	err = r.publish(ctx, res)
 	return
 }
 
-// session runs the Agent in a fresh VM and, on done, takes its result into
-// the Quarantine repo. The VM is destroyed on success, kept on failure.
-func (r run) session(ctx context.Context, policy egress.Policy, disk string, signer ssh.Signer, logPath string) (report agent.Report, err error) {
+// session runs the Agent in a fresh VM and, on done, takes its result through
+// the gate and the review into the Quarantine repo. The VM is destroyed on success, kept on failure.
+func (r run) session(ctx context.Context, policy egress.Policy, disk string, signer ssh.Signer) (res result, err error) {
 	conn, err := machine.Connect()
 	if err != nil {
 		return
@@ -168,25 +171,7 @@ func (r run) session(ctx context.Context, policy egress.Policy, disk string, sig
 	if err = r.prepareGuest(ctx, client); err != nil {
 		return
 	}
-	r.say("agent started")
-	report, err = agent.Session{
-		Token:  r.ClaudeToken,
-		Prompt: r.prompt(),
-		Dir:    guestRepo,
-		Model:  r.Base.Config.Agent.Model,
-		Proxy:  "http://" + machine.ProxyAddr,
-		Binary: r.AgentBinary,
-	}.Run(ctx, client, r.Out, r.log)
-	if err != nil {
-		err = fmt.Errorf("%w (log: %s)", err, logPath)
-		return
-	}
-	r.say("agent report:")
-	_, _ = fmt.Fprint(r.Out, report.String())
-	if report.Status == agent.StatusNeedsInfo {
-		return
-	}
-	err = r.takeResult(ctx, client, report)
+	res, err = r.work(ctx, sshGuest{run: r, client: client})
 	return
 }
 
@@ -230,61 +215,8 @@ func (r run) prepareGuest(ctx context.Context, client *ssh.Client) (err error) {
 	}
 	if err = remote(ctx, client, "cat > "+guestTicket, strings.NewReader(agent.TicketFile(r.Ticket)), nil); err != nil {
 		err = fmt.Errorf("writing the ticket in the guest: %w", err)
-	}
-	return
-}
-
-// takeResult brings HEAD of the guest's clone into the Quarantine repo as a
-// bundle, without running anything of the clone on the host (ADR-0002),
-// validates it, squashes it into one commit on the base (validated again)
-// and accepts that as refs/heads/ticket-N.
-func (r run) takeResult(ctx context.Context, client *ssh.Client, report agent.Report) (err error) {
-	var status tailBuffer
-	if err = remote(ctx, client, "cd "+guestRepo+" && git status --porcelain", nil, &status); err != nil {
-		err = fmt.Errorf("checking the guest's working tree: %w", err)
 		return
 	}
-	if dirty := strings.TrimSpace(status.String()); dirty != "" {
-		err = fmt.Errorf("the agent left uncommitted changes:\n%s", agent.Sanitize(dirty))
-		return
-	}
-	file, err := os.CreateTemp(r.stateDir, "result-*.bundle")
-	if err != nil {
-		err = fmt.Errorf("creating result bundle: %w", err)
-		return
-	}
-	defer func() { _ = os.Remove(file.Name()) }()
-	command := "cd " + guestRepo + " && git bundle create -q - " + agent.ShellQuote(r.Base.Commit+"..HEAD")
-	err = remote(ctx, client, command, nil, &limitWriter{w: file, left: maxResultSize})
-	if closeErr := file.Close(); err == nil && closeErr != nil {
-		err = closeErr
-	}
-	if err != nil {
-		err = fmt.Errorf("bundling the result in the guest: %w", err)
-		return
-	}
-	head, err := r.quarantine.Import(ctx, file.Name(), r.branch)
-	if err != nil {
-		return
-	}
-	commits, err := r.quarantine.Validate(ctx, r.Base.Commit, head, r.Base.Config.Protect.Paths)
-	if err != nil {
-		err = fmt.Errorf("result %s rejected: %w", head, err)
-		return
-	}
-	squashed, err := r.quarantine.Squash(ctx, r.Base.Commit, head, r.commitMessage(report), r.Base.Ident)
-	if err != nil {
-		return
-	}
-	if _, err = r.quarantine.Validate(ctx, r.Base.Commit, squashed, r.Base.Config.Protect.Paths); err != nil {
-		err = fmt.Errorf("squashed result %s rejected: %w", squashed, err)
-		return
-	}
-	if err = r.quarantine.Accept(ctx, r.branch, squashed); err != nil {
-		return
-	}
-	r.say("result valid: %d commit(s) squashed into %s, %s in %s", commits, squashed[:12], r.branch, r.quarantine.Dir)
-	r.say("  git --git-dir=%s show %s", r.quarantine.Dir, r.branch)
 	return
 }
 
@@ -295,15 +227,7 @@ const (
 	maxStderr     = 4 << 10 // guest stderr kept for errors
 )
 
-func (r run) prompt() (prompt string) {
-	return agent.Prompt(agent.Task{
-		RepoDir:    guestRepo,
-		Branch:     r.branch,
-		BaseRef:    "origin/" + r.Base.Branch,
-		TicketPath: guestTicket,
-		Protected:  r.Base.Config.Protect.Paths,
-	})
-}
+func (r run) prompt() (prompt string) { return agent.Prompt(r.task()) }
 
 // openLog creates the Run's log for the raw agent stream.
 func (r *run) openLog() (path string, err error) {
@@ -344,13 +268,17 @@ func remote(ctx context.Context, client *ssh.Client, command string, stdin io.Re
 	return
 }
 
-// tailBuffer keeps the last maxStderr bytes written to it.
-type tailBuffer struct{ data []byte }
+// tailBuffer keeps the last max bytes written to it.
+type tailBuffer struct {
+	data []byte
+	max  int // maxStderr when zero
+}
 
 func (b *tailBuffer) Write(p []byte) (n int, err error) {
+	limit := cmp.Or(b.max, maxStderr)
 	b.data = append(b.data, p...)
-	if len(b.data) > maxStderr {
-		b.data = b.data[len(b.data)-maxStderr:]
+	if len(b.data) > limit {
+		b.data = b.data[len(b.data)-limit:]
 	}
 	return len(p), nil
 }

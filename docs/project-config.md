@@ -15,7 +15,8 @@ needs_info = "needs-info"
 [agent]
 model = "..."
 review_model = "..."        # inny niż model
-factory_plugins = ["mattpocock-skills@claude-plugins-official"]  # biała lista pluginów użytkownika w Factory, domyślnie pusta; Chat dostaje wszystkie
+plugins = ["mattpocock-skills@claude-plugins-official"]  # <nazwa>@<marketplace>, instalowane w Base image (ADR-0009), domyślnie puste
+marketplaces = ["owner/repo", "https://example.com/m.git"]  # źródła marketplace'ów, domyślnie puste; claude-plugins-official dodawany sam
 
 [gate]
 cmd = "task lint && go test ./..."
