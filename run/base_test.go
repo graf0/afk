@@ -5,6 +5,9 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/graf0/afk/agent"
+	"github.com/graf0/afk/config"
 )
 
 func TestReadBase(t *testing.T) {
@@ -66,4 +69,25 @@ git push -q origin trunk`)
 			t.Errorf("err = %v", err)
 		}
 	})
+}
+
+func TestEgressPolicy(t *testing.T) {
+	policy, err := EgressPolicy(config.Config{Network: config.Network{Allow: []string{"example.com", "*.corp.test"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	allowed := append([]string{"example.com", "git.corp.test"}, agent.Domains...)
+	for _, host := range allowed {
+		if !policy.Allows(host) {
+			t.Errorf("policy denies %s, want allowed", host)
+		}
+	}
+	for _, host := range []string{"evil.test", "example.org", "corp.test.evil.test"} {
+		if policy.Allows(host) {
+			t.Errorf("policy allows %s, want denied", host)
+		}
+	}
+	if _, err = EgressPolicy(config.Config{Network: config.Network{Allow: []string{"bad host"}}}); err == nil || !strings.Contains(err.Error(), "network.allow") {
+		t.Errorf("invalid entry: err = %v, want network.allow error", err)
+	}
 }

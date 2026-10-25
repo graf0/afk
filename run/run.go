@@ -12,7 +12,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -94,8 +93,7 @@ func newRun(ctx context.Context, opts Options) (r run, setup vmSetup, err error)
 		return
 	}
 	r.stateDir = filepath.Join(opts.Paths.StateDir, r.project)
-	if setup.policy, err = egress.Allowlist(slices.Concat(cfg.Network.Allow, agent.Domains)); err != nil {
-		err = fmt.Errorf("network.allow: %w", err)
+	if setup.policy, err = EgressPolicy(cfg); err != nil {
 		return
 	}
 	if setup.disk, err = image.LatestDisk(opts.Paths, r.project); err != nil {

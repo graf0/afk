@@ -10,6 +10,8 @@ Niesprawdzone albo nierozstrzygnięte. Po rozstrzygnięciu: przenieść wynik do
 
 - [ ] Prywatny klucz hosta sshd VM widzą użytkownicy hosta z dostępem do libvirt lub `ps` (XML domeny, `-smbios type=11` w linii poleceń QEMU) — na razie akceptowane; alternatywa: zapis do overlayu przed startem.
 
+- [ ] Wznowienie Run i `afk vm shell` biorą allowlistę z dzisiejszej gałęzi bazowej, nie z `.afk.toml` z bazy Run (Quarantine trzyma tylko commit). Po zmianie `[network].allow` między porażką a wznowieniem sieć różni się od tej, którą miał Agent — czytać config z `refs/afk/base/ticket-<n>`?
+
 ## Obrazy Windows
 
 - [ ] Budowa Windows przez Packer CLI (szablony jeszcze tylko przez bibliotekę). Provisioning natywnie: `powershell` + `windows-restart`, sysprep jako ostatni krok.

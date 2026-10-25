@@ -8,23 +8,22 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"slices"
 	"time"
 
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/term"
 
-	"github.com/graf0/afk/agent"
 	"github.com/graf0/afk/config"
 	"github.com/graf0/afk/egress"
 	"github.com/graf0/afk/image"
 	"github.com/graf0/afk/machine"
+	"github.com/graf0/afk/run"
 )
 
 const vmUsage = "usage: afk vm up | afk vm list | afk vm shell <vm> | afk vm kill <vm>"
 
 // runVM executes the diagnostic `afk vm <subcommand>`.
-func runVM(ctx context.Context, args []string, cfg config.Config, stdout io.Writer) (err error) {
+func runVM(ctx context.Context, args []string, dir string, cfg config.Config, stdout io.Writer) (err error) {
 	argCount := map[string]int{"up": 1, "list": 1, "shell": 2, "kill": 2} // including the subcommand
 	if len(args) == 0 || argCount[args[0]] != len(args) {
 		err = errors.New(vmUsage)
@@ -41,7 +40,11 @@ func runVM(ctx context.Context, args []string, cfg config.Config, stdout io.Writ
 	case "list":
 		err = vmList(conn, cfg, stdout)
 	case "shell":
-		err = vmShell(ctx, conn, cfg, args[1])
+		var policy egress.Policy
+		if policy, err = shellPolicy(ctx, dir); err != nil {
+			return
+		}
+		err = vmShell(ctx, conn, policy, args[1])
 	case "kill":
 		err = conn.Kill(args[1])
 	}
@@ -107,13 +110,20 @@ func vmList(conn *machine.Conn, cfg config.Config, stdout io.Writer) (err error)
 	return
 }
 
-// vmShell opens an interactive shell in machine name, with the Egress proxy
-// (allowlist [network].allow + agent.Domains) tunneled in for its duration.
-func vmShell(ctx context.Context, conn *machine.Conn, cfg config.Config, name string) (err error) {
-	policy, err := egress.Allowlist(slices.Concat(cfg.Network.Allow, agent.Domains))
+// shellPolicy is the egress policy of a Run of the Project: built from the
+// config on the base branch, never the working tree (ADR-0010).
+func shellPolicy(ctx context.Context, dir string) (policy egress.Policy, err error) {
+	base, err := run.ReadBase(ctx, dir)
 	if err != nil {
 		return
 	}
+	policy, err = run.EgressPolicy(base.Config)
+	return
+}
+
+// vmShell opens an interactive shell in machine name, with the Egress proxy
+// of policy tunneled in for the session: stopped when the shell ends or fails.
+func vmShell(ctx context.Context, conn *machine.Conn, policy egress.Policy, name string) (err error) {
 	paths, err := image.DefaultPaths()
 	if err != nil {
 		return

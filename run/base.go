@@ -3,9 +3,12 @@ package run
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
+	"github.com/graf0/afk/agent"
 	"github.com/graf0/afk/config"
+	"github.com/graf0/afk/egress"
 )
 
 const (
@@ -99,5 +102,14 @@ func readIdent(ctx context.Context, repo string) (ident Ident, err error) {
 		return
 	}
 	ident = Ident{Name: name, Email: email}
+	return
+}
+
+// EgressPolicy is the egress policy of a Sandbox VM of the Project: its
+// [network].allow plus the domains the Agent itself needs.
+func EgressPolicy(cfg config.Config) (policy egress.Policy, err error) {
+	if policy, err = egress.Allowlist(slices.Concat(cfg.Network.Allow, agent.Domains)); err != nil {
+		err = fmt.Errorf("network.allow: %w", err)
+	}
 	return
 }
