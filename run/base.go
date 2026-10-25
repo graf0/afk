@@ -62,8 +62,7 @@ func ReadBase(ctx context.Context, dir string) (base Base, err error) {
 		err = fmt.Errorf("reading %s from origin/%s: %w", config.FileName, base.Branch, err)
 		return
 	}
-	if base.Config, err = config.Parse([]byte(data)); err != nil {
-		err = fmt.Errorf("%s at origin/%s: %w", config.FileName, base.Branch, err)
+	if base.Config, err = config.ParseNamed(fmt.Sprintf("%s at origin/%s", config.FileName, base.Branch), []byte(data)); err != nil {
 		return
 	}
 	// A missing settings.json is no plugins.

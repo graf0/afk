@@ -41,7 +41,7 @@ prompt = "Zrzut ekranu: npx playwright screenshot <url> shot.png"
 |---|---|---|---|
 | `kind` | string | — (wymagany) | `github` albo `gitea` |
 | `repo` | string | — (wymagany) | `owner/name` |
-| `url` | string | — | Adres instancji; wymagany dla `gitea`, zakazany dla `github` |
+| `url` | string | — | Adres `https://` instancji; wymagany dla `gitea`, zakazany dla `github` |
 
 Token: GitHub — `GITHUB_TOKEN`, a bez niego `gh auth token`; Gitea — `GITEA_TOKEN`, a bez niego `~/.local/state/afk/gitea-token` (`0600`).
 
@@ -64,7 +64,7 @@ Nazwy labeli w Forge dla ról; niepuste i parami różne. Muszą istnieć w repo
 |---|---|---|---|
 | `model` | string | domyślny Claude Code | Model sesji pracy |
 | `review_model` | string | domyślny Claude Code | Model review; jeśli oba ustawione — różne |
-| `plugins` | []string | `[]` | `nazwa@marketplace`, instalowane w Base image (ADR-0009) |
+| `plugins` | []string | `[]` | `nazwa@marketplace`, instalowane w Base image (ADR-0009); sprawdzany tylko format — nazwę marketplace'u definiuje jego `marketplace.json`, więc istnienie sprawdza `claude` przy budowie |
 | `marketplaces` | []string | `[]` | `owner/repo` albo URL gita; `claude-plugins-official` jest zawsze |
 
 Pluginy z `enabledPlugins` w `.claude/settings.json` Projectu też trafiają do obrazu.
@@ -80,7 +80,7 @@ Pluginy z `enabledPlugins` w `.claude/settings.json` Projectu też trafiają do 
 
 | Klucz | Typ | Domyślnie | Opis |
 |---|---|---|---|
-| `allow` | []string | `[]` | Hosty dostępne z Sandbox VM w Run (bez schematu, portu i `*`). Budowa obrazu ma pełny internet |
+| `allow` | []string | `[]` | Hosty dostępne z Sandbox VM w Run: nazwa hosta, adres IP albo `*.domena` (poddomeny dowolnej głębokości, bez samej `domena`); bez schematu, portu i ścieżki. Budowa obrazu ma pełny internet |
 
 Odmowy proxy są w `<log>-egress.txt` obok logu Run.
 

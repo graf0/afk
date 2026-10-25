@@ -66,7 +66,7 @@ func workRun(t *testing.T, fake *fakeGitHub, gateCmd string, maxFixes int) (r ru
 		t.Fatal(err)
 	}
 	sh(t, root, "git clone -q origin.git agent && cd agent && git checkout -q -b ticket-1")
-	cfg, err := config.Parse([]byte(testConfig + fmt.Sprintf("[agent]\nmodel = \"impl\"\nreview_model = \"rev\"\n[gate]\ncmd = '%s'\nmax_fixes = %d\n", gateCmd, maxFixes)))
+	cfg, err := config.Parse([]byte(testConfigBase + fmt.Sprintf("[agent]\nmodel = \"impl\"\nreview_model = \"rev\"\n[gate]\ncmd = '%s'\nmax_fixes = %d\n", gateCmd, maxFixes)))
 	if err != nil {
 		t.Fatal(err)
 	}

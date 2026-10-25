@@ -272,13 +272,10 @@ func (r run) fetchResult(ctx context.Context, g guest) (head string, err error) 
 // a fix session with the end of the output, up to [gate].max_fixes of them;
 // each batch of commits is fetched and validated. It returns the head that
 // passed. Running out of fixes, or a fix session that does not return done,
-// fails the Run. An empty [gate].cmd is no gate.
+// fails the Run.
 func (r run) gate(ctx context.Context, g guest, head string, res *result) (passed string, err error) {
 	cfg := r.Base.Config
 	passed = head
-	if cfg.Gate.Cmd == "" {
-		return
-	}
 	for fixes := 0; ; fixes++ {
 		var tail, path string
 		var ok bool

@@ -1,10 +1,13 @@
 package image
 
 import (
+	"maps"
 	"regexp"
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/graf0/afk/config"
 )
 
 func TestProvisionStepsOrder(t *testing.T) {
@@ -116,5 +119,11 @@ func TestTemplatesAreComplete(t *testing.T) {
 		if tmpl.hclFile() != name+".pkr.hcl" {
 			t.Errorf("hclFile = %q", tmpl.hclFile())
 		}
+	}
+}
+
+func TestTemplatesMatchConfig(t *testing.T) {
+	if got := slices.Sorted(maps.Keys(templates)); !slices.Equal(got, config.ImageTemplates) {
+		t.Errorf("templates = %v, config.ImageTemplates = %v", got, config.ImageTemplates)
 	}
 }

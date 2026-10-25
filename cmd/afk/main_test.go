@@ -31,7 +31,7 @@ func TestRun(t *testing.T) {
 		}
 	})
 
-	if err := os.WriteFile(filepath.Join(root, ".afk.toml"), []byte("[forge]\nkind = \"github\"\n[image]\ntemplate = \"ws2025\"\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, ".afk.toml"), []byte("[forge]\nkind = \"github\"\nrepo = \"o/r\"\n[gate]\ncmd = \"true\"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -47,6 +47,27 @@ func TestRun(t *testing.T) {
 		}
 	})
 
+	t.Run("config lists every error on its own line", func(t *testing.T) {
+		bad := t.TempDir()
+		_ = os.Mkdir(filepath.Join(bad, ".git"), 0o755)
+		toml := "[forge]\nkind = \"github\"\nrepo = \"x\"\n[labels]\nwontfix = \"\"\n"
+		if err := os.WriteFile(filepath.Join(bad, ".afk.toml"), []byte(toml), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		var out bytes.Buffer
+		err := runCommand(t.Context(), nil, []string{"config"}, bad, &out)
+		if err == nil {
+			t.Fatal("want error")
+		}
+		lines := strings.Split(err.Error(), "\n")
+		if len(lines) != 3 || !strings.Contains(lines[0], ".afk.toml: 3:1: forge.repo") || !strings.Contains(lines[1], ".afk.toml: 5:1: labels.wontfix") || !strings.Contains(lines[2], "gate.cmd: required") {
+			t.Errorf("err = %q, want 3 positioned lines", err)
+		}
+		if out.Len() != 0 {
+			t.Errorf("printed %q on failure", out.String())
+		}
+	})
+
 	t.Run("unknown command", func(t *testing.T) {
 		err := runCommand(t.Context(), nil, []string{"nope"}, root, &bytes.Buffer{})
 		if err == nil || !strings.Contains(err.Error(), "nope") {
@@ -57,13 +78,6 @@ func TestRun(t *testing.T) {
 	t.Run("image needs a subcommand", func(t *testing.T) {
 		err := runCommand(t.Context(), nil, []string{"image"}, root, &bytes.Buffer{})
 		if err == nil || !strings.Contains(err.Error(), "afk image build") {
-			t.Errorf("err = %v", err)
-		}
-	})
-
-	t.Run("image build rejects unsupported template", func(t *testing.T) {
-		err := runCommand(t.Context(), nil, []string{"image", "build"}, root, &bytes.Buffer{})
-		if err == nil || !strings.Contains(err.Error(), "image.template") {
 			t.Errorf("err = %v", err)
 		}
 	})

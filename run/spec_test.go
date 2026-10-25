@@ -100,7 +100,7 @@ func (env specEnv) spec(t *testing.T, vms *fakeVMs) (s *specRun) {
 // specOn is spec on the Quarantine repo q, as in a second process of afk.
 func (env specEnv) specOn(t *testing.T, vms *fakeVMs, q Quarantine) (s *specRun) {
 	t.Helper()
-	cfg, err := config.Parse([]byte(testConfig + "[agent]\nmodel = \"impl\"\nreview_model = \"rev\"\n[gate]\ncmd = 'true'\nmax_fixes = 1\n"))
+	cfg, err := config.Parse([]byte(testConfigBase + "[agent]\nmodel = \"impl\"\nreview_model = \"rev\"\n[gate]\ncmd = 'true'\nmax_fixes = 1\n"))
 	if err != nil {
 		t.Fatal(err)
 	}

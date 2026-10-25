@@ -131,7 +131,7 @@ func (r run) commentStep(ctx context.Context, pull *forge.PullRequest, what, tex
 
 // needsHuman reports whether the pull request of res gets ready_for_human.
 func (r run) needsHuman(res result) (ok bool) {
-	return r.Base.Config.Labels.ReadyForHuman != "" && res.human()
+	return res.human()
 }
 
 // humanStep marks *pull ready_for_human.

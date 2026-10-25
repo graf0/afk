@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 
 	"github.com/pelletier/go-toml/v2"
 )
@@ -24,9 +23,6 @@ var (
 	// Claude Code picks up .claude/ and .mcp.json in any directory, so they
 	// are protected at any depth ("**/").
 	requiredProtectPaths = []string{FileName, ".github/", ".gitea/", "**/.claude/", "**/.mcp.json"}
-
-	forgeKinds = []string{"github", "gitea"}
-	toolKinds  = []string{"package", "host-port", "vm"}
 )
 
 // Config is the effective Project config, with defaults applied.
@@ -55,6 +51,7 @@ type Labels struct {
 	ReadyForAgent string `toml:"ready_for_agent"`
 	ReadyForHuman string `toml:"ready_for_human"`
 	Wontfix       string `toml:"wontfix"`
+	Spec          string `toml:"spec"`
 }
 
 // Agent configures models and the Claude Code plugins installed in the
@@ -110,28 +107,43 @@ func Load(dir string) (cfg Config, err error) {
 		err = fmt.Errorf("reading %s: %w", path, err)
 		return
 	}
-	cfg, err = Parse(data)
-	if err != nil {
-		err = fmt.Errorf("%s: %w", path, err)
-	}
+	cfg, err = ParseNamed(path, data)
 	return
 }
 
 // Parse decodes a Project config, applies defaults and validates it.
+// The error joins all problems, one per line, each starting with "line:col:"
+// when the offending key is in the file, then the key path.
 func Parse(data []byte) (cfg Config, err error) {
+	cfg, err = parse("", data)
+	return
+}
+
+// ParseNamed is Parse with name (a file path, say) prefixed to every error line.
+func ParseNamed(name string, data []byte) (cfg Config, err error) {
+	cfg, err = parse(name+": ", data)
+	return
+}
+
+func parse(prefix string, data []byte) (cfg Config, err error) {
 	cfg = defaults()
+	v := validator{data: data}
 	decoder := toml.NewDecoder(bytes.NewReader(data)).DisallowUnknownFields()
-	if err = decoder.Decode(&cfg); err != nil {
+	if decodeErr := decoder.Decode(&cfg); decodeErr != nil {
 		var strictErr *toml.StrictMissingError
-		if errors.As(err, &strictErr) {
-			err = unknownKeysError(strictErr)
-		} else {
-			err = fmt.Errorf("parsing config: %w", err)
+		if !errors.As(decodeErr, &strictErr) {
+			v.reportDecodeError(decodeErr)
+			err = v.err(prefix)
+			return
 		}
+		// Unknown keys do not stop the decoding: the rest is validated too.
+		v.reportUnknownKeys(strictErr)
+	}
+	cfg.validate(&v)
+	if err = v.err(prefix); err != nil {
 		return
 	}
 	cfg.Protect.Paths = mergeProtectPaths(cfg.Protect.Paths)
-	err = cfg.validate()
 	return
 }
 
@@ -152,6 +164,7 @@ func defaults() (cfg Config) {
 			ReadyForAgent: "ready-for-agent",
 			ReadyForHuman: "ready-for-human",
 			Wontfix:       "wontfix",
+			Spec:          "spec",
 		},
 		Gate:  Gate{MaxFixes: defaultMaxFixes},
 		Image: Image{Template: "debian13"},
@@ -179,37 +192,12 @@ func FindRoot(dir string) (root string, err error) {
 	}
 }
 
-func unknownKeysError(strictErr *toml.StrictMissingError) (err error) {
-	errs := make([]error, 0, len(strictErr.Errors))
-	for _, detail := range strictErr.Errors {
-		errs = append(errs, fmt.Errorf("unknown config key %q", strings.Join(detail.Key(), ".")))
-	}
-	err = errors.Join(errs...)
-	return
-}
-
 // mergeProtectPaths puts the required paths first, then the user's, without duplicates.
 func mergeProtectPaths(user []string) (merged []string) {
 	merged = slices.Clone(requiredProtectPaths)
 	for _, path := range user {
 		if !slices.Contains(merged, path) {
 			merged = append(merged, path)
-		}
-	}
-	return
-}
-
-// --- validation ---
-
-func (c Config) validate() (err error) {
-	if !slices.Contains(forgeKinds, c.Forge.Kind) {
-		err = fmt.Errorf("invalid forge.kind %q: want one of %v", c.Forge.Kind, forgeKinds)
-		return
-	}
-	for name, tool := range c.Tool {
-		if !slices.Contains(toolKinds, tool.Kind) {
-			err = fmt.Errorf("invalid tool.%s.kind %q: want one of %v", name, tool.Kind, toolKinds)
-			return
 		}
 	}
 	return

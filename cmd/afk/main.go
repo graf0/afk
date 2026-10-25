@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/graf0/afk/config"
@@ -23,7 +24,10 @@ func main() {
 		err = runCommand(ctx, abort, os.Args[1:], dir, os.Stdout)
 	}
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "afk:", err)
+		// Config errors come one per line; each line gets the prefix.
+		for line := range strings.SplitSeq(strings.TrimSuffix(err.Error(), "\n"), "\n") {
+			fmt.Fprintln(os.Stderr, "afk:", line)
+		}
 		os.Exit(1)
 	}
 }
@@ -56,7 +60,6 @@ func runCommand(ctx context.Context, abort <-chan struct{}, args []string, dir s
 	}
 	cfg, err := config.Load(dir)
 	if err != nil {
-		err = fmt.Errorf("loading project: %w", err)
 		return
 	}
 	if len(args) == 0 {

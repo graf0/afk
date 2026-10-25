@@ -13,7 +13,7 @@ import (
 func TestReadBase(t *testing.T) {
 	root, user, base := userRepo(t)
 	// The working tree and a newer, unpushed commit must not matter.
-	sh(t, user, `printf '[forge]\nkind = "gitea"\n' > .afk.toml && git commit -qam local`)
+	sh(t, user, `printf '[forge]\nkind = "gitea"\nrepo = "a/b"\nurl = "https://g.example"\n[gate]\ncmd = "x"\n' > .afk.toml && git commit -qam local`)
 
 	got, err := ReadBase(t.Context(), filepath.Join(user, "src"))
 	if err != nil {

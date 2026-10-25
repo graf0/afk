@@ -23,9 +23,6 @@ func preflight(ctx context.Context, opts Options, claims Claims) (err error) {
 	if err != nil {
 		return
 	}
-	if opts.Base.Config.Gate.Cmd == "" {
-		return
-	}
 	r.branch = preflightBranch
 	random := make([]byte, 4)
 	_, _ = rand.Read(random)
