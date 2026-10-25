@@ -39,12 +39,13 @@ type step struct {
 // checkRemote fails when ticket-N already exists on the Forge: a Run never
 // touches someone's branch, and a second Run of a ticket is a human's call.
 func (r run) checkRemote(ctx context.Context) (err error) {
-	tip, err := r.quarantine.RemoteTip(ctx, r.Forge.Remote(), r.branch)
+	remote := r.Forge.Remote()
+	tip, err := r.quarantine.RemoteTip(ctx, remote, r.branch)
 	if err != nil || tip == "" {
 		return
 	}
 	err = fmt.Errorf("branch %s already exists on %s: finish or close its pull request, or delete it (git push origin --delete %s), then run again",
-		r.branch, r.Forge.Repo, r.branch)
+		r.branch, remote.Repo, r.branch)
 	return
 }
 
@@ -92,11 +93,12 @@ func (r run) publish(ctx context.Context, res result) (err error) {
 // pushStep pushes the result branch, moving it from *pushed (empty: creating
 // it) and remembering the commit.
 func (r run) pushStep(ctx context.Context, pushed *string, commit string) (s step) {
+	remote := r.Forge.Remote()
 	return step{
 		name: "push " + r.branch,
-		todo: fmt.Sprintf("git --git-dir=%s push %s %s", r.quarantine.Dir, r.Forge.GitURL, r.branch),
+		todo: fmt.Sprintf("git --git-dir=%s push %s %s", r.quarantine.Dir, remote.URL, r.branch),
 		do: func() (err error) {
-			if err = r.quarantine.Push(ctx, r.Forge.Remote(), r.branch, *pushed); err == nil {
+			if err = r.quarantine.Push(ctx, remote, r.branch, *pushed); err == nil {
 				*pushed = commit
 			}
 			return

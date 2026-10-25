@@ -34,15 +34,11 @@ func runFactory(ctx context.Context, args []string, dir string, stdout io.Writer
 	if err != nil {
 		return
 	}
-	forgeToken, err := forge.HostToken(ctx)
+	gitForge, err := forge.New(ctx, base.Config.Forge)
 	if err != nil {
 		return
 	}
-	github, err := forge.NewGitHub(base.Config.Forge, forgeToken)
-	if err != nil {
-		return
-	}
-	factory, err := run.NewFactory(ctx, base, github, paths, claudeToken, selector, stdout)
+	factory, err := run.NewFactory(ctx, base, gitForge, paths, claudeToken, selector, stdout)
 	if err != nil {
 		return
 	}

@@ -21,7 +21,7 @@ var userStories = regexp.MustCompile(`(?m)^## User Stories`)
 // main (docs/workflow.md, Factory). Execute, Leftovers and Cleanup are the
 // seams to the VMs; NewFactory sets the real ones.
 type Factory struct {
-	Forge    *forge.GitHub
+	Forge    forge.Forge
 	Label    string // [labels].ready_for_agent
 	Selector []int  // the tickets to run, in this order; nil: every ready one, "*"
 	Claims   Claims
@@ -45,7 +45,7 @@ type Factory struct {
 
 // NewFactory is a Factory of the Project of base that runs real Runs in
 // VMs. Every Run reads the base branch again: it moves while a Factory works.
-func NewFactory(ctx context.Context, base Base, github *forge.GitHub, paths image.Paths, claudeToken string, selector []int, out io.Writer) (f *Factory, err error) {
+func NewFactory(ctx context.Context, base Base, gitForge forge.Forge, paths image.Paths, claudeToken string, selector []int, out io.Writer) (f *Factory, err error) {
 	project, err := image.ProjectName(base.Config.Forge.Repo)
 	if err != nil {
 		return
@@ -56,13 +56,13 @@ func NewFactory(ctx context.Context, base Base, github *forge.GitHub, paths imag
 		return
 	}
 	options := func(ctx context.Context, ticket forge.Ticket) (opts Options, err error) {
-		opts = Options{Ticket: ticket, ClaudeToken: claudeToken, Paths: paths, Out: out, Forge: github}
+		opts = Options{Ticket: ticket, ClaudeToken: claudeToken, Paths: paths, Out: out, Forge: gitForge}
 		opts.Base, err = ReadBase(ctx, base.Repo)
 		return
 	}
 	claims := Claims{Dir: filepath.Join(paths.StateDir, "claims", project)}
 	f = &Factory{
-		Forge:    github,
+		Forge:    gitForge,
 		Label:    base.Config.Labels.ReadyForAgent,
 		Selector: selector,
 		Claims:   claims,
@@ -77,7 +77,7 @@ func NewFactory(ctx context.Context, base Base, github *forge.GitHub, paths imag
 		},
 		Leftovers: func() (leftovers []Leftover, err error) { return ListLeftovers(project) },
 		Cleanup: func(ctx context.Context, l Leftover, vmOnly bool) (err error) {
-			return cleanLeftover(ctx, github, q, l, vmOnly, out)
+			return cleanLeftover(ctx, gitForge, q, l, vmOnly, out)
 		},
 		Execute: func(ctx context.Context, ticket forge.Ticket, resume *Leftover) (err error) {
 			opts, err := options(ctx, ticket)

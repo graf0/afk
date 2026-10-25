@@ -55,7 +55,7 @@ func leftoverTicket(m machine.Machine) (n int, ok bool) {
 // cleanLeftover destroys the VM of l and, unless vmOnly, what its Run left
 // of ticket-N. vmOnly is for a child of a Spec: its work is on the Spec's
 // branch, which is not its to delete.
-func cleanLeftover(ctx context.Context, g *forge.GitHub, q Quarantine, l Leftover, vmOnly bool, out io.Writer) (err error) {
+func cleanLeftover(ctx context.Context, g forge.Forge, q Quarantine, l Leftover, vmOnly bool, out io.Writer) (err error) {
 	conn, err := machine.Connect()
 	if err != nil {
 		return
@@ -72,11 +72,12 @@ func cleanLeftover(ctx context.Context, g *forge.GitHub, q Quarantine, l Leftove
 // cleanBranch drops the refs of branch in the Quarantine repo, and the
 // branch on the Forge when it has no pull request. A branch with a pull
 // request is never deleted, and one that moved since it was read stays.
-func cleanBranch(ctx context.Context, g *forge.GitHub, q Quarantine, branch string, out io.Writer) (err error) {
+func cleanBranch(ctx context.Context, g forge.Forge, q Quarantine, branch string, out io.Writer) (err error) {
 	if err = q.Drop(ctx, branch); err != nil {
 		return
 	}
-	tip, err := q.RemoteTip(ctx, g.Remote(), branch)
+	remote := g.Remote()
+	tip, err := q.RemoteTip(ctx, remote, branch)
 	if err != nil || tip == "" {
 		return
 	}
@@ -85,11 +86,11 @@ func cleanBranch(ctx context.Context, g *forge.GitHub, q Quarantine, branch stri
 		return
 	}
 	if found {
-		_, _ = fmt.Fprintf(out, "= branch %s stays on %s: pull request #%d\n", branch, g.Repo, pull.Number)
+		_, _ = fmt.Fprintf(out, "= branch %s stays on %s: pull request #%d\n", branch, remote.Repo, pull.Number)
 		return
 	}
-	if err = q.DeleteRemote(ctx, g.Remote(), branch, tip); err == nil {
-		_, _ = fmt.Fprintf(out, "= branch %s without a pull request deleted from %s\n", branch, g.Repo)
+	if err = q.DeleteRemote(ctx, remote, branch, tip); err == nil {
+		_, _ = fmt.Fprintf(out, "= branch %s without a pull request deleted from %s\n", branch, remote.Repo)
 	}
 	return
 }

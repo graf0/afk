@@ -1,6 +1,3 @@
-// Package forge talks to the Forge (GitHub, later Gitea) over REST with the
-// host's credentials. Only afk on the host does that; the Agent never has
-// Forge access (ADR-0003).
 package forge
 
 import (
@@ -36,26 +33,7 @@ const (
 	requestTimeout   = time.Minute
 )
 
-// Ticket is a ticket read from the Forge.
-type Ticket struct {
-	Number   int
-	Title    string
-	Body     string
-	Comments []string
-	Labels   []string
-
-	// SubIssues is the number of sub-issues: more than zero makes the ticket a Spec.
-	SubIssues int
-	// Parent is the Spec the ticket is a sub-issue of, zero without one.
-	Parent int
-}
-
-// SubIssue is a sub-issue of a Spec as listed on the Forge.
-type SubIssue struct {
-	Number int
-	Open   bool
-	Labels []string
-}
+var _ Forge = (*GitHub)(nil)
 
 // GitHub reads and updates tickets and pull requests of Repo through the
 // GitHub REST API; GitURL is where the ticket branches are pushed.
@@ -122,10 +100,6 @@ func HostToken(ctx context.Context) (token string, err error) {
 
 // NewGitHub returns a GitHub client for the Project's forge.
 func NewGitHub(forge config.Forge, token string) (g *GitHub, err error) {
-	if forge.Kind != "github" {
-		err = fmt.Errorf("forge.kind %q is not supported yet", forge.Kind)
-		return
-	}
 	if forge.URL != "" {
 		err = errors.New("forge.url is not supported for github (GitHub Enterprise) yet")
 		return
@@ -301,13 +275,6 @@ func (g *GitHub) Blocked(ctx context.Context, ticket Ticket) (blocked bool, err 
 
 // --- git ---
 
-// Remote is where git pushes ticket branches, with the environment that
-// authenticates it.
-type Remote struct {
-	URL string
-	Env []string
-}
-
 // Remote is GitURL with Token in an Authorization header scoped to GitURL,
 // given to git through GIT_CONFIG_* variables: never on argv, never in a
 // config file. The user's global and system git config is ignored, so no
@@ -315,7 +282,7 @@ type Remote struct {
 // user's key); redirects, credential helpers and prompts are off.
 func (g *GitHub) Remote() (remote Remote) {
 	auth := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + g.Token))
-	return Remote{URL: g.GitURL, Env: []string{
+	return Remote{Repo: g.Repo, URL: g.GitURL, Env: []string{
 		"GIT_CONFIG_GLOBAL=" + os.DevNull,
 		"GIT_CONFIG_NOSYSTEM=1",
 		"GIT_TERMINAL_PROMPT=0",
@@ -332,13 +299,17 @@ func (g *GitHub) Remote() (remote Remote) {
 
 // --- writes ---
 
-// PullRequest is a pull request of afk.
-type PullRequest struct {
+// githubPull is the part of the pull request resource afk reads.
+type githubPull struct {
 	Number int    `json:"number"`
 	URL    string `json:"html_url"`
-	State  string `json:"state"` // open or closed (merged too)
+	State  string `json:"state"`
 	Draft  bool   `json:"draft"`
 	NodeID string `json:"node_id"` // for GraphQL
+}
+
+func (p githubPull) pull() (pull PullRequest) {
+	return PullRequest{Number: p.Number, URL: p.URL, State: p.State, Draft: p.Draft, ID: p.NodeID}
 }
 
 // CreatePull opens a pull request of branch head into base, as a draft when draft is set.
@@ -347,9 +318,12 @@ func (g *GitHub) CreatePull(ctx context.Context, head, base, title, body string,
 	if draft {
 		in["draft"] = true
 	}
-	if err = g.call(ctx, http.MethodPost, fmt.Sprintf("/repos/%s/pulls", g.Repo), in, &pull); err != nil {
+	var created githubPull
+	if err = g.call(ctx, http.MethodPost, fmt.Sprintf("/repos/%s/pulls", g.Repo), in, &created); err != nil {
 		err = fmt.Errorf("opening pull request of %s: %w", head, err)
+		return
 	}
+	pull = created.pull()
 	return
 }
 
@@ -357,13 +331,13 @@ func (g *GitHub) CreatePull(ctx context.Context, head, base, title, body string,
 func (g *GitHub) FindPull(ctx context.Context, branch string) (pull PullRequest, found bool, err error) {
 	owner, _, _ := strings.Cut(g.Repo, "/")
 	path := fmt.Sprintf("/repos/%s/pulls?state=all&sort=created&direction=desc&per_page=1&head=%s", g.Repo, url.QueryEscape(owner+":"+branch))
-	var pulls []PullRequest
+	var pulls []githubPull
 	if err = g.get(ctx, path, &pulls); err != nil {
 		err = fmt.Errorf("looking for the pull request of %s: %w", branch, err)
 		return
 	}
 	if found = len(pulls) > 0; found {
-		pull = pulls[0]
+		pull = pulls[0].pull()
 	}
 	return
 }
@@ -381,7 +355,7 @@ func (g *GitHub) UpdatePullBody(ctx context.Context, n int, body string) (err er
 func (g *GitHub) ReadyPull(ctx context.Context, pull PullRequest) (err error) {
 	in := map[string]any{
 		"query":     "mutation($id: ID!) { markPullRequestReadyForReview(input: {pullRequestId: $id}) { pullRequest { id } } }",
-		"variables": map[string]string{"id": pull.NodeID},
+		"variables": map[string]string{"id": pull.ID},
 	}
 	// GraphQL reports errors in a 200 response.
 	var out struct {

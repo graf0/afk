@@ -50,8 +50,8 @@ type Options struct {
 	ClaudeToken string
 	Paths       image.Paths
 	Out         io.Writer
-	Forge       *forge.GitHub // GitURL is where ticket-N is pushed
-	AgentBinary string        // "claude" unless set (tests)
+	Forge       forge.Forge // Remote is where ticket-N is pushed
+	AgentBinary string      // "claude" unless set (tests)
 	// Resume is the VM an earlier Factory left for this Ticket (or, in a
 	// Spec, for one of its children or its review); the Run continues in it
 	// instead of starting a fresh one (docs/workflow.md).
