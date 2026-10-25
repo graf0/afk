@@ -46,6 +46,8 @@ type Ticket struct {
 
 	// SubIssues is the number of sub-issues: more than zero makes the ticket a Spec.
 	SubIssues int
+	// Parent is the Spec the ticket is a sub-issue of, zero without one.
+	Parent int
 }
 
 // SubIssue is a sub-issue of a Spec as listed on the Forge.
@@ -75,9 +77,23 @@ type githubIssue struct {
 		Name string `json:"name"`
 	} `json:"labels"`
 	PullRequest *struct{} `json:"pull_request"`
+	ParentURL   string    `json:"parent_issue_url"`
 	SubIssues   struct {
 		Total int `json:"total"`
 	} `json:"sub_issues_summary"`
+}
+
+// ticket is the ticket as read, without comments.
+func (i githubIssue) ticket() (ticket Ticket) {
+	ticket = Ticket{Number: i.Number, Title: i.Title, Body: i.Body, SubIssues: i.SubIssues.Total}
+	for _, label := range i.Labels {
+		ticket.Labels = append(ticket.Labels, label.Name)
+	}
+	// .../issues/<n>
+	if _, last, ok := strings.Cut(strings.TrimSuffix(i.ParentURL, "/"), "/issues/"); ok {
+		ticket.Parent, _ = strconv.Atoi(last)
+	}
+	return
 }
 
 type githubComment struct {
@@ -156,10 +172,7 @@ func (g *GitHub) ticket(ctx context.Context, n int, label string) (ticket Ticket
 	if err != nil {
 		return
 	}
-	ticket = Ticket{Number: issue.Number, Title: issue.Title, Body: issue.Body, SubIssues: issue.SubIssues.Total}
-	for _, issueLabel := range issue.Labels {
-		ticket.Labels = append(ticket.Labels, issueLabel.Name)
-	}
+	ticket = issue.ticket()
 	if label != "" && !slices.Contains(ticket.Labels, label) {
 		err = fmt.Errorf("ticket #%d lacks the label %q: only tickets a human marked ready run in the Factory", n, label)
 		ticket = Ticket{}
@@ -176,6 +189,44 @@ func (g *GitHub) ticket(ctx context.Context, n int, label string) (ticket Ticket
 			ticket.Comments = append(ticket.Comments, comment.Body)
 		}
 		if len(comments) < perPage {
+			return
+		}
+	}
+}
+
+// Peek reads ticket n fresh, in any state and without comments: what the
+// Factory decides on (the list by label lags behind). Pull requests are refused.
+func (g *GitHub) Peek(ctx context.Context, n int) (ticket Ticket, open bool, err error) {
+	var issue githubIssue
+	if err = g.get(ctx, fmt.Sprintf("/repos/%s/issues/%d", g.Repo, n), &issue); err != nil {
+		err = fmt.Errorf("reading ticket #%d: %w", n, err)
+		return
+	}
+	if issue.PullRequest != nil {
+		err = fmt.Errorf("#%d is a pull request, not a ticket", n)
+		return
+	}
+	ticket, open = issue.ticket(), issue.State == "open"
+	return
+}
+
+// ListLabeled returns the numbers of the open issues with label, ascending.
+// The list lags behind labels changed a moment ago: Peek decides.
+func (g *GitHub) ListLabeled(ctx context.Context, label string) (numbers []int, err error) {
+	for page := 1; ; page++ {
+		var issues []githubIssue
+		path := fmt.Sprintf("/repos/%s/issues?state=open&labels=%s&per_page=%d&page=%d", g.Repo, url.QueryEscape(label), perPage, page)
+		if err = g.get(ctx, path, &issues); err != nil {
+			err = fmt.Errorf("listing tickets labeled %q: %w", label, err)
+			return
+		}
+		for _, issue := range issues {
+			if issue.PullRequest == nil {
+				numbers = append(numbers, issue.Number)
+			}
+		}
+		if len(issues) < perPage {
+			slices.Sort(numbers)
 			return
 		}
 	}

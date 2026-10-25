@@ -17,7 +17,7 @@ func TestRun(t *testing.T) {
 	}
 
 	t.Run("factory ignores the working tree's .afk.toml", func(t *testing.T) {
-		err := runCommand(t.Context(), nil, []string{"factory"}, root, &bytes.Buffer{})
+		err := runCommand(t.Context(), nil, []string{"factory", "#x"}, root, &bytes.Buffer{})
 		if err == nil || !strings.Contains(err.Error(), "afk factory") {
 			t.Errorf("err = %v, want usage (no config load)", err)
 		}

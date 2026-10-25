@@ -404,3 +404,53 @@ func TestQuarantineResume(t *testing.T) {
 		t.Errorf("a rejected tip was accepted: %v", err)
 	}
 }
+
+func TestQuarantineBase(t *testing.T) {
+	_, _, base, q := acceptedResult(t)
+	if got, err := q.Base(t.Context(), "ticket-1"); err != nil || got != base {
+		t.Errorf("Base(ticket-1) = %q, %v; want %s", got, err, base)
+	}
+	if _, err := q.Base(t.Context(), "ticket-2"); err == nil {
+		t.Error("Base of a branch never started here: want error")
+	}
+}
+
+func TestQuarantineDrop(t *testing.T) {
+	root, _, _, q := acceptedResult(t)
+	git := "git --git-dir=" + q.Dir + " "
+	if err := q.Drop(t.Context(), "ticket-1"); err != nil {
+		t.Fatal(err)
+	}
+	if got := sh(t, root, git+"for-each-ref refs/heads refs/afk"); got != "" {
+		t.Errorf("refs left:\n%s", got)
+	}
+	if err := q.Drop(t.Context(), "ticket-1"); err != nil {
+		t.Errorf("Drop of what is gone: %v", err)
+	}
+}
+
+func TestQuarantineDeleteRemote(t *testing.T) {
+	root, _, base, q := acceptedResult(t)
+	remote := forge.Remote{URL: filepath.Join(root, "origin.git")}
+	sh(t, root, "git --git-dir=origin.git update-ref refs/heads/ticket-1 "+base+" && git --git-dir=origin.git update-ref refs/heads/ticket-10 "+base)
+	if err := q.DeleteRemote(t.Context(), remote, "ticket-1", base); err != nil {
+		t.Fatal(err)
+	}
+	if got := sh(t, root, "git --git-dir=origin.git for-each-ref --format='%(refname)' refs/heads"); got != "refs/heads/main\nrefs/heads/ticket-10" {
+		t.Errorf("remote branches:\n%s\nwant only ticket-1 gone", got)
+	}
+}
+
+// A branch that got commits since the tip was read survives.
+func TestQuarantineDeleteRemoteMoved(t *testing.T) {
+	root, user, base, q := acceptedResult(t)
+	remote := forge.Remote{URL: filepath.Join(root, "origin.git")}
+	sh(t, root, "git --git-dir=origin.git update-ref refs/heads/ticket-1 "+base)
+	sh(t, user, "echo n > n && git add n && git commit -qm newer && git push -q origin HEAD:refs/heads/ticket-1")
+	if err := q.DeleteRemote(t.Context(), remote, "ticket-1", base); err == nil {
+		t.Error("deleting a branch that moved: want error")
+	}
+	if got := sh(t, root, "git --git-dir=origin.git for-each-ref --format='%(refname)' refs/heads/ticket-1"); got != "refs/heads/ticket-1" {
+		t.Errorf("the moved branch is gone: %q", got)
+	}
+}

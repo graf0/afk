@@ -92,3 +92,17 @@ func TestPromptSkills(t *testing.T) {
 		t.Error("fix prompt calls a skill")
 	}
 }
+
+func TestPromptResumed(t *testing.T) {
+	task := Task{BaseRef: "origin/main"}
+	for name, prompt := range map[string]func(Task) string{"implementation": Prompt, "review": ReviewPrompt} {
+		if strings.Contains(prompt(task), "Wznawiasz") {
+			t.Errorf("%s prompt of a fresh Run has the resume note", name)
+		}
+		task.Resumed = true
+		if got := prompt(task); !strings.Contains(got, "Wznawiasz przerwaną pracę") || !strings.Contains(got, "`git log origin/main..HEAD`") {
+			t.Errorf("%s prompt of a resumed Run lacks the note:\n%s", name, got)
+		}
+		task.Resumed = false
+	}
+}

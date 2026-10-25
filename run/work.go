@@ -96,6 +96,7 @@ func (r run) work(ctx context.Context, g guest) (res result, err error) {
 	if err != nil || res.Report.Status == agent.StatusNeedsInfo {
 		return
 	}
+	r.resumed = false // the note was for the implementation
 	if err = r.review(ctx, g, &res, head, implemented); err != nil {
 		return
 	}
@@ -363,6 +364,7 @@ func (r run) task() (task agent.Task) {
 		TicketPath: guestTicket,
 		Protected:  r.Base.Config.Protect.Paths,
 		Plugins:    names,
+		Resumed:    r.resumed,
 	}
 	if r.spec != nil {
 		task.SpecPath = guestSpec

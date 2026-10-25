@@ -13,12 +13,12 @@ import (
 	"github.com/graf0/afk/run"
 )
 
-const factoryUsage = "usage: afk factory '#N' (one ticket or Spec; '*' and lists are not supported yet)"
+const factoryUsage = "usage: afk factory ['*' | '#N' ...] (every ready ticket by default, or the listed ones in order)"
 
-// runFactory executes `afk factory '#N'`: one Run of ticket N, or of a Spec
-// (a ticket with sub-issues) a Run of each of its children and a review.
+// runFactory executes `afk factory [selector]`: the Factory loop of the
+// Project, which ends when nothing is left to take, or on the first failed Run.
 func runFactory(ctx context.Context, args []string, dir string, stdout io.Writer) (err error) {
-	n, err := parseSelector(args)
+	selector, err := parseSelector(args)
 	if err != nil {
 		return
 	}
@@ -42,28 +42,27 @@ func runFactory(ctx context.Context, args []string, dir string, stdout io.Writer
 	if err != nil {
 		return
 	}
-	ticket, err := github.ReadyTicket(ctx, n, base.Config.Labels.ReadyForAgent)
+	factory, err := run.NewFactory(ctx, base, github, paths, claudeToken, selector, stdout)
 	if err != nil {
 		return
 	}
-	opts := run.Options{Base: base, Ticket: ticket, ClaudeToken: claudeToken, Paths: paths, Out: stdout, Forge: github}
-	if ticket.SubIssues > 0 {
-		err = run.ExecuteSpec(ctx, opts)
-		return
-	}
-	err = run.Execute(ctx, opts)
+	err = factory.Run(ctx)
 	return
 }
 
-// parseSelector accepts exactly one ticket number, "#N" or "N".
-func parseSelector(args []string) (n int, err error) {
-	if len(args) != 1 {
-		err = errors.New(factoryUsage)
+// parseSelector accepts no arguments or "*" (every ready ticket: nil), else
+// ticket numbers, "#N" or "N", in the order given.
+func parseSelector(args []string) (selector []int, err error) {
+	if len(args) == 0 || (len(args) == 1 && args[0] == "*") {
 		return
 	}
-	n, convErr := strconv.Atoi(strings.TrimPrefix(args[0], "#"))
-	if convErr != nil || n <= 0 {
-		err = errors.New(factoryUsage)
+	for _, arg := range args {
+		n, convErr := strconv.Atoi(strings.TrimPrefix(arg, "#"))
+		if convErr != nil || n <= 0 {
+			selector, err = nil, errors.New(factoryUsage)
+			return
+		}
+		selector = append(selector, n)
 	}
 	return
 }

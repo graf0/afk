@@ -6,7 +6,6 @@ Kamienie milowe po M1 (`docs/architecture.md`) z wstępnym planem. M1 to tickety
 
 - [ ] `.afk.toml` dla dfmx na `main`: `[network].allow` dla Go (`proxy.golang.org`, `sum.golang.org`), `[image].provision` z toolchainem, `[gate].cmd`. Warunek zastąpienia `ralph.sh`.
 - [ ] Logowanie odmów Egress proxy (host, port, powód) do logu Run — dziś brakującą domenę widać tylko po zachowaniu Agenta.
-- [ ] Listowanie maszyn z `<metadata>` (`afk vm list`) — potrzebne Factory (#10) i TUI.
 - [ ] Partycja w gościu zostaje 10G mimo overlayu 64G (brak growpart, cloud-init wyłączony): `growpart`/`resize2fs` przy starcie albo większy dysk w obrazie.
 - [ ] Hostname `afk` we wszystkich VM; RAM 2 GiB i 2 vCPU na sztywno — do `.afk.toml`?
 - [ ] `afk vm shell` dla VM po porażce: Egress proxy z tą samą polityką co Run.

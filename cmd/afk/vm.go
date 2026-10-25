@@ -21,11 +21,11 @@ import (
 	"github.com/graf0/afk/machine"
 )
 
-const vmUsage = "usage: afk vm up | afk vm shell <vm> | afk vm kill <vm>"
+const vmUsage = "usage: afk vm up | afk vm list | afk vm shell <vm> | afk vm kill <vm>"
 
 // runVM executes the diagnostic `afk vm <subcommand>`.
 func runVM(ctx context.Context, args []string, cfg config.Config, stdout io.Writer) (err error) {
-	argCount := map[string]int{"up": 1, "shell": 2, "kill": 2} // including the subcommand
+	argCount := map[string]int{"up": 1, "list": 1, "shell": 2, "kill": 2} // including the subcommand
 	if len(args) == 0 || argCount[args[0]] != len(args) {
 		err = errors.New(vmUsage)
 		return
@@ -38,6 +38,8 @@ func runVM(ctx context.Context, args []string, cfg config.Config, stdout io.Writ
 	switch args[0] {
 	case "up":
 		err = vmUp(ctx, conn, cfg, stdout)
+	case "list":
+		err = vmList(conn, cfg, stdout)
 	case "shell":
 		err = vmShell(ctx, conn, cfg, args[1])
 	case "kill":
@@ -84,6 +86,24 @@ func vmUp(ctx context.Context, conn *machine.Conn, cfg config.Config, stdout io.
 	}
 	_ = client.Close()
 	_, err = fmt.Fprintf(stdout, "%s: start → ssh %s, guest %s\n", m.Name, time.Since(start).Round(100*time.Millisecond), m.Addr)
+	return
+}
+
+// vmList prints the machines of the Project, one per line.
+func vmList(conn *machine.Conn, cfg config.Config, stdout io.Writer) (err error) {
+	project, err := image.ProjectName(cfg.Forge.Repo)
+	if err != nil {
+		return
+	}
+	machines, err := conn.List(project)
+	if err != nil {
+		return
+	}
+	for _, m := range machines {
+		if _, err = fmt.Fprintf(stdout, "%s\t%s\n", m.Name, m.Addr); err != nil {
+			return
+		}
+	}
 	return
 }
 

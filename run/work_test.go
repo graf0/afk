@@ -302,3 +302,20 @@ func TestLastLines(t *testing.T) {
 		}
 	}
 }
+
+// A resumed Run tells its first session, the implementation, that it
+// continues; the review that follows is a fresh start.
+func TestWorkResumedNote(t *testing.T) {
+	r, g, _ := workRun(t, &fakeGitHub{}, "true", 1)
+	r.resumed = true
+	g.sessions = []func() agent.Report{
+		g.commit("impl", agent.Report{Summary: "Did it.", Deviations: []string{}}),
+		func() agent.Report { return agent.Report{Status: agent.StatusDone, Summary: "Fine."} },
+	}
+	if _, err := r.work(t.Context(), g); err != nil {
+		t.Fatal(err)
+	}
+	if len(g.prompts) != 2 || !strings.Contains(g.prompts[0], "Wznawiasz przerwaną pracę") || strings.Contains(g.prompts[1], "Wznawiasz") {
+		t.Errorf("prompts %q: want the note in the implementation's only", g.prompts)
+	}
+}
