@@ -135,7 +135,7 @@ func Build(ctx context.Context, opts Options) (imageDir string, err error) {
 		return
 	}
 	outputDir := filepath.Join(buildDir, "out")
-	pluginSteps, err := projectPluginSteps(opts.ProjectSettings)
+	pluginSteps, err := pluginInstallSteps(cfg.Agent, opts.ProjectSettings)
 	if err != nil {
 		return
 	}

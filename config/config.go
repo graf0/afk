@@ -57,11 +57,13 @@ type Labels struct {
 	Wontfix       string `toml:"wontfix"`
 }
 
-// Agent configures models and the Factory plugin allowlist.
+// Agent configures models and the Claude Code plugins installed in the
+// Base image (ADR-0009).
 type Agent struct {
-	Model          string   `toml:"model"`
-	ReviewModel    string   `toml:"review_model"`
-	FactoryPlugins []string `toml:"factory_plugins"`
+	Model        string   `toml:"model"`
+	ReviewModel  string   `toml:"review_model"`
+	Plugins      []string `toml:"plugins"`      // <name>@<marketplace>
+	Marketplaces []string `toml:"marketplaces"` // owner/repo or git URL
 }
 
 // Gate is the check an agent's change must pass.

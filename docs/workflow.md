@@ -21,8 +21,7 @@ Forge: GitHub i Gitea przez REST (`net/http`). Gitea nie ma natywnych sub-issues
 - Prompt mówi: gdzie są dane, że tracker jest celowo niedostępny, że nie wolno zgadywać (ADR-0003).
 - `CLAUDE_CODE_OAUTH_TOKEN` jako zmienna środowiskowa sesji ssh, nigdy na dysku obrazu.
 - WebFetch/WebSearch wyłączone; sieć tylko przez Egress proxy z allowlistą.
-- Pluginy i skille z repo (`.claude/settings.json`, `.claude/skills/`): w klonie, pluginy zainstalowane w Base image przy budowie.
-- Pluginy użytkownika: tylko te z `[agent].factory_plugins` (biała lista, domyślnie pusta) — patrz [Pluginy użytkownika](#pluginy-użytkownika). Własne skille użytkownika: żadne.
+- Skille z repo (`.claude/skills/`): w klonie. Pluginy: tylko te zadeklarowane w Project config, zainstalowane w Base image przy budowie — patrz [Pluginy](#pluginy). Nic z `~/.claude` hosta (ADR-0009).
 
 ### Raport agenta
 
@@ -51,14 +50,14 @@ Strumień Agenta (stream-json) idzie do pliku logu w `~/.local/state/afk/<projec
 - `--append-system-prompt` od `afk`: izolowana VM, brak `gh` i Forge, tickety przez `afk-forge`, kod to snapshot, eksport tylko przez `afk`, pełny internet.
 - `afk-forge` w VM (`issue create|view|list|comment`) woła `afk` na hoście przez kanał ssh; `afk` wykonuje to swoim tokenem, tylko dla Forge tego Project. Label `ready-for-agent` z Chat jest zamieniany na `needs-triage` — gotowość dla Factory nadaje człowiek.
 - Eksport: na akcję człowieka commity Chat idą przez Quarantine repo (ta sama walidacja co w Run) na branch `chat-<nazwa>`, bez PR.
-- Pluginy i skille: z repo jak w Factory, plus wszystkie pluginy i własne skille użytkownika.
+- Pluginy i skille: to samo co w Factory, czyli co jest w obrazie i w repo; nic z `~/.claude` hosta (ADR-0009).
 - Zamknięcie Chat (z TUI): opcjonalny eksport, potem zniszczenie VM. Po restarcie hosta albo crashu `afk` VM wstaje z tego samego overlayu, Agent z `claude --continue`.
 
-## Pluginy użytkownika
+## Pluginy
 
-Przy starcie każdego Chat i Run `afk` kopiuje do VM katalogi pluginów włączonych w `~/.claude/settings.json` hosta (wersje z `~/.claude/plugins/installed_plugins.json`) do `/home/agent/.afk/plugins/<plugin>`, a Claude Code startuje z `--plugin-dir` dla każdego — bez instalacji, bez sieci, bez przepisywania ścieżek. Przy starcie, nie w obrazie: Base image jest wspólny dla Project, a pluginy użytkownika zmieniają się częściej. Pluginy LSP potrzebują binarki w obrazie (np. `gopls` w `provision`). Chat dostaje też `~/.claude/skills/` bez `synced/`.
+Agent dostaje wyłącznie pluginy wymienione wprost (ADR-0009): `[agent].plugins` (`<nazwa>@<marketplace>`) i `[agent].marketplaces` (`owner/repo` albo URL gita) z `.afk.toml` oraz `enabledPlugins` (włączone) i `extraKnownMarketplaces` (źródło `github` lub `git`) z `.claude/settings.json` Project. `afk image build` dodaje marketplace'y (`claude plugin marketplace add`, zawsze też `anthropics/claude-plugins-official`, gdy jest jakikolwiek plugin) i instaluje pluginy (`claude plugin install --scope user`); `github.com` jest dozwolony przez Egress proxy budowy. `afk` sprawdza tylko format id i że źródło nie zaczyna się od `-`, resztę (brak pluginu, marketplace'u) zgłasza `claude` przy budowie. Zmiana listy wymaga przebudowy obrazu; ustawienia są czytane z drzewa roboczego jak `.afk.toml` przy budowie, a przez Run z gałęzi bazowej (brak pliku = brak pluginów). Pluginy LSP potrzebują binarki w obrazie (np. `gopls` w `provision`).
 
-Wybór (pakiet `plugin`): plugin z `installed_plugins.json` ze scope `user`, włączony w `settings.json` hosta. W Factory dodatkowo tylko z `[agent].factory_plugins`; plugin z białej listy niezainstalowany na hoście to błąd przed utworzeniem VM, a zainstalowany, ale wyłączony — pomijany z ostrzeżeniem. Przy pustej liście `afk` nie czyta `~/.claude` w ogóle. `installPath` musi mieć postać `~/.claude/plugins/cache/<marketplace>/<name>/<wersja>` (także po rozwiązaniu symlinków). Plik z kilkoma twardymi linkami to błąd, bity setuid/setgid/sticky są zerowane. Do VM idzie tar katalogu pluginu: tylko zwykłe pliki i katalogi, bez symlinków i `.git`, bez właściciela z hosta. Gdy w VM jest `mattpocock-skills`, prompt Run zaczyna się od `/mattpocock-skills:implement`, a prompt review od `/mattpocock-skills:code-review <baza>` (jak w `ralph.sh`); bez niego zostają zwykłe prompty. Pluginy z `.claude/settings.json` Project (marketplace `claude-plugins-official` dodawany z `anthropics/claude-plugins-official`, gdy ustawienia go nie wskazują; `enabledPlugins`, `extraKnownMarketplaces` ze źródłem `github` lub `git`) `afk image build` instaluje w obrazie (`claude plugin install --scope user`, przez Egress proxy); ustawienia czytane z drzewa roboczego, jak `.afk.toml` przy budowie.
+Gdy efektywna lista zawiera `mattpocock-skills`, prompt Run zaczyna się od `/mattpocock-skills:implement`, a prompt review od `/mattpocock-skills:code-review <baza>` (jak w `ralph.sh`); bez niego zostają zwykłe prompty.
 
 Z `~/.claude` nigdy nie trafia do VM: `.credentials*`, `settings.json` (hooki, uprawnienia), `projects/` (pamięć i transkrypty innych projektów), `history.jsonl`, `session-env/`, `plans/`, `file-history/`, `skills/synced/` (skille konta claude.ai, zakładają connectory).
 

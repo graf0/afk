@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -69,75 +70,9 @@ func TestRunPrompt(t *testing.T) {
 	}
 }
 
-// hostClaude is a fake ~/.claude with the plugin a@m installed and enabled.
-func hostClaude(t *testing.T) (dir string) {
-	t.Helper()
-	dir = t.TempDir()
-	plugin := filepath.Join(dir, "plugins", "cache", "m", "a", "1.0")
-	files := map[string]string{
-		filepath.Join(dir, "settings.json"):                      `{"enabledPlugins": {"a@m": true}}`,
-		filepath.Join(dir, "plugins", "installed_plugins.json"):  `{"plugins": {"a@m": [{"scope": "user", "installPath": "` + plugin + `"}]}}`,
-		filepath.Join(plugin, "skills", "implement", "SKILL.md"): "skill",
-	}
-	for path, content := range files {
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	return
-}
-
-func pluginRun(t *testing.T, claudeDir string, allow ...string) (r run) {
-	t.Helper()
-	cfg := config.Config{Agent: config.Agent{FactoryPlugins: allow}}
-	return run{Options: Options{Base: Base{Config: cfg}, ClaudeDir: claudeDir}}
-}
-
-func TestSelectPlugins(t *testing.T) {
-	dir := hostClaude(t)
-	r := pluginRun(t, dir, "a@m")
-	if err := r.selectPlugins(); err != nil {
-		t.Fatal(err)
-	}
-	if len(r.plugins) != 1 || r.plugins[0].ID != "a@m" {
-		t.Fatalf("plugins = %v", r.plugins)
-	}
-	if got := r.guestPluginDirs(); len(got) != 1 || got[0] != guestPlugins+"/a@m" {
-		t.Errorf("guest dirs = %q", got)
-	}
-	if got := r.task().Plugins; len(got) != 1 || got[0] != "a" {
+func TestTaskPlugins(t *testing.T) {
+	r := run{Options: Options{Base: Base{Plugins: []string{"b@y", "mattpocock-skills@claude-plugins-official"}}}}
+	if got := r.task().Plugins; !slices.Equal(got, []string{"b", "mattpocock-skills"}) {
 		t.Errorf("task plugins = %q", got)
-	}
-}
-
-// The default (empty) allowlist must not read ~/.claude at all, and a plugin
-// the host lacks fails the Run before the VM.
-func TestSelectPluginsAllowlist(t *testing.T) {
-	r := pluginRun(t, filepath.Join(t.TempDir(), "missing"))
-	if err := r.selectPlugins(); err != nil || r.plugins != nil {
-		t.Errorf("empty allowlist: %v, %v", r.plugins, err)
-	}
-	r = pluginRun(t, hostClaude(t), "b@m")
-	if err := r.selectPlugins(); err == nil || !strings.Contains(err.Error(), "b@m is not installed") {
-		t.Errorf("missing plugin: err = %v", err)
-	}
-}
-
-func TestSelectPluginsWarnsAboutDisabled(t *testing.T) {
-	dir := hostClaude(t)
-	if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(`{"enabledPlugins": {"a@m": false}}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	var out bytes.Buffer
-	r := pluginRun(t, dir, "a@m")
-	r.Out = &out
-	if err := r.selectPlugins(); err != nil || len(r.plugins) != 0 {
-		t.Fatalf("plugins = %v, err = %v", r.plugins, err)
-	}
-	if !strings.Contains(out.String(), "warning: plugin a@m") {
-		t.Errorf("no warning: %q", out.String())
 	}
 }

@@ -24,13 +24,12 @@ var Domains = []string{"api.anthropic.com"}
 
 // Session is one Claude Code run in the guest.
 type Session struct {
-	Token      string // Claude Code OAuth token
-	Prompt     string
-	Dir        string   // working directory in the guest
-	Model      string   // empty: Claude Code's default
-	Proxy      string   // Egress proxy URL in the guest
-	PluginDirs []string // plugin directories in the guest, one --plugin-dir each
-	Binary     string   // "claude" unless set (tests)
+	Token  string // Claude Code OAuth token
+	Prompt string
+	Dir    string // working directory in the guest
+	Model  string // empty: Claude Code's default
+	Proxy  string // Egress proxy URL in the guest
+	Binary string // "claude" unless set (tests)
 }
 
 // Run runs the session on client. The token reaches the guest only on the
@@ -86,9 +85,6 @@ func (s Session) command() (command string) {
 		"--output-format", "stream-json", "--json-schema", Schema}
 	if s.Model != "" {
 		args = append(args, "--model", s.Model)
-	}
-	for _, dir := range s.PluginDirs {
-		args = append(args, "--plugin-dir", dir)
 	}
 	// Variadic: must stay last, the prompt comes on stdin.
 	args = append(args, "--disallowedTools")

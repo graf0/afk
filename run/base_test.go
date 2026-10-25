@@ -42,6 +42,24 @@ git push -q origin trunk`)
 		}
 	})
 
+	t.Run("plugins from settings.json on the base", func(t *testing.T) {
+		if len(got.Plugins) != 0 {
+			t.Errorf("plugins = %q, want none for empty settings", got.Plugins)
+		}
+		sh(t, root, `cd other && echo '{"enabledPlugins": {"a@m": true, "b@m": false}}' > settings.json && mkdir -p .claude && mv settings.json .claude/ && git add -A && git commit -qm plugins && git push -q origin trunk`)
+		got, err := ReadBase(t.Context(), user)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(got.Plugins, []string{"a@m"}) {
+			t.Errorf("plugins = %q, want [a@m]", got.Plugins)
+		}
+		sh(t, root, "cd other && git rm -q .claude/settings.json && git commit -qm rm && git push -q origin trunk")
+		if got, err = ReadBase(t.Context(), user); err != nil || len(got.Plugins) != 0 {
+			t.Errorf("without settings.json: plugins = %q, err = %v", got.Plugins, err)
+		}
+	})
+
 	t.Run("no .afk.toml on the base", func(t *testing.T) {
 		sh(t, root, "cd other && git rm -q .afk.toml && git commit -qm rm && git push -q origin trunk")
 		if _, err := ReadBase(t.Context(), user); err == nil || !strings.Contains(err.Error(), ".afk.toml") {

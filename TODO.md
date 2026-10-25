@@ -17,7 +17,7 @@ Cel: Project opisuje swoje zależności; Agent ma bazę danych itp. bez dostępu
 
 - [ ] Domknięcie `.afk.toml`: walidacja wszystkich sekcji, `afk config` z wyjaśnieniem błędów, dokumentacja kluczy w `docs/project-config.md`.
 - [ ] Expiry (`[image].max_age`): przebudowa Base image po terminie przed startem Run/Chat; sprzątanie starych wersji w `/var/lib/afk/base/<project>/` (nieużywanych przez żadną VM).
-- [ ] Przebudowa obrazu, gdy zmieniły się `[image]` albo pluginy z repo (hash konfiguracji w katalogu wersji).
+- [ ] Przebudowa obrazu, gdy zmieniły się `[image]` albo listy pluginów (`[agent].plugins`, `marketplaces`, `.claude/settings.json` Project; ADR-0009) (hash konfiguracji w katalogu wersji).
 - [ ] Tool `package`: pakiet instalowany w Base image (`provision` generowany z `[tool.*]`), np. Postgres jako usługa w gościu.
 - [ ] Tool `host-port`: usługa na hoście wystawiona Agentowi przez tunel ssh `-R` na loopbacku gościa (jak Egress proxy), tylko wskazany port; bez otwierania hosta na sieć VM. Test izolacji: inne porty hosta dalej zablokowane.
 - [ ] Gitea jako drugi Forge (REST): interfejs `Forge`, relacje w treści (`Part of #N`, `Blocked by: #N`).
@@ -30,7 +30,6 @@ Cel: interaktywna praca z Agentem w VM i Factory z jednego okna (ADR-0008, `docs
 - [ ] Powrót Chat po restarcie hosta / crashu `afk`: VM z tego samego overlayu, `claude --continue`.
 - [ ] Eksport Chat: commity przez Quarantine repo (ta sama walidacja co Run) na branch `chat-<nazwa>`, bez PR.
 - [ ] `afk-forge` w VM (`issue create|view|list|comment`) przez kanał ssh do `afk`; `ready-for-agent` z Chat → `needs-triage`. Najpierw rozstrzygnąć protokół (open-questions).
-- [ ] Pluginy i skille użytkownika w Chat: wszystkie pluginy + `~/.claude/skills/` bez `synced/`.
 - [ ] TUI: serwer `tmux -L afk` z wbudowaną konfiguracją, sidebar w bubbletea (Chaty i Factory per Project z metadanych libvirt), skróty `M-↑/↓`, `M-n`, `M-f`, `M-x`, `M-e`, `M-s`.
 - [ ] Widok Factory: strumień Run tylko do odczytu, nagłówek z ticketem, wiekiem Run i czasem od ostatniego zdarzenia.
 - [ ] Limit równoczesnych VM / pamięci (open-questions).

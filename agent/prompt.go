@@ -15,7 +15,7 @@ type Task struct {
 	BaseRef    string   // base branch in the clone, e.g. origin/main
 	TicketPath string   // ticket file, outside the clone
 	Protected  []string // [protect].paths
-	Plugins    []string // names of the plugins in the guest, without marketplace
+	Plugins    []string // names of the plugins in the image, without marketplace
 }
 
 // skillsPlugin is the plugin whose implement and code-review skills the
@@ -23,7 +23,7 @@ type Task struct {
 const skillsPlugin = "mattpocock-skills"
 
 // skillCommand is the slash command invoking skill of skillsPlugin followed
-// by args, or empty when the plugin is not in the guest.
+// by args, or empty when the plugin is not in the image.
 func (t Task) skillCommand(skill, args string) (command string) {
 	if slices.Contains(t.Plugins, skillsPlugin) {
 		command = "/" + skillsPlugin + ":" + skill + " " + args
