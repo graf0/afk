@@ -65,11 +65,13 @@ type imageTemplate struct {
 // hclFile is the file name the template is written under.
 func (t imageTemplate) hclFile() (name string) { return t.Name + ".pkr.hcl" }
 
-// provisionSteps splits the guest script in two provisioners: afk's steps
-// followed by the project's ([image].provision), and the mandatory final steps.
-func provisionSteps(project []string) (provision, final []string) {
-	provision = make([]string, 0, len(initialSteps)+len(project))
+// provisionSteps splits the guest script in two provisioners: afk's steps,
+// the Project's Claude Code plugins (pluginSteps), then the Project's own
+// ([image].provision), and the mandatory final steps.
+func provisionSteps(pluginSteps, project []string) (provision, final []string) {
+	provision = make([]string, 0, len(initialSteps)+len(pluginSteps)+len(project))
 	provision = append(provision, initialSteps...)
+	provision = append(provision, pluginSteps...)
 	provision = append(provision, project...)
 	final = append([]string(nil), finalSteps...)
 	return

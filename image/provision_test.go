@@ -8,7 +8,7 @@ import (
 )
 
 func TestProvisionStepsOrder(t *testing.T) {
-	provision, final := provisionSteps([]string{"project-step-1", "project-step-2"})
+	provision, final := provisionSteps([]string{"claude plugin install p"}, []string{"project-step-1", "project-step-2"})
 
 	index := func(needle string) (position int) {
 		for i, step := range provision {
@@ -19,15 +19,15 @@ func TestProvisionStepsOrder(t *testing.T) {
 		return -1
 	}
 	proxyConf, packages, claude := index("Acquire::http::Proxy"), index("openssh-server"), index("claude.ai/install.sh")
-	project1, project2 := index("project-step-1"), index("project-step-2")
+	plugins, project1, project2 := index("claude plugin install p"), index("project-step-1"), index("project-step-2")
 	for name, position := range map[string]int{
-		"proxy conf": proxyConf, "packages": packages, "claude": claude, "project 1": project1, "project 2": project2,
+		"proxy conf": proxyConf, "packages": packages, "claude": claude, "plugins": plugins, "project 1": project1, "project 2": project2,
 	} {
 		if position < 0 {
 			t.Fatalf("step %q missing from %q", name, provision)
 		}
 	}
-	if !slices.IsSorted([]int{proxyConf, packages, claude, project1, project2}) {
+	if !slices.IsSorted([]int{proxyConf, packages, claude, plugins, project1, project2}) {
 		t.Errorf("wrong step order: %q", provision)
 	}
 	if project2 != len(provision)-1 {
@@ -39,7 +39,7 @@ func TestProvisionStepsOrder(t *testing.T) {
 }
 
 func TestProvisionStepsAlwaysInstallAfkRequirements(t *testing.T) {
-	provision, final := provisionSteps(nil)
+	provision, final := provisionSteps(nil, nil)
 	for _, want := range []string{"openssh-server", "git", "claude.ai/install.sh"} {
 		if !strings.Contains(strings.Join(provision, "\n"), want) {
 			t.Errorf("provision lacks %q", want)
@@ -55,7 +55,7 @@ func TestProvisionStepsAlwaysInstallAfkRequirements(t *testing.T) {
 // The final steps must run in their own, last provisioner, so a project's
 // `exit 0` or `exec` cannot skip them.
 func TestFinalStepsAreTheLastProvisionerAndNotInProvision(t *testing.T) {
-	provision, final := provisionSteps([]string{"exit 0"})
+	provision, final := provisionSteps(nil, []string{"exit 0"})
 
 	if !slices.Equal(final, finalSteps) {
 		t.Errorf("final = %q", final)

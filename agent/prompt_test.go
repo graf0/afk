@@ -66,3 +66,23 @@ func TestReviewPrompt(t *testing.T) {
 		}
 	}
 }
+
+func TestPromptSkills(t *testing.T) {
+	task := Task{BaseRef: "origin/main", Plugins: []string{"other", "mattpocock-skills"}}
+	if got := Prompt(task); !strings.HasPrefix(got, "/mattpocock-skills:implement Zrealizuj ticket") {
+		t.Errorf("prompt does not start with the implement skill:\n%s", got)
+	}
+	if got := ReviewPrompt(task); !strings.HasPrefix(got, "/mattpocock-skills:code-review origin/main\n\nZrób code review") {
+		t.Errorf("review prompt does not start with the code-review skill:\n%s", got)
+	}
+	task.Plugins = []string{"other"}
+	if got := Prompt(task); !strings.HasPrefix(got, "Zrealizuj ticket") {
+		t.Errorf("prompt without the plugin starts with %q", got[:30])
+	}
+	if got := ReviewPrompt(task); !strings.HasPrefix(got, "Zrób code review") {
+		t.Errorf("review prompt without the plugin starts with %q", got[:30])
+	}
+	if got := FixPrompt(Task{Plugins: []string{"mattpocock-skills"}}, "make", "out"); strings.Contains(got, "/mattpocock-skills") {
+		t.Error("fix prompt calls a skill")
+	}
+}

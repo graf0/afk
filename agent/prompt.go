@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/graf0/afk/forge"
@@ -14,12 +15,27 @@ type Task struct {
 	BaseRef    string   // base branch in the clone, e.g. origin/main
 	TicketPath string   // ticket file, outside the clone
 	Protected  []string // [protect].paths
+	Plugins    []string // names of the plugins in the guest, without marketplace
+}
+
+// skillsPlugin is the plugin whose implement and code-review skills the
+// Run and review prompts call, like docs/reference/ralph.sh.
+const skillsPlugin = "mattpocock-skills"
+
+// skillCommand is the slash command invoking skill of skillsPlugin followed
+// by args, or empty when the plugin is not in the guest.
+func (t Task) skillCommand(skill, args string) (command string) {
+	if slices.Contains(t.Plugins, skillsPlugin) {
+		command = "/" + skillsPlugin + ":" + skill + " " + args
+	}
+	return
 }
 
 // Prompt is the Agent's prompt for task, modelled on rules() in
 // docs/reference/ralph.sh.
 func Prompt(task Task) (prompt string) {
 	var b strings.Builder
+	b.WriteString(task.skillCommand("implement", ""))
 	fmt.Fprintf(&b, "Zrealizuj ticket z pliku `%s`.\n\n", task.TicketPath)
 	b.WriteString("Zasady:\n")
 	fmt.Fprintf(&b, "- Pracujesz na gotowym branchu `%s` w świeżym klonie repo `%s` (bieżący katalog), odgałęzionym od `%s`. Nie zmieniaj brancha.\n", task.Branch, task.RepoDir, task.BaseRef)
@@ -49,6 +65,9 @@ func FixPrompt(task Task, gateCmd, output string) (prompt string) {
 // against the base (review() in docs/reference/ralph.sh).
 func ReviewPrompt(task Task) (prompt string) {
 	var b strings.Builder
+	if command := task.skillCommand("code-review", task.BaseRef); command != "" {
+		b.WriteString(command + "\n\n")
+	}
 	fmt.Fprintf(&b, "Zrób code review całego brancha `%s` względem `%s` (zakres zmian: `git diff %s...HEAD`), w bieżącym klonie `%s`. Sprawdź poprawność, zgodność z ticketem w `%s` (poza repo, nie commituj go; to jedyne źródło wiedzy o zadaniu, nie szukaj zgłoszeń w sieci) oraz zgodność z konwencjami repo. Podaj te ścieżki subagentom: nie dziedziczą tego promptu.\n\n", task.Branch, task.BaseRef, task.BaseRef, task.RepoDir, task.TicketPath)
 	b.WriteString("Po review popraw wszystkie znaleziska i zacommituj poprawki. Jeśli nie ma czego poprawiać, nie commituj. Nie zmieniaj brancha.\n\n")
 	b.WriteString("Zasady:\n")

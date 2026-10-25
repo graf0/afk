@@ -3,10 +3,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"github.com/graf0/afk/config"
@@ -68,7 +71,7 @@ func runCommand(ctx context.Context, abort <-chan struct{}, args []string, dir s
 		}
 		_, err = stdout.Write(data)
 	case "image":
-		err = runImage(ctx, abort, args[1:], cfg, stdout)
+		err = runImage(ctx, abort, args[1:], dir, cfg, stdout)
 	case "vm":
 		err = runVM(ctx, args[1:], cfg, stdout)
 	default:
@@ -78,7 +81,7 @@ func runCommand(ctx context.Context, abort <-chan struct{}, args []string, dir s
 }
 
 // runImage executes `afk image <subcommand>`.
-func runImage(ctx context.Context, abort <-chan struct{}, args []string, cfg config.Config, stdout io.Writer) (err error) {
+func runImage(ctx context.Context, abort <-chan struct{}, args []string, dir string, cfg config.Config, stdout io.Writer) (err error) {
 	if len(args) != 1 || args[0] != "build" {
 		err = fmt.Errorf("usage: afk image build")
 		return
@@ -87,6 +90,16 @@ func runImage(ctx context.Context, abort <-chan struct{}, args []string, cfg con
 	if err != nil {
 		return
 	}
-	_, err = image.Build(ctx, image.Options{Paths: paths, Config: cfg, Out: stdout, Abort: abort})
+	// Like .afk.toml above: the working tree of the Project.
+	root, err := config.FindRoot(dir)
+	if err != nil {
+		return
+	}
+	settings, err := os.ReadFile(filepath.Join(root, ".claude", "settings.json"))
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		err = fmt.Errorf("reading .claude/settings.json: %w", err)
+		return
+	}
+	_, err = image.Build(ctx, image.Options{Paths: paths, Config: cfg, Out: stdout, Abort: abort, ProjectSettings: settings})
 	return
 }

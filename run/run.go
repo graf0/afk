@@ -23,6 +23,7 @@ import (
 	"github.com/graf0/afk/forge"
 	"github.com/graf0/afk/image"
 	"github.com/graf0/afk/machine"
+	"github.com/graf0/afk/plugin"
 )
 
 const (
@@ -31,6 +32,9 @@ const (
 	guestRepo   = guestWork + "/repo"
 	guestTicket = guestWork + "/TICKET.md"
 	guestBundle = guestWork + "/base.bundle"
+
+	// guestPlugins holds the user's plugins, one directory per plugin id.
+	guestPlugins = "/home/agent/.afk/plugins"
 
 	// Commit identity in the guest; the Agent has no other.
 	guestGitName  = "afk agent"
@@ -49,6 +53,7 @@ type Options struct {
 	Out         io.Writer
 	Forge       *forge.GitHub // GitURL is where ticket-N is pushed
 	AgentBinary string        // "claude" unless set (tests)
+	ClaudeDir   string        // host's ~/.claude unless set (tests)
 }
 
 // run is the state of one Run.
@@ -59,6 +64,8 @@ type run struct {
 	branch     string // ticket-N, in the guest and the Quarantine repo
 	quarantine Quarantine
 	log        *rotatingLog
+	plugins    []plugin.Plugin // copied into the guest, [agent].factory_plugins
+	pluginsDir string          // host's ~/.claude/plugins
 }
 
 // --- run ---
@@ -82,6 +89,10 @@ func Execute(ctx context.Context, opts Options) (err error) {
 	policy, err := egress.Allowlist(slices.Concat(cfg.Network.Allow, agent.Domains))
 	if err != nil {
 		err = fmt.Errorf("network.allow: %w", err)
+		return
+	}
+	// Fail before the VM: a whitelisted plugin the host lacks.
+	if err = r.selectPlugins(); err != nil {
 		return
 	}
 	disk, err := image.LatestDisk(opts.Paths, r.project)
@@ -215,6 +226,73 @@ func (r run) prepareGuest(ctx context.Context, client *ssh.Client) (err error) {
 	}
 	if err = remote(ctx, client, "cat > "+guestTicket, strings.NewReader(agent.TicketFile(r.Ticket)), nil); err != nil {
 		err = fmt.Errorf("writing the ticket in the guest: %w", err)
+		return
+	}
+	err = r.copyPlugins(ctx, client)
+	return
+}
+
+// selectPlugins picks the host plugins of [agent].factory_plugins; with an
+// empty list it does not touch ~/.claude at all.
+func (r *run) selectPlugins() (err error) {
+	allow := r.Base.Config.Agent.FactoryPlugins
+	if len(allow) == 0 {
+		return
+	}
+	claudeDir := r.ClaudeDir
+	if claudeDir == "" {
+		home, homeErr := os.UserHomeDir()
+		if homeErr != nil {
+			err = fmt.Errorf("finding the home directory: %w", homeErr)
+			return
+		}
+		claudeDir = filepath.Join(home, ".claude")
+	}
+	r.pluginsDir = filepath.Join(claudeDir, "plugins")
+	settings, err := os.ReadFile(filepath.Join(claudeDir, "settings.json"))
+	if err != nil {
+		err = fmt.Errorf("reading host settings for agent.factory_plugins: %w", err)
+		return
+	}
+	enabled, err := plugin.ParseEnabled(settings)
+	if err != nil {
+		return
+	}
+	data, err := os.ReadFile(filepath.Join(r.pluginsDir, "installed_plugins.json"))
+	if err != nil {
+		err = fmt.Errorf("reading host plugins for agent.factory_plugins: %w", err)
+		return
+	}
+	installed, err := plugin.ParseInstalled(data)
+	if err != nil {
+		return
+	}
+	var disabled []string
+	if r.plugins, disabled, err = plugin.Select(enabled, installed, allow, r.pluginsDir); err != nil {
+		err = fmt.Errorf("agent.factory_plugins: %w", err)
+		return
+	}
+	for _, id := range disabled {
+		r.say("warning: plugin %s from agent.factory_plugins is disabled in the host's settings.json, skipped", id)
+	}
+	return
+}
+
+// copyPlugins unpacks the selected plugins into guestPlugins.
+func (r run) copyPlugins(ctx context.Context, client *ssh.Client) (err error) {
+	if len(r.plugins) == 0 {
+		return
+	}
+	pipeReader, pipeWriter := io.Pipe()
+	go func() { _ = pipeWriter.CloseWithError(plugin.Tar(pipeWriter, r.pluginsDir, r.plugins)) }()
+	defer func() { _ = pipeReader.Close() }()
+	q := agent.ShellQuote(guestPlugins)
+	if err = remote(ctx, client, "mkdir -p "+q+" && tar -x --no-same-owner -C "+q, pipeReader, nil); err != nil {
+		err = fmt.Errorf("copying plugins to the guest: %w", err)
+		return
+	}
+	for _, p := range r.plugins {
+		r.say("plugin %s", p.ID)
 	}
 	return
 }

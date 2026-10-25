@@ -24,7 +24,7 @@ printf 'stdin=%s\n' "$(cat)"
 	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	s := Session{Token: "tok'en", Prompt: "do it\nwell", Dir: dir, Model: "opus", Proxy: "http://127.0.0.1:3128", Binary: fake}
+	s := Session{Token: "tok'en", Prompt: "do it\nwell", Dir: dir, Model: "opus", PluginDirs: []string{"/p/a@m", "/p/b c@m"}, Proxy: "http://127.0.0.1:3128", Binary: fake}
 
 	cmd := exec.Command("bash", "-c", s.command())
 	cmd.Stdin = strings.NewReader(s.Token + "\n" + s.Prompt)
@@ -42,7 +42,7 @@ printf 'stdin=%s\n' "$(cat)"
 		"arg=--output-format\narg=stream-json\n",
 		"arg=" + Schema + "\n",
 		"arg=--model\narg=opus\n",
-		"arg=--disallowedTools\narg=WebFetch\narg=WebSearch\nstdin=",
+		"arg=--plugin-dir\narg=/p/a@m\narg=--plugin-dir\narg=/p/b c@m\narg=--disallowedTools\narg=WebFetch\narg=WebSearch\nstdin=",
 		"stdin=do it\nwell\n",
 	} {
 		if !strings.Contains(string(out), want) {

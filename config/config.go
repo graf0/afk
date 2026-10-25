@@ -97,7 +97,7 @@ type Tool struct {
 
 // Load finds the repository root at or above dir and loads its Project config.
 func Load(dir string) (cfg Config, err error) {
-	root, err := findRoot(dir)
+	root, err := FindRoot(dir)
 	if err != nil {
 		err = fmt.Errorf("finding project root: %w", err)
 		return
@@ -157,9 +157,9 @@ func defaults() (cfg Config) {
 	return
 }
 
-// findRoot walks up from dir to the first directory containing .git
+// FindRoot walks up from dir to the first directory containing .git
 // (a directory, or a file in worktrees).
-func findRoot(dir string) (root string, err error) {
+func FindRoot(dir string) (root string, err error) {
 	start, err := filepath.Abs(dir)
 	if err != nil {
 		err = fmt.Errorf("resolving %s: %w", dir, err)

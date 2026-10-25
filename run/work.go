@@ -50,12 +50,13 @@ func (g sshGuest) Exec(ctx context.Context, command string, stdout io.Writer) (e
 func (g sshGuest) Agent(ctx context.Context, prompt, model string) (report agent.Report, err error) {
 	r := g.run
 	report, err = agent.Session{
-		Token:  r.ClaudeToken,
-		Prompt: prompt,
-		Dir:    guestRepo,
-		Model:  model,
-		Proxy:  "http://" + machine.ProxyAddr,
-		Binary: r.AgentBinary,
+		Token:      r.ClaudeToken,
+		Prompt:     prompt,
+		Dir:        guestRepo,
+		Model:      model,
+		Proxy:      "http://" + machine.ProxyAddr,
+		Binary:     r.AgentBinary,
+		PluginDirs: r.guestPluginDirs(),
 	}.Run(ctx, g.client, r.Out, r.log)
 	if err != nil {
 		err = fmt.Errorf("%w (log: %s)", err, r.log.path)
@@ -283,11 +284,24 @@ func lastLines(text string, n int) (tail string) {
 // --- helpers ---
 
 func (r run) task() (task agent.Task) {
+	var names []string
+	for _, p := range r.plugins {
+		names = append(names, p.Name())
+	}
 	return agent.Task{
 		RepoDir:    guestRepo,
 		Branch:     r.branch,
 		BaseRef:    "origin/" + r.Base.Branch,
 		TicketPath: guestTicket,
 		Protected:  r.Base.Config.Protect.Paths,
+		Plugins:    names,
 	}
+}
+
+// guestPluginDirs are the directories of the copied plugins in the guest.
+func (r run) guestPluginDirs() (dirs []string) {
+	for _, p := range r.plugins {
+		dirs = append(dirs, guestPlugins+"/"+p.ID)
+	}
+	return
 }
