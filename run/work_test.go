@@ -168,6 +168,14 @@ func TestWorkGateExhausted(t *testing.T) {
 	}
 }
 
+func TestWorkNoCommits(t *testing.T) {
+	r, g, _ := workRun(t, &fakeGitHub{}, `true`, 3)
+	g.sessions = []func() agent.Report{func() agent.Report { return agent.Report{Status: agent.StatusDone, Summary: "Nothing."} }}
+	if _, err := r.work(t.Context(), g); err == nil || !strings.Contains(err.Error(), "done without commits") {
+		t.Errorf("err = %v, want done without commits", err)
+	}
+}
+
 func TestWorkFixNotDone(t *testing.T) {
 	r, g, _ := workRun(t, &fakeGitHub{}, `false`, 3)
 	g.sessions = []func() agent.Report{

@@ -18,11 +18,16 @@ import (
 )
 
 // fakeGitHub records requests as "METHOD path" with their JSON bodies and
-// fails the one named by fail with 422.
+// fails the one named by fail with 422. Every write is answered with the
+// pull request 42, unless issues is set: then it also keeps issues, labels,
+// sub-issues, blockers and the pull request of Specs (see fakeGitHub.answer).
 type fakeGitHub struct {
 	requests []string
 	bodies   []map[string]any
 	fail     string
+
+	issues map[int]*fakeIssue
+	pull   map[string]any // nil until created
 }
 
 // serve starts the fake API; the returned client pushes to remote.
@@ -38,6 +43,12 @@ func (fake *fakeGitHub) serve(t *testing.T, remote string) (g *forge.GitHub) {
 			w.WriteHeader(http.StatusUnprocessableEntity)
 			_, _ = fmt.Fprint(w, `{"message":"Validation Failed"}`)
 			return
+		}
+		if fake.issues != nil {
+			if reply, ok := fake.answer(req, body); ok {
+				_ = json.NewEncoder(w).Encode(reply)
+				return
+			}
 		}
 		w.WriteHeader(http.StatusCreated)
 		_, _ = fmt.Fprint(w, `{"number":42,"html_url":"https://github.com/o/r/pull/42"}`)

@@ -201,14 +201,21 @@ func TestQuarantineSetup(t *testing.T) {
 	if err = q.CheckNew(t.Context(), "ticket-1"); err != nil {
 		t.Errorf("CheckNew before Accept: %v", err)
 	}
-	if err = q.Accept(t.Context(), "ticket-1", base); err != nil {
+	if err = q.Accept(t.Context(), "ticket-1", base, ""); err != nil {
 		t.Fatal(err)
 	}
 	if err = q.CheckNew(t.Context(), "ticket-1"); err == nil || !strings.Contains(err.Error(), "already has a result") {
 		t.Errorf("CheckNew after Accept: err = %v", err)
 	}
-	if err = q.Accept(t.Context(), "ticket-1", base); err == nil {
+	if err = q.Accept(t.Context(), "ticket-1", base, ""); err == nil {
 		t.Error("second Accept overwrote the result")
+	}
+	// The branch moves only from the commit it is at.
+	if err = q.Accept(t.Context(), "ticket-1", base, "0123456789012345678901234567890123456789"); err == nil {
+		t.Error("Accept moved the result from a wrong commit")
+	}
+	if err = q.Accept(t.Context(), "ticket-1", base, base); err != nil {
+		t.Errorf("Accept from the current commit: %v", err)
 	}
 	refs := strings.Fields(sh(t, root, "git --git-dir="+dir+" for-each-ref --format='%(refname)'"))
 	if !slices.Equal(refs, []string{"refs/afk/base/ticket-1", "refs/heads/ticket-1"}) {
@@ -249,7 +256,7 @@ func acceptedResult(t *testing.T) (root, user, base string, q Quarantine) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = q.Accept(t.Context(), "ticket-1", squashed); err != nil {
+	if err = q.Accept(t.Context(), "ticket-1", squashed, ""); err != nil {
 		t.Fatal(err)
 	}
 	return
@@ -297,35 +304,103 @@ func TestQuarantinePush(t *testing.T) {
 	remote := forge.Remote{URL: filepath.Join(root, "origin.git")}
 	squashed := sh(t, root, "git --git-dir="+q.Dir+" rev-parse ticket-1")
 
-	exists, err := q.RemoteHasBranch(t.Context(), remote, "ticket-1")
-	if err != nil || exists {
-		t.Fatalf("RemoteHasBranch before push = %v, %v", exists, err)
+	tip, err := q.RemoteTip(t.Context(), remote, "ticket-1")
+	if err != nil || tip != "" {
+		t.Fatalf("RemoteTip before push = %q, %v", tip, err)
 	}
 	// A branch whose name only ends like ticket-1 doesn't count.
 	sh(t, root, "git --git-dir=origin.git update-ref refs/heads/x/ticket-1 "+base)
-	if exists, err = q.RemoteHasBranch(t.Context(), remote, "ticket-1"); err != nil || exists {
-		t.Errorf("RemoteHasBranch with x/ticket-1 = %v, %v", exists, err)
+	if tip, err = q.RemoteTip(t.Context(), remote, "ticket-1"); err != nil || tip != "" {
+		t.Errorf("RemoteTip with x/ticket-1 = %q, %v", tip, err)
 	}
-	if err = q.Push(t.Context(), remote, "ticket-1"); err != nil {
+	if err = q.Push(t.Context(), remote, "ticket-1", ""); err != nil {
 		t.Fatal(err)
 	}
 	if got := sh(t, root, "git --git-dir=origin.git rev-parse refs/heads/ticket-1"); got != squashed {
 		t.Errorf("remote ticket-1 = %s, want %s", got, squashed)
 	}
-	if exists, err = q.RemoteHasBranch(t.Context(), remote, "ticket-1"); err != nil || !exists {
-		t.Errorf("RemoteHasBranch after push = %v, %v", exists, err)
+	if tip, err = q.RemoteTip(t.Context(), remote, "ticket-1"); err != nil || tip != squashed {
+		t.Errorf("RemoteTip after push = %q, %v, want %s", tip, err, squashed)
 	}
 
-	// An existing branch is never moved, not even forward from the base.
+	// Creating never moves an existing branch, not even forward from the base.
 	sh(t, root, "git --git-dir=origin.git update-ref refs/heads/ticket-1 "+base)
-	if err = q.Push(t.Context(), remote, "ticket-1"); err == nil {
+	if err = q.Push(t.Context(), remote, "ticket-1", ""); err == nil {
 		t.Error("push over an existing branch: want error")
 	}
 	if got := sh(t, root, "git --git-dir=origin.git rev-parse refs/heads/ticket-1"); got != base {
 		t.Errorf("remote ticket-1 moved to %s", got)
 	}
+	// Moving needs the commit afk saw last: another one means someone pushed.
+	if err = q.Push(t.Context(), remote, "ticket-1", squashed); err == nil {
+		t.Error("push over a branch that is not at the expected commit: want error")
+	}
+	if err = q.Push(t.Context(), remote, "ticket-1", base); err != nil {
+		t.Errorf("push from the expected commit: %v", err)
+	}
+	if got := sh(t, root, "git --git-dir=origin.git rev-parse refs/heads/ticket-1"); got != squashed {
+		t.Errorf("remote ticket-1 = %s, want %s", got, squashed)
+	}
 
-	if _, err = q.RemoteHasBranch(t.Context(), forge.Remote{URL: filepath.Join(root, "missing.git")}, "ticket-1"); err == nil {
+	if _, err = q.RemoteTip(t.Context(), forge.Remote{URL: filepath.Join(root, "missing.git")}, "ticket-1"); err == nil {
 		t.Error("missing remote: want error")
+	}
+}
+
+func TestQuarantineResume(t *testing.T) {
+	root, user, base, q := acceptedResult(t)
+	remote := forge.Remote{URL: filepath.Join(root, "origin.git")}
+	tip := sh(t, root, "git --git-dir="+q.Dir+" rev-parse ticket-1")
+	if err := q.Push(t.Context(), remote, "ticket-1", ""); err != nil {
+		t.Fatal(err)
+	}
+	// A fresh Quarantine repo, with the base branch moved on since the push.
+	fresh, err := OpenQuarantine(t.Context(), filepath.Join(t.TempDir(), "quarantine.git"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sh(t, user, "echo m > moved && git add moved && git commit -qm moved && git push -q origin main")
+	moved := sh(t, user, "git rev-parse HEAD")
+	if err = fresh.FetchBase(t.Context(), user, moved, "ticket-1"); err != nil {
+		t.Fatal(err)
+	}
+	gotTip, gotBase, err := fresh.Resume(t.Context(), remote, "ticket-1", []string{"secrets/key"})
+	if err != nil || gotTip != tip || gotBase != base {
+		t.Fatalf("Resume = %s, %s, %v; want %s on the merge base %s", gotTip, gotBase, err, tip, base)
+	}
+	git := "git --git-dir=" + fresh.Dir + " "
+	if got := sh(t, root, git+"rev-parse ticket-1 refs/afk/base/ticket-1"); got != tip+"\n"+base {
+		t.Errorf("refs = %q", got)
+	}
+	if err = fresh.CheckNew(t.Context(), "ticket-1"); err == nil {
+		t.Error("Resume left no result")
+	}
+	// The guest gets the base and the tip.
+	bundle := filepath.Join(root, "tip.bundle")
+	if err = fresh.Bundle(t.Context(), "ticket-1", bundle); err != nil {
+		t.Fatal(err)
+	}
+	if got := sh(t, root, "git init -q guest && cd guest && git fetch -q "+bundle+" +refs/afk/base/ticket-1:refs/remotes/origin/main +refs/heads/ticket-1:refs/afk/start && git rev-parse origin/main refs/afk/start"); got != base+"\n"+tip {
+		t.Errorf("guest refs = %q", got)
+	}
+	subjects, err := fresh.Subjects(t.Context(), base, tip)
+	if err != nil || !slices.Equal(subjects, []string{"Do it (#1)"}) {
+		t.Errorf("Subjects = %q, %v", subjects, err)
+	}
+
+	// A tip that touches a protected path is refused, and nothing is accepted.
+	sh(t, root, "git --git-dir=origin.git update-ref refs/heads/ticket-2 "+tip)
+	other, err := OpenQuarantine(t.Context(), filepath.Join(t.TempDir(), "quarantine.git"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = other.FetchBase(t.Context(), user, moved, "ticket-2"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = other.Resume(t.Context(), remote, "ticket-2", []string{"new"}); err == nil || !strings.Contains(err.Error(), "protected paths: new") {
+		t.Errorf("Resume with a protected path: err = %v", err)
+	}
+	if err = other.CheckNew(t.Context(), "ticket-2"); err != nil {
+		t.Errorf("a rejected tip was accepted: %v", err)
 	}
 }

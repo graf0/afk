@@ -35,6 +35,12 @@ func TestPrompt(t *testing.T) {
 	if strings.Contains(Prompt(Task{}), "chronionych") {
 		t.Error("prompt mentions protected paths without any")
 	}
+	if strings.Contains(Prompt(Task{}), "speca") {
+		t.Error("prompt mentions a Spec without one")
+	}
+	if prompt = Prompt(Task{SpecPath: "/work/SPEC.md"}); !strings.Contains(prompt, "`/work/SPEC.md`") || !strings.Contains(prompt, "kontekst") {
+		t.Errorf("prompt lacks the Spec:\n%s", prompt)
+	}
 }
 
 func TestTicketFile(t *testing.T) {

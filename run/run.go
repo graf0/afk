@@ -30,6 +30,9 @@ const (
 	guestWork   = "/work"
 	guestRepo   = guestWork + "/repo"
 	guestTicket = guestWork + "/TICKET.md"
+	guestSpec   = guestWork + "/SPEC.md"
+	// guestStart is where the guest fetches the tip of a Spec's branch.
+	guestStart  = "refs/afk/start"
 	guestBundle = guestWork + "/base.bundle"
 
 	// Commit identity in the guest; the Agent has no other.
@@ -51,6 +54,13 @@ type Options struct {
 	AgentBinary string        // "claude" unless set (tests)
 }
 
+// vmSetup is what a Run needs to bring up a Sandbox VM.
+type vmSetup struct {
+	policy egress.Policy
+	disk   string
+	signer ssh.Signer
+}
+
 // run is the state of one Run.
 type run struct {
 	Options
@@ -59,6 +69,35 @@ type run struct {
 	branch     string // ticket-N, in the guest and the Quarantine repo
 	quarantine Quarantine
 	log        *rotatingLog
+
+	// tip is the end of the Spec's branch in the Quarantine repo: the commit
+	// the Run continues from and the one Accept moves the branch from. Empty
+	// for a Ticket outside a Spec and before the first child of a Spec.
+	tip string
+	// spec is the Spec of the Ticket, given to the Agent as context.
+	spec *forge.Ticket
+}
+
+// newRun is the state of a Run of opts.Ticket with what its VMs need.
+func newRun(ctx context.Context, opts Options) (r run, setup vmSetup, err error) {
+	r = run{Options: opts, branch: fmt.Sprintf("ticket-%d", opts.Ticket.Number)}
+	cfg := opts.Base.Config
+	if r.project, err = image.ProjectName(cfg.Forge.Repo); err != nil {
+		return
+	}
+	r.stateDir = filepath.Join(opts.Paths.StateDir, r.project)
+	if setup.policy, err = egress.Allowlist(slices.Concat(cfg.Network.Allow, agent.Domains)); err != nil {
+		err = fmt.Errorf("network.allow: %w", err)
+		return
+	}
+	if setup.disk, err = image.LatestDisk(opts.Paths, r.project); err != nil {
+		return
+	}
+	if setup.signer, err = image.SSHSigner(opts.Paths); err != nil {
+		return
+	}
+	r.quarantine, err = OpenQuarantine(ctx, filepath.Join(r.stateDir, QuarantineName))
+	return
 }
 
 // --- run ---
@@ -73,26 +112,12 @@ type run struct {
 // is destroyed before the Forge is written; on any failure in the VM (and
 // Ctrl-C) it stays for `afk vm shell` / `afk vm kill`.
 func Execute(ctx context.Context, opts Options) (err error) {
-	r := run{Options: opts, branch: fmt.Sprintf("ticket-%d", opts.Ticket.Number)}
-	cfg := opts.Base.Config
-	if r.project, err = image.ProjectName(cfg.Forge.Repo); err != nil {
+	if opts.Ticket.SubIssues > 0 {
+		err = fmt.Errorf("ticket #%d is a Spec: run it with ExecuteSpec", opts.Ticket.Number)
 		return
 	}
-	r.stateDir = filepath.Join(opts.Paths.StateDir, r.project)
-	policy, err := egress.Allowlist(slices.Concat(cfg.Network.Allow, agent.Domains))
+	r, setup, err := newRun(ctx, opts)
 	if err != nil {
-		err = fmt.Errorf("network.allow: %w", err)
-		return
-	}
-	disk, err := image.LatestDisk(opts.Paths, r.project)
-	if err != nil {
-		return
-	}
-	signer, err := image.SSHSigner(opts.Paths)
-	if err != nil {
-		return
-	}
-	if r.quarantine, err = OpenQuarantine(ctx, filepath.Join(r.stateDir, QuarantineName)); err != nil {
 		return
 	}
 	if err = r.quarantine.CheckNew(ctx, r.branch); err != nil {
@@ -105,7 +130,7 @@ func Execute(ctx context.Context, opts Options) (err error) {
 	if err = r.quarantine.FetchBase(ctx, opts.Base.Repo, opts.Base.Commit, r.branch); err != nil {
 		return
 	}
-	logPath, err := r.openLog()
+	logPath, err := r.openLog(r.branch)
 	if err != nil {
 		return
 	}
@@ -113,7 +138,7 @@ func Execute(ctx context.Context, opts Options) (err error) {
 	r.say("ticket #%d %s", opts.Ticket.Number, agent.Sanitize(opts.Ticket.Title))
 	r.say("base origin/%s %s, log %s", opts.Base.Branch, opts.Base.Commit, logPath)
 
-	res, err := r.session(ctx, policy, disk, signer)
+	res, err := r.session(ctx, setup, r.work)
 	if err != nil {
 		return
 	}
@@ -121,9 +146,9 @@ func Execute(ctx context.Context, opts Options) (err error) {
 	return
 }
 
-// session runs the Agent in a fresh VM and, on done, takes its result through
-// the gate and the review into the Quarantine repo. The VM is destroyed on success, kept on failure.
-func (r run) session(ctx context.Context, policy egress.Policy, disk string, signer ssh.Signer) (res result, err error) {
+// session runs the Agent in a fresh VM and, on done, calls work with the
+// prepared guest. The VM is destroyed on success, kept on failure.
+func (r run) session(ctx context.Context, setup vmSetup, work workFunc) (res result, err error) {
 	conn, err := machine.Connect()
 	if err != nil {
 		return
@@ -135,7 +160,7 @@ func (r run) session(ctx context.Context, policy egress.Policy, disk string, sig
 		Project:  r.project,
 		Kind:     machine.KindRun,
 		ID:       fmt.Sprintf("%d-%s", r.Ticket.Number, hex.EncodeToString(id)),
-		BaseDisk: disk,
+		BaseDisk: setup.disk,
 	})
 	if err != nil {
 		return
@@ -156,13 +181,13 @@ func (r run) session(ctx context.Context, policy egress.Policy, disk string, sig
 	}()
 	sshCtx, cancel := context.WithTimeout(ctx, machine.SSHTimeout)
 	defer cancel()
-	if client, err = m.SSH(sshCtx, signer); err != nil {
+	if client, err = m.SSH(sshCtx, setup.signer); err != nil {
 		return
 	}
 	defer func() { _ = client.Close() }()
 	// Ctrl-C ends every session at once; the VM then stays like on failure.
 	defer context.AfterFunc(ctx, func() { _ = client.Close() })()
-	stop, err := machine.ServeEgress(ctx, client, policy)
+	stop, err := machine.ServeEgress(ctx, client, setup.policy)
 	if err != nil {
 		return
 	}
@@ -171,12 +196,13 @@ func (r run) session(ctx context.Context, policy egress.Policy, disk string, sig
 	if err = r.prepareGuest(ctx, client); err != nil {
 		return
 	}
-	res, err = r.work(ctx, sshGuest{run: r, client: client})
+	res, err = work(ctx, sshGuest{run: r, client: client})
 	return
 }
 
 // prepareGuest clones the base into guestRepo on the ticket branch, with the
-// base as origin/<branch>, and writes the ticket next to it.
+// base as origin/<branch>, and writes the ticket next to it. Inside a Spec
+// the branch starts at its tip instead, and the Spec is written too.
 func (r run) prepareGuest(ctx context.Context, client *ssh.Client) (err error) {
 	temp, err := os.CreateTemp(r.stateDir, "base-*.bundle")
 	if err != nil {
@@ -197,6 +223,10 @@ func (r run) prepareGuest(ctx context.Context, client *ssh.Client) (err error) {
 	defer func() { _ = bundle.Close() }()
 	q := agent.ShellQuote
 	origin := originPrefix + r.Base.Branch
+	fetch, start := q("+"+baseRef(r.branch)+":"+origin), origin
+	if r.start() != r.Base.Commit {
+		fetch, start = fetch+" "+q("+"+resultRef(r.branch)+":"+guestStart), guestStart
+	}
 	script := strings.Join([]string{
 		"set -eu",
 		`sudo install -d -o "$(id -u)" -g "$(id -g)" ` + guestWork,
@@ -205,8 +235,8 @@ func (r run) prepareGuest(ctx context.Context, client *ssh.Client) (err error) {
 		"cd " + guestRepo,
 		"git config user.name " + q(guestGitName),
 		"git config user.email " + q(guestGitEmail),
-		"git fetch -q --no-tags " + guestBundle + " " + q("+"+baseRef(r.branch)+":"+origin),
-		"git checkout -q -B " + q(r.branch) + " " + q(origin),
+		"git fetch -q --no-tags " + guestBundle + " " + fetch,
+		"git checkout -q -B " + q(r.branch) + " " + q(start),
 		"rm " + guestBundle,
 	}, "\n")
 	if err = remote(ctx, client, script, bundle, nil); err != nil {
@@ -216,6 +246,12 @@ func (r run) prepareGuest(ctx context.Context, client *ssh.Client) (err error) {
 	if err = remote(ctx, client, "cat > "+guestTicket, strings.NewReader(agent.TicketFile(r.Ticket)), nil); err != nil {
 		err = fmt.Errorf("writing the ticket in the guest: %w", err)
 		return
+	}
+	if r.spec == nil {
+		return
+	}
+	if err = remote(ctx, client, "cat > "+guestSpec, strings.NewReader(agent.TicketFile(*r.spec)), nil); err != nil {
+		err = fmt.Errorf("writing the Spec in the guest: %w", err)
 	}
 	return
 }
@@ -229,14 +265,14 @@ const (
 
 func (r run) prompt() (prompt string) { return agent.Prompt(r.task()) }
 
-// openLog creates the Run's log for the raw agent stream.
-func (r *run) openLog() (path string, err error) {
+// openLog creates the log for the raw agent stream of a session, named after name.
+func (r *run) openLog(name string) (path string, err error) {
 	dir := filepath.Join(r.stateDir, "logs")
 	if err = os.MkdirAll(dir, 0o700); err != nil {
 		err = fmt.Errorf("creating %s: %w", dir, err)
 		return
 	}
-	path = filepath.Join(dir, fmt.Sprintf("%s-%s.jsonl", r.branch, time.Now().UTC().Format("20060102T150405Z")))
+	path = filepath.Join(dir, fmt.Sprintf("%s-%s.jsonl", name, time.Now().UTC().Format("20060102T150405Z")))
 	r.log = &rotatingLog{path: path, max: logRotateSize}
 	if r.log.file, err = os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600); err != nil {
 		err = fmt.Errorf("creating log: %w", err)

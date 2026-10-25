@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -30,7 +31,7 @@ const (
 	githubGit = "https://github.com/"
 
 	githubAPIVersion = "2022-11-28"
-	commentsPerPage  = 100
+	perPage          = 100
 	maxResponseSize  = 16 << 20
 	requestTimeout   = time.Minute
 )
@@ -42,6 +43,16 @@ type Ticket struct {
 	Body     string
 	Comments []string
 	Labels   []string
+
+	// SubIssues is the number of sub-issues: more than zero makes the ticket a Spec.
+	SubIssues int
+}
+
+// SubIssue is a sub-issue of a Spec as listed on the Forge.
+type SubIssue struct {
+	Number int
+	Open   bool
+	Labels []string
 }
 
 // GitHub reads and updates tickets and pull requests of Repo through the
@@ -122,8 +133,8 @@ func (g *GitHub) ReadyTicket(ctx context.Context, n int, label string) (ticket T
 	return
 }
 
-// Ticket reads ticket n with its comments. Pull requests, closed issues and
-// Specs (issues with sub-issues) are refused: a Run of them is not supported yet.
+// Ticket reads ticket n with its comments. Pull requests and closed issues are
+// refused. A Spec (an issue with sub-issues) is read too: see Ticket.SubIssues.
 func (g *GitHub) Ticket(ctx context.Context, n int) (ticket Ticket, err error) {
 	ticket, err = g.ticket(ctx, n, "")
 	return
@@ -141,13 +152,11 @@ func (g *GitHub) ticket(ctx context.Context, n int, label string) (ticket Ticket
 		err = fmt.Errorf("#%d is a pull request, not a ticket", n)
 	case issue.State != "open":
 		err = fmt.Errorf("ticket #%d is %s", n, issue.State)
-	case issue.SubIssues.Total > 0:
-		err = fmt.Errorf("ticket #%d has sub-issues: Specs are not supported yet", n)
 	}
 	if err != nil {
 		return
 	}
-	ticket = Ticket{Number: issue.Number, Title: issue.Title, Body: issue.Body}
+	ticket = Ticket{Number: issue.Number, Title: issue.Title, Body: issue.Body, SubIssues: issue.SubIssues.Total}
 	for _, issueLabel := range issue.Labels {
 		ticket.Labels = append(ticket.Labels, issueLabel.Name)
 	}
@@ -158,7 +167,7 @@ func (g *GitHub) ticket(ctx context.Context, n int, label string) (ticket Ticket
 	}
 	for page := 1; ; page++ {
 		var comments []githubComment
-		path := fmt.Sprintf("/repos/%s/issues/%d/comments?per_page=%d&page=%d", g.Repo, n, commentsPerPage, page)
+		path := fmt.Sprintf("/repos/%s/issues/%d/comments?per_page=%d&page=%d", g.Repo, n, perPage, page)
 		if err = g.get(ctx, path, &comments); err != nil {
 			err = fmt.Errorf("reading comments of ticket #%d: %w", n, err)
 			return
@@ -166,10 +175,77 @@ func (g *GitHub) ticket(ctx context.Context, n int, label string) (ticket Ticket
 		for _, comment := range comments {
 			ticket.Comments = append(ticket.Comments, comment.Body)
 		}
-		if len(comments) < commentsPerPage {
+		if len(comments) < perPage {
 			return
 		}
 	}
+}
+
+// --- specs ---
+
+// SubIssues lists the sub-issues of Spec n, open and closed.
+func (g *GitHub) SubIssues(ctx context.Context, n int) (subs []SubIssue, err error) {
+	for page := 1; ; page++ {
+		var issues []githubIssue
+		path := fmt.Sprintf("/repos/%s/issues/%d/sub_issues?per_page=%d&page=%d", g.Repo, n, perPage, page)
+		if err = g.get(ctx, path, &issues); err != nil {
+			err = fmt.Errorf("reading sub-issues of #%d: %w", n, err)
+			return
+		}
+		for _, issue := range issues {
+			sub := SubIssue{Number: issue.Number, Open: issue.State == "open"}
+			for _, label := range issue.Labels {
+				sub.Labels = append(sub.Labels, label.Name)
+			}
+			subs = append(subs, sub)
+		}
+		if len(issues) < perPage {
+			return
+		}
+	}
+}
+
+var (
+	// blockedBy is a line of a ticket's body naming its blockers: the
+	// convention for Forges without native dependencies (docs/workflow.md).
+	blockedBy = regexp.MustCompile(`(?im)^blocked by:(.*)$`)
+	issueRef  = regexp.MustCompile(`#(\d+)`)
+)
+
+// Blocked reports whether ticket has an open blocker: a native dependency
+// or an issue named in a "Blocked by: #a, #b" line of its body
+// (docs/reference/ralph.sh, blocked). The state of the blockers is read, not
+// the summary counter on the issue: that one lags after closing.
+func (g *GitHub) Blocked(ctx context.Context, ticket Ticket) (blocked bool, err error) {
+	for page := 1; ; page++ {
+		var blockers []githubIssue
+		path := fmt.Sprintf("/repos/%s/issues/%d/dependencies/blocked_by?per_page=%d&page=%d", g.Repo, ticket.Number, perPage, page)
+		if err = g.get(ctx, path, &blockers); err != nil {
+			err = fmt.Errorf("reading blockers of #%d: %w", ticket.Number, err)
+			return
+		}
+		if slices.ContainsFunc(blockers, func(blocker githubIssue) bool { return blocker.State == "open" }) {
+			blocked = true
+			return
+		}
+		if len(blockers) < perPage {
+			break
+		}
+	}
+	for _, line := range blockedBy.FindAllStringSubmatch(ticket.Body, -1) {
+		for _, ref := range issueRef.FindAllStringSubmatch(line[1], -1) {
+			var blocker githubIssue
+			if err = g.get(ctx, fmt.Sprintf("/repos/%s/issues/%s", g.Repo, ref[1]), &blocker); err != nil {
+				err = fmt.Errorf("reading blocker #%s of #%d: %w", ref[1], ticket.Number, err)
+				return
+			}
+			if blocker.State == "open" {
+				blocked = true
+				return
+			}
+		}
+	}
+	return
 }
 
 // --- git ---
@@ -205,17 +281,77 @@ func (g *GitHub) Remote() (remote Remote) {
 
 // --- writes ---
 
-// PullRequest is a pull request opened by afk.
+// PullRequest is a pull request of afk.
 type PullRequest struct {
 	Number int    `json:"number"`
 	URL    string `json:"html_url"`
+	State  string `json:"state"` // open or closed (merged too)
+	Draft  bool   `json:"draft"`
+	NodeID string `json:"node_id"` // for GraphQL
 }
 
-// CreatePull opens a pull request of branch head into base.
-func (g *GitHub) CreatePull(ctx context.Context, head, base, title, body string) (pull PullRequest, err error) {
-	in := map[string]string{"head": head, "base": base, "title": title, "body": body}
+// CreatePull opens a pull request of branch head into base, as a draft when draft is set.
+func (g *GitHub) CreatePull(ctx context.Context, head, base, title, body string, draft bool) (pull PullRequest, err error) {
+	in := map[string]any{"head": head, "base": base, "title": title, "body": body}
+	if draft {
+		in["draft"] = true
+	}
 	if err = g.call(ctx, http.MethodPost, fmt.Sprintf("/repos/%s/pulls", g.Repo), in, &pull); err != nil {
 		err = fmt.Errorf("opening pull request of %s: %w", head, err)
+	}
+	return
+}
+
+// FindPull returns the latest pull request, open or not, whose head is branch of Repo.
+func (g *GitHub) FindPull(ctx context.Context, branch string) (pull PullRequest, found bool, err error) {
+	owner, _, _ := strings.Cut(g.Repo, "/")
+	path := fmt.Sprintf("/repos/%s/pulls?state=all&sort=created&direction=desc&per_page=1&head=%s", g.Repo, url.QueryEscape(owner+":"+branch))
+	var pulls []PullRequest
+	if err = g.get(ctx, path, &pulls); err != nil {
+		err = fmt.Errorf("looking for the pull request of %s: %w", branch, err)
+		return
+	}
+	if found = len(pulls) > 0; found {
+		pull = pulls[0]
+	}
+	return
+}
+
+// UpdatePullBody replaces the description of pull request n.
+func (g *GitHub) UpdatePullBody(ctx context.Context, n int, body string) (err error) {
+	in := map[string]string{"body": body}
+	if err = g.call(ctx, http.MethodPatch, fmt.Sprintf("/repos/%s/pulls/%d", g.Repo, n), in, nil); err != nil {
+		err = fmt.Errorf("updating pull request #%d: %w", n, err)
+	}
+	return
+}
+
+// ReadyPull marks a draft pull request ready for review. Only GraphQL can.
+func (g *GitHub) ReadyPull(ctx context.Context, pull PullRequest) (err error) {
+	in := map[string]any{
+		"query":     "mutation($id: ID!) { markPullRequestReadyForReview(input: {pullRequestId: $id}) { pullRequest { id } } }",
+		"variables": map[string]string{"id": pull.NodeID},
+	}
+	// GraphQL reports errors in a 200 response.
+	var out struct {
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	if err = g.call(ctx, http.MethodPost, "/graphql", in, &out); err == nil && len(out.Errors) > 0 {
+		err = errors.New(out.Errors[0].Message)
+	}
+	if err != nil {
+		err = fmt.Errorf("marking pull request #%d ready for review: %w", pull.Number, err)
+	}
+	return
+}
+
+// CloseIssue closes issue n as completed.
+func (g *GitHub) CloseIssue(ctx context.Context, n int) (err error) {
+	in := map[string]string{"state": "closed", "state_reason": "completed"}
+	if err = g.call(ctx, http.MethodPatch, fmt.Sprintf("/repos/%s/issues/%d", g.Repo, n), in, nil); err != nil {
+		err = fmt.Errorf("closing #%d: %w", n, err)
 	}
 	return
 }
