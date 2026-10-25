@@ -10,6 +10,7 @@ import (
 
 	"github.com/graf0/afk/config"
 	"github.com/graf0/afk/image"
+	"github.com/graf0/afk/machine"
 )
 
 // buildFunc is image.Build; tests inject another.
@@ -48,6 +49,8 @@ func ensureSandboxImage(ctx context.Context, base Base, paths image.Paths, out i
 			}
 			_, _ = fmt.Fprintln(out, line)
 		},
+		Overlays: func() (disks []string, err error) { return machine.Overlays("") },
+		Warn:     func(msg string) { _, _ = fmt.Fprintf(out, "= image %s: warning: %s\n", config.SandboxMachine, msg) },
 		Build: func(ctx context.Context, version string) (dir string, err error) {
 			path := logPath(version)
 			if err = os.MkdirAll(filepath.Dir(path), 0o700); err != nil {

@@ -66,6 +66,9 @@ func ProjectName(repo string) (name string, err error) {
 // Paths.BaseDir/<project>/sandbox/<version> (older versions stay). It returns
 // that directory. Cancelling ctx interrupts Packer, which stops QEMU.
 //
+// Build does not lock: the caller holds the Project's build lock (use Ensure
+// or BuildExclusive).
+//
 // Internet access during the build goes only through an Egress proxy
 // (all public domains) on a random loopback port, tunneled into the guest.
 func Build(ctx context.Context, opts Options) (imageDir string, err error) {

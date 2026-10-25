@@ -131,6 +131,25 @@ func (c *Conn) dir(kind Kind, id string) (dir string) {
 	return filepath.Join(root, string(kind)+"s", id)
 }
 
+// Overlays returns the disks (overlays) of all machines' directories under
+// root (DefaultRoot when empty): of Runs and Chats.
+func Overlays(root string) (disks []string, err error) {
+	if root == "" {
+		root = DefaultRoot
+	}
+	disks = []string{} // not nil: no machines is not an unknown list
+	for _, kind := range []Kind{KindRun, KindChat} {
+		pattern := filepath.Join(root, string(kind)+"s", "*", diskName)
+		found, globErr := filepath.Glob(pattern)
+		if globErr != nil {
+			err = fmt.Errorf("listing overlays %s: %w", pattern, globErr)
+			return
+		}
+		disks = append(disks, found...)
+	}
+	return
+}
+
 // Up creates and starts the machine described by spec. It does not wait for
 // the guest to boot; SSH does. When Up fails or ctx is cancelled, everything
 // it created is destroyed, including the QEMU process.

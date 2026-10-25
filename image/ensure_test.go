@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -275,5 +276,81 @@ func TestConfigHashRejectsUnknownTemplate(t *testing.T) {
 	cfg := config.Config{Machine: config.Machines{Sandbox: config.Machine{Template: "ws2025"}}}
 	if _, err := ConfigHash(cfg, nil); err == nil || !strings.Contains(err.Error(), "ws2025") {
 		t.Errorf("err = %v, want unsupported template", err)
+	}
+}
+
+func TestEnsureCleansOldVersionsAfterBuild(t *testing.T) {
+	env := newEnsureEnv(t, "h", 0)
+	for _, version := range []string{"20200101T000000Z", "20200102T000000Z", "20200103T000000Z"} {
+		env.install(t, version, "old")
+	}
+	machineDir := env.opts.Paths.machineDir("p", "sandbox")
+	overlay := writeOverlay(t, t.TempDir(), filepath.Join(machineDir, "20200101T000000Z", "disk.qcow2"))
+	env.opts.Overlays = func() ([]string, error) { return []string{overlay}, nil }
+	if err := os.MkdirAll(filepath.Join(machineDir, ".build-1"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Ensure(t.Context(), env.opts); err != nil {
+		t.Fatal(err)
+	}
+	// 0102 goes; 0101 has an overlay, 0103 is the previous newest.
+	want := []string{".build-1", "20200101T000000Z", "20200103T000000Z", "20261026T120000Z"}
+	if got := listDir(t, machineDir); !slices.Equal(got, want) {
+		t.Errorf("left = %v, want %v", got, want)
+	}
+}
+
+func TestEnsureCleanupErrorIsAWarning(t *testing.T) {
+	env := newEnsureEnv(t, "h", 0) // no Overlays: cleanup fails
+	var warnings []string
+	env.opts.Warn = func(msg string) { warnings = append(warnings, msg) }
+
+	dir, err := Ensure(t.Context(), env.opts)
+	if err != nil || dir == "" {
+		t.Fatalf("Ensure = %q, %v; want the build to succeed", dir, err)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "cleaning old image versions") || strings.Contains(warnings[0], "\n") {
+		t.Errorf("warnings = %q", warnings)
+	}
+}
+
+func TestBuildExclusiveHoldsLockAndCleans(t *testing.T) {
+	paths := Paths{BaseDir: t.TempDir(), StateDir: t.TempDir()}
+	var cfg config.Config
+	cfg.Forge.Repo = "a/p"
+	machineDir := paths.machineDir("a-p", "sandbox")
+	for _, version := range []string{"20200101T000000Z", "20200102T000000Z", "20200103T000000Z"} {
+		if err := os.MkdirAll(filepath.Join(machineDir, version), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	build := func(ctx context.Context, opts Options) (dir string, err error) {
+		// The Project's lock is held: another locker has to wait.
+		waitCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+		defer cancel()
+		if _, lockErr := lockBuild(waitCtx, paths, "a-p", nil); lockErr == nil {
+			t.Error("the build lock was free during the build")
+		}
+		dir = filepath.Join(machineDir, "20261026T120000Z")
+		err = os.MkdirAll(dir, 0o755)
+		return
+	}
+	overlays := func() ([]string, error) { return []string{}, nil }
+
+	if _, err := buildExclusive(t.Context(), Options{Paths: paths, Config: cfg}, overlays, build); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"20200103T000000Z", "20261026T120000Z"}
+	if got := listDir(t, machineDir); !slices.Equal(got, want) {
+		t.Errorf("left = %v, want %v", got, want)
+	}
+
+	var out strings.Builder
+	if _, err := buildExclusive(t.Context(), Options{Paths: paths, Config: cfg, Out: &out}, nil, build); err != nil {
+		t.Fatalf("a failed cleanup failed the build: %v", err)
+	}
+	if got := out.String(); strings.Count(got, "warning: cleaning old image versions") != 1 || strings.Count(got, "\n") != 1 {
+		t.Errorf("out = %q, want one warning line", got)
 	}
 }

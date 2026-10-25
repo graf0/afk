@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"os"
 	"path/filepath"
@@ -36,6 +37,11 @@ type EnsureOptions struct {
 	// with the version about to be built, or the wait for another Factory's
 	// build with no version (nil: silent).
 	Say func(msg string, version string)
+	// Overlays lists the disks of the Run and Chat VMs, whose backing files
+	// Cleanup keeps (nil: no cleanup, a warning).
+	Overlays func() (disks []string, err error)
+	// Warn reports a failed cleanup of old versions, in one line (nil: silent).
+	Warn func(msg string)
 }
 
 // --- hash ---
@@ -109,9 +115,7 @@ func Ensure(ctx context.Context, opts EnsureOptions) (dir string, err error) {
 			opts.Say(msg, version)
 		}
 	}
-	unlock, err := lockProject(ctx, filepath.Join(opts.Paths.StateDir, opts.Project, "image.lock"), func() {
-		say("another Factory is building the image, waiting", "")
-	})
+	unlock, err := lockBuild(ctx, opts.Paths, opts.Project, func() { say(waitingMessage, "") })
 	if err != nil {
 		return
 	}
@@ -122,7 +126,30 @@ func Ensure(ctx context.Context, opts EnsureOptions) (dir string, err error) {
 	version := newVersion(opts.Now())
 	say("building ("+reason+")", version)
 	dir, err = opts.Build(ctx, version)
+	if err == nil {
+		cleanupWarn(opts.Paths, opts.Project, opts.Machine, opts.Overlays, opts.Warn)
+	}
 	return
+}
+
+// cleanupWarn runs Cleanup; its failure does not invalidate the build that
+// came before, so it is only reported through warn (nil: silent).
+func cleanupWarn(paths Paths, project, machine string, overlays func() ([]string, error), warn func(msg string)) {
+	err := errors.New("no source of overlays")
+	if overlays != nil {
+		var disks []string
+		if disks, err = overlays(); err == nil {
+			_, err = Cleanup(paths, project, machine, disks)
+		}
+	}
+	if err != nil && warn != nil {
+		warn(fmt.Sprintf("cleaning old image versions: %v", oneLine(err)))
+	}
+}
+
+// oneLine flattens err's message to a single line.
+func oneLine(err error) (msg string) {
+	return strings.Join(strings.Fields(err.Error()), " ")
 }
 
 // decide returns the newest image to use, or the reason to build instead.
@@ -155,7 +182,48 @@ func decide(opts EnsureOptions) (dir, reason string, err error) {
 	return
 }
 
+// --- build under the lock ---
+
+// BuildExclusive is Build under the Project's build lock (the one of Ensure),
+// followed by Cleanup of old versions (overlays: see EnsureOptions.Overlays),
+// so that it cannot race with a build of a Factory. A failed cleanup is a
+// one-line warning on opts.Out.
+func BuildExclusive(ctx context.Context, opts Options, overlays func() ([]string, error)) (imageDir string, err error) {
+	return buildExclusive(ctx, opts, overlays, Build)
+}
+
+func buildExclusive(ctx context.Context, opts Options, overlays func() ([]string, error), build func(context.Context, Options) (string, error)) (imageDir string, err error) {
+	project, err := ProjectName(opts.Config.Forge.Repo)
+	if err != nil {
+		return
+	}
+	out := opts.Out
+	if out == nil {
+		out = io.Discard
+		opts.Out = out
+	}
+	unlock, err := lockBuild(ctx, opts.Paths, project, func() { _, _ = fmt.Fprintln(out, "==> afk: "+waitingMessage) })
+	if err != nil {
+		return
+	}
+	defer unlock()
+	if imageDir, err = build(ctx, opts); err != nil {
+		return
+	}
+	cleanupWarn(opts.Paths, project, config.SandboxMachine, overlays, func(msg string) {
+		_, _ = fmt.Fprintln(out, "==> afk: warning: "+msg)
+	})
+	return
+}
+
 // --- lock ---
+
+const waitingMessage = "another build is running, waiting"
+
+// lockBuild takes the build lock of project.
+func lockBuild(ctx context.Context, paths Paths, project string, waiting func()) (unlock func(), err error) {
+	return lockProject(ctx, filepath.Join(paths.StateDir, project, "image.lock"), waiting)
+}
 
 // lockProject takes an exclusive flock on path (created with its directory),
 // waiting for another holder until ctx ends. The kernel drops the lock with

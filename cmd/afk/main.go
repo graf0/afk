@@ -12,6 +12,7 @@ import (
 
 	"github.com/graf0/afk/config"
 	"github.com/graf0/afk/image"
+	"github.com/graf0/afk/machine"
 	"github.com/graf0/afk/run"
 )
 
@@ -95,6 +96,6 @@ func runImage(ctx context.Context, abort <-chan struct{}, args []string, dir str
 	if err != nil {
 		return
 	}
-	_, err = image.Build(ctx, image.Options{Paths: paths, Config: base.Config, Out: stdout, Abort: abort, ProjectSettings: base.Settings})
+	_, err = image.BuildExclusive(ctx, image.Options{Paths: paths, Config: base.Config, Out: stdout, Abort: abort, ProjectSettings: base.Settings}, func() ([]string, error) { return machine.Overlays("") })
 	return
 }
