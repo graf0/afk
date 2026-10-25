@@ -1,6 +1,7 @@
 package config
 
 import (
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -92,9 +93,13 @@ max_fixes = 5
 allow = ["proxy.golang.org"]
 [tool.postgres]
 build = ["apt-get install postgresql"]
+setup = ["migrate", "seed"]
+env = { DATABASE_URL = "postgres:///app" }
 prompt = "Postgres"
 [tool.redis]
 on = "sandbox"
+[tool.redis.env]
+REDIS_URL = "redis://localhost"
 `))
 	if err != nil {
 		t.Fatal(err)
@@ -107,6 +112,15 @@ on = "sandbox"
 	}
 	if cfg.Tool["postgres"].On != "sandbox" || cfg.Tool["postgres"].Prompt != "Postgres" || !slices.Equal(cfg.Tool["postgres"].Build, []string{"apt-get install postgresql"}) || cfg.Tool["redis"].On != "sandbox" {
 		t.Errorf("tool = %+v", cfg.Tool)
+	}
+	if pg := cfg.Tool["postgres"]; !slices.Equal(pg.Setup, []string{"migrate", "seed"}) || pg.Env["DATABASE_URL"] != "postgres:///app" {
+		t.Errorf("postgres = %+v", pg)
+	}
+	if want := map[string]string{"DATABASE_URL": "postgres:///app", "REDIS_URL": "redis://localhost"}; !maps.Equal(cfg.ToolEnv(), want) {
+		t.Errorf("ToolEnv = %v, want %v", cfg.ToolEnv(), want)
+	}
+	if got := cfg.Tool["postgres"].EnvNames(); !slices.Equal(got, []string{"DATABASE_URL"}) || cfg.Tool["x"].EnvNames() != nil {
+		t.Errorf("EnvNames = %v", got)
 	}
 	if !slices.Equal(cfg.Agent.Plugins, []string{"p@x"}) || !slices.Equal(cfg.Agent.Marketplaces, []string{"o/r"}) {
 		t.Errorf("plugins = %v, marketplaces = %v", cfg.Agent.Plugins, cfg.Agent.Marketplaces)
@@ -183,6 +197,9 @@ func TestParseErrors(t *testing.T) {
 		{"protect absolute", minimalConfig + "[protect]\npaths = [\"/etc\"]\n", []string{`7:10: protect.paths[0]: must be relative, got "/etc"`}},
 		{"tool kind is gone", minimalConfig + "[tool.pg]\nkind = \"package\"\n", []string{`7:1: unknown key "tool.pg.kind"`}},
 		{"tool on other machine", minimalConfig + "[tool.pg]\non = \"db\"\n", []string{`7:1: tool.pg.on: want "sandbox"`}},
+		{"env collision", minimalConfig + "[tool.a]\nenv = { X = \"1\" }\n[tool.b]\nenv = { Y = \"1\", X = \"2\" }\n", []string{`9:18: tool.b.env.X: already defined by tool.a.env`}},
+		{"env collision in a table", minimalConfig + "[tool.a.env]\nX = \"1\"\n[tool.b.env]\nX = \"2\"\n", []string{`9:1: tool.b.env.X: already defined by tool.a.env`}},
+		{"env name is no shell name", minimalConfig + "[tool.a]\nenv = { \"A-B\" = \"1\", \"1A\" = \"2\" }\n", []string{`tool.a.env.1A: want a shell variable name`, `tool.a.env.A-B: want a shell variable name`}},
 		{"inline table position", "forge = { kind = \"gitlab\", repo = \"a/b\" }\n[gate]\ncmd = \"x\"\n", []string{`1:11: forge.kind: want one of`}},
 		{"all errors at once", "[forge]\nkind = \"github\"\nrepo = \"x\"\nbogus = 1\n[labels]\nwontfix = \"\"\n", []string{`4:1: unknown key "forge.bogus"`, `3:1: forge.repo`, "6:1: labels.wontfix", "gate.cmd: required"}},
 	}
@@ -285,5 +302,25 @@ func mustMkdir(t *testing.T, path string) {
 	t.Helper()
 	if err := os.MkdirAll(path, 0o755); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestParseReadmeExample keeps the .afk.toml example of the README valid.
+func TestParseReadmeExample(t *testing.T) {
+	readme, err := os.ReadFile(filepath.Join("..", "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, block, found := strings.Cut(string(readme), "```toml\n")
+	if !found {
+		t.Fatal("no toml block in README.md")
+	}
+	example, _, _ := strings.Cut(block, "```")
+	cfg, err := Parse([]byte(example))
+	if err != nil {
+		t.Fatalf("README example: %v", err)
+	}
+	if len(cfg.Tool["postgres"].Setup) != 2 || cfg.Tool["postgres"].Env["DATABASE_URL"] == "" || cfg.Tool["playwright"].Env["PLAYWRIGHT_BROWSERS_PATH"] == "" {
+		t.Errorf("tools = %+v", cfg.Tool)
 	}
 }

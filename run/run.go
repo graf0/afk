@@ -219,8 +219,9 @@ func (r run) resume(ctx context.Context, setup vmSetup, leftover Leftover, work 
 	return
 }
 
-// inVM runs work in the guest of m over ssh, after prepareGuest when
-// prepare is set. The VM is destroyed on success, kept on failure.
+// inVM runs work in the guest of m over ssh, after prepareGuest and the
+// Tools' setup when prepare is set. The VM is destroyed on success, kept on
+// failure.
 func (r run) inVM(ctx context.Context, conn *machine.Conn, m machine.Machine, setup vmSetup, prepare bool, work workFunc) (res result, err error) {
 	var client *ssh.Client
 	defer func() {
@@ -249,6 +250,7 @@ func (r run) inVM(ctx context.Context, conn *machine.Conn, m machine.Machine, se
 	}
 	defer stop()
 
+	work = r.prepared(prepare, work)
 	if prepare {
 		err = r.prepareGuest(ctx, client)
 	} else {
@@ -258,8 +260,18 @@ func (r run) inVM(ctx context.Context, conn *machine.Conn, m machine.Machine, se
 	if err != nil {
 		return
 	}
-	res, err = work(ctx, sshGuest{run: r, client: client})
+	res, err = work(ctx, sshGuest{run: r, client: client, env: r.Base.Config.ToolEnv()})
 	return
+}
+
+// prepared is work as the guest of inVM runs it: after the Tools' setup in a
+// fresh VM, which follows the clone; as it is in a resumed one, whose state
+// the Agent has worked on.
+func (r run) prepared(prepare bool, work workFunc) (prepared workFunc) {
+	if prepare {
+		return r.withSetup(work)
+	}
+	return work
 }
 
 // prepareGuest clones the base into guestRepo on the ticket branch, with the
@@ -411,6 +423,18 @@ type rotatingLog struct {
 	max  int64
 	file *os.File
 	size int64
+}
+
+// newRotatingLog creates the file at path, which must not exist, as a log
+// bounded by logRotateSize.
+func newRotatingLog(path string) (l *rotatingLog, err error) {
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		err = fmt.Errorf("creating %s: %w", filepath.Base(path), err)
+		return
+	}
+	l = &rotatingLog{path: path, max: logRotateSize, file: file}
+	return
 }
 
 func (l *rotatingLog) Write(p []byte) (n int, err error) {

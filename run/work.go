@@ -37,6 +37,7 @@ type workFunc func(ctx context.Context, g guest) (res result, err error)
 type sshGuest struct {
 	run    run
 	client *ssh.Client
+	env    map[string]string // env of the Tools, set for every command
 }
 
 // result is what a Run brings to publish.
@@ -50,8 +51,19 @@ type result struct {
 }
 
 func (g sshGuest) Exec(ctx context.Context, command string, stdout io.Writer) (err error) {
-	err = remote(ctx, g.client, "cd "+guestRepo+" && "+command, nil, stdout)
+	err = remote(ctx, g.client, execCommand(g.env, command), nil, stdout)
 	return
+}
+
+// execCommand is the shell command Exec sends to the guest: command in the
+// clone, with the env of the Tools.
+func execCommand(env map[string]string, command string) (full string) {
+	return agent.ExportEnv(env) + "cd " + guestRepo + " && " + command
+}
+
+// bashCommand runs script in bash, its stderr in its stdout.
+func bashCommand(script string) (command string) {
+	return "bash -c " + agent.ShellQuote(script) + " 2>&1"
 }
 
 func (g sshGuest) Agent(ctx context.Context, prompt, model string) (report agent.Report, err error) {
@@ -63,6 +75,7 @@ func (g sshGuest) Agent(ctx context.Context, prompt, model string) (report agent
 		Model:  model,
 		Proxy:  "http://" + machine.ProxyAddr,
 		Binary: r.AgentBinary,
+		Env:    g.env,
 	}.Run(ctx, g.client, r.Out, r.log)
 	if err != nil {
 		err = fmt.Errorf("%w (log: %s)", err, r.log.path)
@@ -310,16 +323,15 @@ func (r run) gate(ctx context.Context, g guest, head string, res *result) (passe
 func (r run) gateAttempt(ctx context.Context, g guest, res *result) (tail, path string, ok bool, err error) {
 	res.gateRuns++
 	path = fmt.Sprintf("%s-gate-%d.txt", strings.TrimSuffix(r.log.path, ".jsonl"), res.gateRuns)
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	// Bounded like the log: the guest decides how much it prints.
+	out, err := newRotatingLog(path)
 	if err != nil {
-		err = fmt.Errorf("creating gate output file: %w", err)
+		err = fmt.Errorf("gate output file: %w", err)
 		return
 	}
-	// Bounded like the log: the guest decides how much it prints.
-	out := &rotatingLog{path: path, max: logRotateSize, file: file}
 	defer func() { _ = out.Close() }()
 	buffer := &tailBuffer{max: maxGateTail}
-	execErr := g.Exec(ctx, "bash -c "+agent.ShellQuote(r.Base.Config.Gate.Cmd)+" 2>&1", io.MultiWriter(out, buffer))
+	execErr := g.Exec(ctx, bashCommand(r.Base.Config.Gate.Cmd), io.MultiWriter(out, buffer))
 	if err = ctx.Err(); err != nil {
 		return
 	}
@@ -358,7 +370,8 @@ func (r run) task() (task agent.Task) {
 		names = append(names, name)
 	}
 	for _, name := range slices.Sorted(maps.Keys(r.Base.Config.Tool)) {
-		tools = append(tools, agent.Tool{Name: name, Prompt: strings.TrimSpace(r.Base.Config.Tool[name].Prompt)})
+		tool := r.Base.Config.Tool[name]
+		tools = append(tools, agent.Tool{Name: name, Prompt: strings.TrimSpace(tool.Prompt), Env: tool.EnvNames()})
 	}
 	task = agent.Task{
 		RepoDir:    guestRepo,

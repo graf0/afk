@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -115,9 +116,24 @@ type Protect struct {
 
 // Tool is a tool the Agent can use (ADR-0011).
 type Tool struct {
-	On     string   `toml:"on"`     // machine the Tool runs on; only SandboxMachine for now
-	Build  []string `toml:"build"`  // shell commands in the machine's Base image, after the machine's build
-	Prompt string   `toml:"prompt"` // what the Agent is told about the Tool
+	On     string            `toml:"on"`     // machine the Tool runs on; only SandboxMachine for now
+	Build  []string          `toml:"build"`  // shell commands in the machine's Base image, after the machine's build
+	Setup  []string          `toml:"setup"`  // shell commands in /work after the clone, before the first session
+	Env    map[string]string `toml:"env"`    // variables of setup, the Agent's sessions and the gate
+	Prompt string            `toml:"prompt"` // what the Agent is told about the Tool
+}
+
+// EnvNames are the names of the Tool's env variables, sorted.
+func (t Tool) EnvNames() (names []string) { return slices.Sorted(maps.Keys(t.Env)) }
+
+// ToolEnv is the env of all Tools together; validation guarantees that no
+// name is defined twice.
+func (c Config) ToolEnv() (env map[string]string) {
+	env = make(map[string]string)
+	for _, tool := range c.Tool {
+		maps.Copy(env, tool.Env)
+	}
+	return
 }
 
 // --- loading ---

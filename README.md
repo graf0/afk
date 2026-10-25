@@ -118,8 +118,8 @@ Tool to narzędzie, którego Agent może użyć (ADR-0011).
 |---|---|---|---|
 | `on` | string | `sandbox` | Maszyna, w której działa Tool (jeszcze tylko `sandbox`) |
 | `build` | []string | `[]` | Polecenia w obrazie maszyny `on`, po `build` maszyny; Toole alfabetycznie |
-| `setup` | []string | `[]` | Polecenia w `/work` po klonie, przed pierwszą sesją, Toole alfabetycznie; porażka = porażka Run |
-| `env` | table | `{}` | Zmienne dla `setup`, sesji Agenta i bramki; ta sama nazwa w dwóch Toolach to błąd |
+| `setup` | []string | `[]` | Polecenia w `/work/repo` (klon) po klonie, przed pierwszą sesją, Toole alfabetycznie; wyjście w `<log>-setup.txt`; porażka = porażka Run (VM zostaje); wznowienie Run w zostawionej VM pomija `setup`, dziecko Spec w świeżej VM wykonuje go od nowa |
+| `env` | table | `{}` | Zmienne dla `setup`, sesji Agenta i bramki; nazwa musi być poprawną nazwą zmiennej powłoki, a ta sama nazwa w dwóch Toolach to błąd; w promptach są tylko nazwy, bez wartości |
 | `prompt` | string | `""` | Co Agent dostaje w sekcji „Narzędzia” promptu |
 
-Usługi Toola w Sandbox VM działają od startu VM, każdy Run ma własną instancję. `afk` nie dodaje własnego menedżera usług: usługę uruchamia to, co zainstaluje `build` (pakiet apt z jednostką systemd startuje przy bootowaniu; w innym przypadku dodaj `sudo systemctl enable <usługa>` do `build`). Każdy Tool trafia do sekcji „Narzędzia” (bez `prompt` — samą nazwą); bez Tooli sekcji nie ma. `build` wykonuje użytkownik `agent` w bashu z `-e`, więc polecenia wymagające roota potrzebują `sudo`. Dane dostępowe to nie sekrety — w `build` i `prompt` wpisuj je wprost; prawdziwych sekretów nie umieszczaj w `.afk.toml`.
+Usługi Toola w Sandbox VM działają od startu VM, każdy Run ma własną instancję. `afk` nie dodaje własnego menedżera usług: usługę uruchamia to, co zainstaluje `build` (pakiet apt z jednostką systemd startuje przy bootowaniu; w innym przypadku dodaj `sudo systemctl enable <usługa>` do `build`). Każdy Tool trafia do sekcji „Narzędzia” (bez `prompt` — samą nazwą) i nazwy jego zmiennych `env`; bez Tooli sekcji nie ma. `build` wykonuje użytkownik `agent` w bashu z `-e`, więc polecenia wymagające roota potrzebują `sudo`. Dane dostępowe to nie sekrety — w `build` i `prompt` wpisuj je wprost; prawdziwych sekretów nie umieszczaj w `.afk.toml`.

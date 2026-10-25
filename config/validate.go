@@ -23,6 +23,9 @@ var (
 	// build; image's tests assert that it knows exactly these.
 	ImageTemplates = []string{"debian13"}
 
+	// envNamePattern is a name a POSIX shell can export.
+	envNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
 	repoPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
 )
 
@@ -261,9 +264,23 @@ func (c Config) validateProtect(v *validator) {
 }
 
 func (c Config) validateTools(v *validator) {
+	definedBy := make(map[string]string) // env name -> Tool that defines it
 	for _, name := range slices.Sorted(maps.Keys(c.Tool)) {
-		if on := c.Tool[name].On; on != SandboxMachine {
-			v.report("tool."+name+".on", "want %q (Tool VM is not supported yet), got %q", SandboxMachine, on)
+		tool := c.Tool[name]
+		if tool.On != SandboxMachine {
+			v.report("tool."+name+".on", "want %q (Tool VM is not supported yet), got %q", SandboxMachine, tool.On)
+		}
+		for _, env := range slices.Sorted(maps.Keys(tool.Env)) {
+			path := "tool." + name + ".env." + env
+			if !envNamePattern.MatchString(env) {
+				v.report(path, "want a shell variable name ([A-Za-z_][A-Za-z0-9_]*), got %q", env)
+				continue
+			}
+			if other, ok := definedBy[env]; ok {
+				v.report(path, "already defined by tool.%s.env", other)
+				continue
+			}
+			definedBy[env] = name
 		}
 	}
 }

@@ -134,6 +134,17 @@ func TestToolsSectionNamesOnlyAndIndentsContinuation(t *testing.T) {
 	}
 }
 
+func TestToolsSectionListsEnvNamesNotValues(t *testing.T) {
+	task := Task{BaseRef: "origin/main", Tools: []Tool{{Name: "pg", Prompt: "psql", Env: []string{"DATABASE_URL", "PGHOST"}}, {Name: "bare", Env: []string{"X"}}}}
+	for name, prompt := range map[string]string{"work": Prompt(task), "fix": FixPrompt(task, "make", "out"), "review": ReviewPrompt(task)} {
+		for _, want := range []string{"- `pg`: psql\n  Zmienne środowiskowe: `DATABASE_URL`, `PGHOST`\n", "- `bare`\n  Zmienne środowiskowe: `X`\n"} {
+			if !strings.Contains(prompt, want) {
+				t.Errorf("%s prompt lacks %q:\n%s", name, want, prompt)
+			}
+		}
+	}
+}
+
 func TestNoToolsSectionWithoutTools(t *testing.T) {
 	task := Task{BaseRef: "origin/main"}
 	for name, prompt := range map[string]string{"work": Prompt(task), "fix": FixPrompt(task, "make", "out"), "review": ReviewPrompt(task)} {

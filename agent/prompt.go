@@ -25,6 +25,7 @@ type Task struct {
 type Tool struct {
 	Name   string
 	Prompt string
+	Env    []string // names of its env variables, sorted; never the values
 }
 
 // skillsPlugin is the plugin whose implement and code-review skills the
@@ -94,7 +95,7 @@ func ReviewPrompt(task Task) (prompt string) {
 }
 
 // writeTools appends the "Narzędzia" section: each Tool, with its prompt if
-// any (continuation lines indented).
+// any (continuation lines indented) and the names of its env variables.
 // Without Tools there is no section.
 func writeTools(b *strings.Builder, task Task) {
 	if len(task.Tools) == 0 {
@@ -105,6 +106,9 @@ func writeTools(b *strings.Builder, task Task) {
 		fmt.Fprintf(b, "- `%s`", tool.Name)
 		if tool.Prompt != "" {
 			fmt.Fprintf(b, ": %s", strings.ReplaceAll(tool.Prompt, "\n", "\n  "))
+		}
+		if len(tool.Env) > 0 {
+			fmt.Fprintf(b, "\n  Zmienne środowiskowe: %s", quoteList(tool.Env))
 		}
 		b.WriteString("\n")
 	}
