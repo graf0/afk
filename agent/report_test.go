@@ -87,3 +87,20 @@ func TestReportString(t *testing.T) {
 		t.Errorf("empty section printed:\n%s", text)
 	}
 }
+
+func TestReportFindings(t *testing.T) {
+	stream := `{"type":"result","subtype":"success","structured_output":{"status":"done","reason":"r","summary":"s","deviations":[],"findings_fixed":["a"],"findings_skipped":["b"]}}` + "\n"
+	report, err := Stream(strings.NewReader(stream), &bytes.Buffer{}, &bytes.Buffer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(report.FindingsFixed, []string{"a"}) || !slices.Equal(report.FindingsSkipped, []string{"b"}) {
+		t.Errorf("findings = %q, %q", report.FindingsFixed, report.FindingsSkipped)
+	}
+	text := report.String()
+	for _, want := range []string{"Findings fixed:\n- a", "Findings skipped:\n- b"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("report lacks %q:\n%s", want, text)
+		}
+	}
+}

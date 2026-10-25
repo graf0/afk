@@ -41,6 +41,10 @@ denied=$(curl -s -m 20 -o /dev/null -w '%{http_connect}' https://example.com/ ||
 [ "$allowed" != 000 ] || fail "api.anthropic.com unreachable"
 [ "$denied" = 403 ] || fail "example.com not denied: $denied"
 echo '{"type":"assistant","message":{"content":[{"type":"text","text":"fake agent working"},{"type":"tool_use","name":"Bash","input":{"command":"git commit"}}]}}'
+if grep -q 'code review' <<<"$prompt"; then
+	echo '{"type":"result","subtype":"success","is_error":false,"structured_output":{"status":"done","reason":"Fake review.","summary":"Fine.","deviations":[],"findings_fixed":[],"findings_skipped":[]}}'
+	exit 0
+fi
 if grep -q 'MODE: sleep' /work/TICKET.md; then sleep 600; fi
 if grep -q 'MODE: needs_info' /work/TICKET.md; then
 	echo '{"type":"result","subtype":"success","is_error":false,"structured_output":{"status":"needs_info","reason":"Unclear.","summary":"","deviations":[],"questions":["Which one?"]}}'

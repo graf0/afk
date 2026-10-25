@@ -88,7 +88,7 @@ func TestPublishDone(t *testing.T) {
 			if err := r.checkRemote(t.Context()); err != nil {
 				t.Fatalf("checkRemote before push: %v", err)
 			}
-			if err := r.publish(t.Context(), tc.report); err != nil {
+			if err := r.publish(t.Context(), result{Report: tc.report}); err != nil {
 				t.Fatal(err)
 			}
 			want := []string{"POST /repos/o/r/pulls", "POST /repos/o/r/issues/42/comments"}
@@ -125,11 +125,48 @@ func TestPublishDone(t *testing.T) {
 	}
 }
 
+func TestPublishReview(t *testing.T) {
+	for name, tc := range map[string]struct {
+		res   result
+		human bool
+	}{
+		"fixed":   {result{Review: &agent.Report{Summary: "Ok.", FindingsFixed: []string{"Nil check."}}}, false},
+		"skipped": {result{Review: &agent.Report{Summary: "Ok.", FindingsSkipped: []string{"Naming, cc @boss."}}}, true},
+		"fixes":   {result{Review: &agent.Report{Summary: "Ok."}, Fixes: 1}, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fake := &fakeGitHub{}
+			r, _ := publishRun(t, fake)
+			tc.res.Report = agent.Report{Status: agent.StatusDone, Summary: "Did it.", Deviations: []string{}}
+			if err := r.publish(t.Context(), tc.res); err != nil {
+				t.Fatal(err)
+			}
+			want := []string{"POST /repos/o/r/pulls", "POST /repos/o/r/issues/42/comments", "POST /repos/o/r/issues/42/comments"}
+			if tc.human {
+				want = append(want, "POST /repos/o/r/issues/42/labels")
+			}
+			want = append(want, "DELETE /repos/o/r/issues/1/labels/ready-for-agent")
+			if !slices.Equal(fake.requests, want) {
+				t.Fatalf("requests = %q, want %q", fake.requests, want)
+			}
+			comment, _ := fake.bodies[2]["body"].(string)
+			for _, text := range slices.Concat([]string{"### Code review", "Ok."}, tc.res.Review.FindingsFixed) {
+				if !strings.Contains(comment, text) {
+					t.Errorf("review comment lacks %q:\n%s", text, comment)
+				}
+			}
+			if strings.Contains(comment, "@boss") {
+				t.Errorf("review comment mentions @boss:\n%s", comment)
+			}
+		})
+	}
+}
+
 func TestPublishNeedsInfo(t *testing.T) {
 	fake := &fakeGitHub{}
 	r, root := publishRun(t, fake)
 	report := agent.Report{Status: agent.StatusNeedsInfo, Reason: "Unclear.", Questions: []string{"Which API?", "Ask @owner"}}
-	if err := r.publish(t.Context(), report); err != nil {
+	if err := r.publish(t.Context(), result{Report: report}); err != nil {
 		t.Fatal(err)
 	}
 	want := []string{"POST /repos/o/r/issues/1/comments", "POST /repos/o/r/issues/1/labels", "DELETE /repos/o/r/issues/1/labels/ready-for-agent"}
@@ -153,7 +190,7 @@ func TestPublishNeedsInfo(t *testing.T) {
 func TestPublishPartialFailure(t *testing.T) {
 	fake := &fakeGitHub{fail: "POST /repos/o/r/pulls"}
 	r, _ := publishRun(t, fake)
-	err := r.publish(t.Context(), agent.Report{Status: agent.StatusDone, Summary: "Did it."})
+	err := r.publish(t.Context(), result{Report: agent.Report{Status: agent.StatusDone, Summary: "Did it."}})
 	if err == nil {
 		t.Fatal("want error")
 	}
@@ -184,6 +221,16 @@ func TestCommitMessage(t *testing.T) {
 		t.Errorf("commitMessage = %q, want %q", got, want)
 	}
 	if got = r.commitMessage(agent.Report{}); got != "Push, PR i needs_info (#6)\n" {
+		t.Errorf("without summary: %q", got)
+	}
+}
+
+func TestReviewMessage(t *testing.T) {
+	r := run{Options: Options{Ticket: forge.Ticket{Number: 6, Title: "Push"}}}
+	if got, want := r.reviewMessage(agent.Report{Summary: " Fine. "}), "code review: Push\n\nFine.\n"; got != want {
+		t.Errorf("reviewMessage = %q, want %q", got, want)
+	}
+	if got := r.reviewMessage(agent.Report{}); got != "code review: Push\n" {
 		t.Errorf("without summary: %q", got)
 	}
 }

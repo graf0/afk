@@ -26,14 +26,44 @@ func Prompt(task Task) (prompt string) {
 	fmt.Fprintf(&b, "- Treść ticketu leży w `%s`, poza repo; nie commituj jej. To jedyne źródło wiedzy o zadaniu: tracker jest celowo niedostępny (nie masz `gh` ani poświadczeń), więc nie szukaj zgłoszeń w sieci ani w historii commitów i nie zgaduj brakujących szczegółów. Gdy ticket odsyła do czegoś, czego tam nie ma, zwróć `needs_info`. Podaj tę ścieżkę subagentom: nie dziedziczą tego promptu.\n", task.TicketPath)
 	b.WriteString("- Nikt nie odpowie na pytania w trakcie pracy. Seamy testowe dobierz jak w najbliższych istniejących testach w repo i wymień wybór w `summary`.\n")
 	b.WriteString("- Sieć działa tylko przez proxy z listą dozwolonych domen; WebFetch i WebSearch są wyłączone. Gdy do pracy potrzebujesz czegoś spoza tej listy, zwróć `needs_info`.\n")
-	b.WriteString("- Commituj swoją pracę. Nie pushuj i nie twórz PR (nie ma remote ani poświadczeń) — wynik pobierze `afk`.\n")
-	if len(task.Protected) > 0 {
-		fmt.Fprintf(&b, "- Nie zmieniaj chronionych ścieżek: %s. Commit, który ich dotyka (także zmiana trybu, symlink, przeniesienie), zostanie odrzucony w całości.\n", quoteList(task.Protected))
-	}
-	b.WriteString("- Na koniec zostaw czyste drzewo robocze (wszystko zacommitowane).\n")
+	writeCommitRules(&b, task)
 	b.WriteString("- Zwróć status `done`, gdy ticket jest zrobiony i zacommitowany: w `summary` 2-5 zdań co zrobiono, w `deviations` każde odstępstwo od ticketu z powodem (pusta lista, gdy nie było), w `doubts` rzeczy do sprawdzenia przez człowieka (opcjonalnie), w `reason` jedno zdanie. Zwykłe odstępstwo z dobrego powodu tylko zgłoś, nie zatrzymuj się.\n")
 	b.WriteString("- Zwróć `needs_info`, gdy ticket jest niejasny, sprzeczny albo za duży: powód w `reason`, konkretne pytania do autora ticketu w `questions`, `summary` puste, `deviations` pusta lista — wtedy bez commitów.\n")
 	return b.String()
+}
+
+// FixPrompt is the prompt of a fix session: the gate failed on the Agent's
+// work (gatePrompt() in docs/reference/ralph.sh). output is the end of the
+// gate's output, from the guest.
+func FixPrompt(task Task, gateCmd, output string) (prompt string) {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Bramka `%s` nie przeszła na Twojej pracy w tym klonie. Koniec jej outputu:\n\n%s\n\n", gateCmd, Sanitize(strings.TrimSpace(output)))
+	b.WriteString("Napraw przyczynę minimalnie, nie zmieniaj zakresu ticketu, uruchom bramkę i zacommituj poprawkę. Zwróć `needs_info` tylko wtedy, gdy naprawa jest niemożliwa bez decyzji człowieka.\n\n")
+	b.WriteString("Zasady:\n")
+	writeCommitRules(&b, task)
+	b.WriteString("- Zwróć status `done`, gdy bramka przechodzi i poprawka jest zacommitowana: w `summary` 1-3 zdania co poprawiono, w `deviations` pusta lista, w `reason` jedno zdanie.\n")
+	return b.String()
+}
+
+// ReviewPrompt is the prompt of the review session: the whole branch
+// against the base (review() in docs/reference/ralph.sh).
+func ReviewPrompt(task Task) (prompt string) {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Zrób code review całego brancha `%s` względem `%s` (zakres zmian: `git diff %s...HEAD`), w bieżącym klonie `%s`. Sprawdź poprawność, zgodność z ticketem w `%s` (poza repo, nie commituj go; to jedyne źródło wiedzy o zadaniu, nie szukaj zgłoszeń w sieci) oraz zgodność z konwencjami repo. Podaj te ścieżki subagentom: nie dziedziczą tego promptu.\n\n", task.Branch, task.BaseRef, task.BaseRef, task.RepoDir, task.TicketPath)
+	b.WriteString("Po review popraw wszystkie znaleziska i zacommituj poprawki. Jeśli nie ma czego poprawiać, nie commituj. Nie zmieniaj brancha.\n\n")
+	b.WriteString("Zasady:\n")
+	writeCommitRules(&b, task)
+	b.WriteString("- Zwróć status `done`: w `summary` krótki werdykt, w `findings_fixed` co poprawiłeś, w `findings_skipped` czego świadomie nie poprawiłeś i dlaczego, w `deviations` pusta lista, w `reason` jedno zdanie.\n")
+	return b.String()
+}
+
+// writeCommitRules appends the rules every session follows about git.
+func writeCommitRules(b *strings.Builder, task Task) {
+	b.WriteString("- Commituj swoją pracę. Nie pushuj i nie twórz PR (nie ma remote ani poświadczeń) — wynik pobierze `afk`.\n")
+	if len(task.Protected) > 0 {
+		fmt.Fprintf(b, "- Nie zmieniaj chronionych ścieżek: %s. Commit, który ich dotyka (także zmiana trybu, symlink, przeniesienie), zostanie odrzucony w całości.\n", quoteList(task.Protected))
+	}
+	b.WriteString("- Na koniec zostaw czyste drzewo robocze (wszystko zacommitowane).\n")
 }
 
 // TicketFile renders the ticket file the Agent reads: title, body, comments.
