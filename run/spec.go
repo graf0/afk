@@ -64,8 +64,12 @@ func ExecuteSpec(ctx context.Context, opts Options) (err error) {
 }
 
 func (s *specRun) execute(ctx context.Context) (err error) {
+	if !s.Ticket.HasLabel(s.Base.Config.Labels.Spec) {
+		err = fmt.Errorf("ticket #%d lacks the label %q: it is not a Spec", s.Ticket.Number, s.Base.Config.Labels.Spec)
+		return
+	}
 	if s.Ticket.SubIssues == 0 {
-		err = fmt.Errorf("ticket #%d has no sub-issues: it is not a Spec", s.Ticket.Number)
+		err = fmt.Errorf("spec #%d has no sub-issues", s.Ticket.Number)
 		return
 	}
 	s.say("spec #%d %s", s.Ticket.Number, agent.Sanitize(s.Ticket.Title))
@@ -166,7 +170,7 @@ func (s *specRun) next(ctx context.Context) (child forge.Ticket, ok bool, err er
 	slices.SortFunc(subs, func(a, b forge.SubIssue) int { return cmp.Compare(a.Number, b.Number) })
 	label := s.Base.Config.Labels.ReadyForAgent
 	for _, sub := range subs {
-		if !slices.Contains(sub.Labels, label) {
+		if !sub.HasLabel(label) {
 			err = fmt.Errorf("spec #%d: open child #%d lacks the label %q: only tickets a human marked ready run in the Factory", s.Ticket.Number, sub.Number, label)
 			return
 		}

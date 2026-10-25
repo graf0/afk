@@ -62,7 +62,7 @@ Nazwy labeli w Forge dla ról; niepuste i parami różne. Muszą istnieć w repo
 | `needs_triage` | `needs-triage` | Do oceny |
 | `ready_for_human` | `ready-for-human` | PR z odstępstwami lub wątpliwościami |
 | `wontfix` | `wontfix` | Nie będzie robione |
-| `spec` | `spec` | Ticket jest Spec: dzieci to sub-issues (GitHub) albo `- [ ] #M` w treści (Gitea) |
+| `spec` | `spec` | Ticket jest Spec — decyduje wyłącznie ten label; dzieci to sub-issues (GitHub) albo `- [ ] #M` w treści (Gitea). Spec bez dzieci i ticket z sub-issues bez tego labela są pomijane z ostrzeżeniem (z listą `afk factory '#N'` ten drugi to błąd) |
 
 ### `[agent]`
 

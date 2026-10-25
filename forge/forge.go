@@ -6,6 +6,8 @@ package forge
 import (
 	"context"
 	"fmt"
+	"slices"
+	"strings"
 
 	"github.com/graf0/afk/config"
 )
@@ -23,6 +25,8 @@ type Forge interface {
 	Peek(ctx context.Context, n int) (ticket Ticket, open bool, err error)
 	// ListLabeled returns the numbers of the open issues with label, ascending.
 	ListLabeled(ctx context.Context, label string) (numbers []int, err error)
+	// Labels lists the names of the labels the repository has.
+	Labels(ctx context.Context) (names []string, err error)
 
 	// SubIssues lists the sub-issues of Spec n, open and closed.
 	SubIssues(ctx context.Context, n int) (subs []SubIssue, err error)
@@ -59,10 +63,22 @@ type Ticket struct {
 	Comments []string
 	Labels   []string
 
-	// SubIssues is the number of sub-issues: more than zero makes the ticket a Spec.
+	// SubIssues is the number of sub-issues. Whether the ticket is a Spec
+	// is up to its label ([labels].spec), not to this number.
 	SubIssues int
 	// Parent is the Spec the ticket is a sub-issue of, zero without one.
 	Parent int
+}
+
+// HasLabel reports whether the ticket carries label, ignoring case: GitHub
+// and Gitea both treat label names that way.
+func (t Ticket) HasLabel(name string) (has bool) { return hasLabel(t.Labels, name) }
+
+// HasLabel reports whether the sub-issue carries label, ignoring case.
+func (s SubIssue) HasLabel(name string) (has bool) { return hasLabel(s.Labels, name) }
+
+func hasLabel(labels []string, name string) (has bool) {
+	return slices.ContainsFunc(labels, func(label string) bool { return strings.EqualFold(label, name) })
 }
 
 // SubIssue is a sub-issue of a Spec as listed on the Forge.

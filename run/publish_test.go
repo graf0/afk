@@ -27,6 +27,7 @@ type fakeGitHub struct {
 	fail     string
 
 	issues map[int]*fakeIssue
+	labels []string       // the labels of the repository
 	listed []int          // the list by label when set, whatever the labels say
 	pull   map[string]any // nil until created
 }

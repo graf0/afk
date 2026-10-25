@@ -169,6 +169,7 @@ func TestParseErrors(t *testing.T) {
 		{"github forbids url", "[forge]\nkind = \"github\"\nrepo = \"a/b\"\nurl = \"https://g\"\n[gate]\ncmd = \"x\"\n", []string{"4:1: forge.url: not allowed for github"}},
 		{"empty label", minimalConfig + "[labels]\nwontfix = \"\"\n", []string{"7:1: labels.wontfix: must not be empty"}},
 		{"duplicate labels", minimalConfig + "[labels]\nneeds_info = \"x\"\nwontfix = \"x\"\n", []string{`8:1: labels.wontfix: same as labels.needs_info ("x")`}},
+		{"duplicate labels ignoring case", minimalConfig + "[labels]\nneeds_info = \"x\"\nwontfix = \"X\"\n", []string{`8:1: labels.wontfix: same as labels.needs_info ("X")`}},
 		{"same models", minimalConfig + "[agent]\nmodel = \"m\"\nreview_model = \"m\"\n", []string{`8:1: agent.review_model: must differ from agent.model ("m")`}},
 		{"bad plugin", minimalConfig + "[agent]\nplugins = [\"ok@m\", \"nomarket\"]\n", []string{`7:20: agent.plugins[1]: want name@marketplace, got "nomarket"`}},
 		{"missing gate cmd", "[forge]\nkind = \"github\"\nrepo = \"a/b\"\n", []string{"gate.cmd: required"}},
@@ -322,5 +323,16 @@ func TestParseReadmeExample(t *testing.T) {
 	}
 	if len(cfg.Tool["postgres"].Setup) != 2 || cfg.Tool["postgres"].Env["DATABASE_URL"] == "" || cfg.Tool["playwright"].Env["PLAYWRIGHT_BROWSERS_PATH"] == "" {
 		t.Errorf("tools = %+v", cfg.Tool)
+	}
+}
+
+func TestLabelsNames(t *testing.T) {
+	cfg, err := Parse([]byte(minimalConfig))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"needs-triage", "needs-info", "ready-for-agent", "ready-for-human", "wontfix", "spec"}
+	if got := cfg.Labels.Names(); !slices.Equal(got, want) {
+		t.Errorf("Names = %v, want %v", got, want)
 	}
 }

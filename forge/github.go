@@ -124,7 +124,7 @@ func (g *GitHub) ReadyTicket(ctx context.Context, n int, label string) (ticket T
 }
 
 // Ticket reads ticket n with its comments. Pull requests and closed issues are
-// refused. A Spec (an issue with sub-issues) is read too: see Ticket.SubIssues.
+// refused. A Spec is read too.
 func (g *GitHub) Ticket(ctx context.Context, n int) (ticket Ticket, err error) {
 	ticket, err = g.ticket(ctx, n, "")
 	return
@@ -147,7 +147,7 @@ func (g *GitHub) ticket(ctx context.Context, n int, label string) (ticket Ticket
 		return
 	}
 	ticket = issue.ticket()
-	if label != "" && !slices.Contains(ticket.Labels, label) {
+	if label != "" && !ticket.HasLabel(label) {
 		err = fmt.Errorf("ticket #%d lacks the label %q: only tickets a human marked ready run in the Factory", n, label)
 		ticket = Ticket{}
 		return
@@ -201,6 +201,26 @@ func (g *GitHub) ListLabeled(ctx context.Context, label string) (numbers []int, 
 		}
 		if len(issues) < perPage {
 			slices.Sort(numbers)
+			return
+		}
+	}
+}
+
+// Labels lists the names of the labels of the repository.
+func (g *GitHub) Labels(ctx context.Context) (names []string, err error) {
+	for page := 1; ; page++ {
+		var labels []struct {
+			Name string `json:"name"`
+		}
+		path := fmt.Sprintf("/repos/%s/labels?per_page=%d&page=%d", g.Repo, perPage, page)
+		if err = g.get(ctx, path, &labels); err != nil {
+			err = fmt.Errorf("listing labels: %w", err)
+			return
+		}
+		for _, label := range labels {
+			names = append(names, label.Name)
+		}
+		if len(labels) < perPage {
 			return
 		}
 	}

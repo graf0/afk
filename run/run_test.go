@@ -72,7 +72,10 @@ func TestRunPrompt(t *testing.T) {
 }
 
 func TestExecuteRefusesSpec(t *testing.T) {
-	err := Execute(t.Context(), Options{Ticket: forge.Ticket{Number: 9, SubIssues: 2}})
+	err := Execute(t.Context(), Options{
+		Base:   Base{Config: config.Config{Labels: config.Labels{Spec: "spec"}}},
+		Ticket: forge.Ticket{Number: 9, Labels: []string{"spec"}},
+	})
 	if err == nil || !strings.Contains(err.Error(), "is a Spec") {
 		t.Errorf("err = %v", err)
 	}

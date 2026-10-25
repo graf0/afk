@@ -24,13 +24,14 @@ import (
 type fakeGitHub struct {
 	mu     sync.Mutex
 	issues map[int]*seedIssue
+	labels []string
 	pulls  []*seedPull
 }
 
 // newFakeGitHub is the newFake of GitHub.
-func newFakeGitHub(t *testing.T, issues []seedIssue) (f Forge, state func() fakeState) {
+func newFakeGitHub(t *testing.T, issues []seedIssue, labels []string) (f Forge, state func() fakeState) {
 	t.Helper()
-	fake := &fakeGitHub{issues: map[int]*seedIssue{}}
+	fake := &fakeGitHub{issues: map[int]*seedIssue{}, labels: labels}
 	for _, issue := range issues {
 		fake.issues[issue.Number] = &issue
 	}
@@ -189,6 +190,15 @@ func (fake *fakeGitHub) mux() (handler http.Handler) {
 		}
 		reply(w, http.StatusOK, blockers)
 	})
+	mux.HandleFunc("GET /repos/o/r/labels", func(w http.ResponseWriter, r *http.Request) {
+		fake.mu.Lock()
+		defer fake.mu.Unlock()
+		list := []map[string]string{}
+		for _, name := range page(r, fake.labels) {
+			list = append(list, map[string]string{"name": name})
+		}
+		reply(w, http.StatusOK, list)
+	})
 	mux.HandleFunc("GET /repos/o/r/issues", func(w http.ResponseWriter, r *http.Request) {
 		fake.mu.Lock()
 		defer fake.mu.Unlock()
@@ -276,7 +286,7 @@ func TestGitHubContract(t *testing.T) {
 }
 
 func TestGitHubNotFound(t *testing.T) {
-	f, _ := newFakeGitHub(t, contractIssues())
+	f, _ := newFakeGitHub(t, contractIssues(), contractLabels())
 	if _, err := f.Ticket(t.Context(), 99); err == nil || !strings.Contains(err.Error(), "Not Found") {
 		t.Errorf("Ticket(99): err = %v", err)
 	}
@@ -286,7 +296,7 @@ func TestGitHubNotFound(t *testing.T) {
 }
 
 func TestGitHubBadToken(t *testing.T) {
-	f, _ := newFakeGitHub(t, contractIssues())
+	f, _ := newFakeGitHub(t, contractIssues(), contractLabels())
 	f.(*GitHub).Token = "wrong"
 	if _, err := f.Ticket(t.Context(), 7); err == nil || !strings.Contains(err.Error(), "Bad credentials") {
 		t.Errorf("wrong token: err = %v", err)

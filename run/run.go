@@ -121,7 +121,7 @@ func newRun(ctx context.Context, opts Options) (r run, setup vmSetup, err error)
 // is destroyed before the Forge is written; on any failure in the VM (and
 // Ctrl-C) it stays for `afk vm shell` / `afk vm kill`.
 func Execute(ctx context.Context, opts Options) (err error) {
-	if opts.Ticket.SubIssues > 0 {
+	if opts.Ticket.HasLabel(opts.Base.Config.Labels.Spec) {
 		err = fmt.Errorf("ticket #%d is a Spec: run it with ExecuteSpec", opts.Ticket.Number)
 		return
 	}

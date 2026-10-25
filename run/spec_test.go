@@ -109,7 +109,7 @@ func (env specEnv) specOn(t *testing.T, vms *fakeVMs, q Quarantine) (s *specRun)
 		run: run{
 			Options: Options{
 				Base:   Base{Repo: env.user, Branch: "main", Commit: env.base, Config: cfg, Ident: Ident{Name: "Human", Email: "human@example.com"}},
-				Ticket: forge.Ticket{Number: 9, Title: "Spec", SubIssues: 3},
+				Ticket: forge.Ticket{Number: 9, Title: "Spec", Labels: []string{"spec"}, SubIssues: 3},
 				Forge:  env.fake.serve(t, filepath.Join(env.root, "origin.git")),
 				Out:    &bytes.Buffer{},
 			},
@@ -489,9 +489,13 @@ func TestSpecResumeRefused(t *testing.T) {
 func TestSpecNotASpec(t *testing.T) {
 	env := newSpecEnv(t)
 	s := env.spec(t, &fakeVMs{})
-	s.Ticket.SubIssues = 0
+	s.Ticket.Labels = nil
 	if err := s.execute(t.Context()); err == nil || !strings.Contains(err.Error(), "not a Spec") {
-		t.Errorf("err = %v", err)
+		t.Errorf("without the label: err = %v", err)
+	}
+	s.Ticket.Labels, s.Ticket.SubIssues = []string{"spec"}, 0
+	if err := s.execute(t.Context()); err == nil || !strings.Contains(err.Error(), "no sub-issues") {
+		t.Errorf("without children: err = %v", err)
 	}
 }
 
@@ -534,6 +538,12 @@ func (fake *fakeGitHub) answer(req *http.Request, body map[string]any) (reply an
 		return
 	}
 	switch route {
+	case "GET /repos/o/r/labels":
+		names := []map[string]string{}
+		for _, name := range fake.labels {
+			names = append(names, map[string]string{"name": name})
+		}
+		return names, true
 	case "GET /repos/o/r/issues":
 		// By label, as GitHub lists them: stale when listed is set, and with pull requests.
 		var items []map[string]any

@@ -192,7 +192,7 @@ func (c Config) validateLabels(v *validator) {
 			continue
 		}
 		for _, earlier := range roles[:i] {
-			if earlier.label == role.label {
+			if strings.EqualFold(earlier.label, role.label) { // the Forge matches labels case-insensitively
 				v.report(path, "same as labels.%s (%q)", earlier.key, role.label)
 				break
 			}

@@ -72,6 +72,11 @@ type Labels struct {
 	Spec          string `toml:"spec"`
 }
 
+// Names returns the names of all labels, in the order of the fields.
+func (l Labels) Names() (names []string) {
+	return []string{l.NeedsTriage, l.NeedsInfo, l.ReadyForAgent, l.ReadyForHuman, l.Wontfix, l.Spec}
+}
+
 // Agent configures models and the Claude Code plugins installed in the
 // Base image (ADR-0009).
 type Agent struct {

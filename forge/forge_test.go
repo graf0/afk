@@ -43,7 +43,7 @@ type fakeState struct {
 // newFake starts a fake Forge of repo o/r holding issues and returns a client
 // of it and a snapshot of its state. Every implementation provides one, and
 // testContract runs the same suite on it.
-type newFakeForge func(t *testing.T, issues []seedIssue) (f Forge, state func() fakeState)
+type newFakeForge func(t *testing.T, issues []seedIssue, labels []string) (f Forge, state func() fakeState)
 
 func contractIssues() (issues []seedIssue) {
 	var comments []string
@@ -64,13 +64,21 @@ func contractIssues() (issues []seedIssue) {
 	}
 }
 
+// contractLabels are the labels the repository has: more than a page.
+func contractLabels() (labels []string) {
+	for i := range 150 {
+		labels = append(labels, fmt.Sprintf("label-%03d", i))
+	}
+	return append(labels, "ready-for-agent", "spec")
+}
+
 // testContract is the suite every Forge passes: reads (tickets, lists by
 // label, Spec children, blockers) and writes (pull requests, comments,
 // labels, closing).
 func testContract(t *testing.T, newFake newFakeForge) {
 	forge := func(t *testing.T) (f Forge, state func() fakeState) {
 		t.Helper()
-		return newFake(t, contractIssues())
+		return newFake(t, contractIssues(), contractLabels())
 	}
 
 	t.Run("Ticket", func(t *testing.T) {
@@ -145,6 +153,14 @@ func testContract(t *testing.T, newFake newFakeForge) {
 		}
 		if numbers, err = f.ListLabeled(t.Context(), "nothing"); err != nil || len(numbers) != 0 {
 			t.Errorf("ListLabeled of none = %v, %v", numbers, err)
+		}
+	})
+
+	t.Run("Labels", func(t *testing.T) {
+		f, _ := forge(t)
+		names, err := f.Labels(t.Context())
+		if want := contractLabels(); err != nil || !slices.Equal(slices.Sorted(slices.Values(names)), slices.Sorted(slices.Values(want))) {
+			t.Errorf("Labels = %d names, %v; want the %d of the repository", len(names), err, len(want))
 		}
 	})
 
@@ -258,6 +274,17 @@ func testContract(t *testing.T, newFake newFakeForge) {
 			t.Error("Comment on a missing issue: want error")
 		}
 	})
+}
+
+func TestHasLabel(t *testing.T) {
+	ticket := Ticket{Labels: []string{"Ready-For-Agent", "bug"}}
+	sub := SubIssue{Labels: []string{"Spec"}}
+	if !ticket.HasLabel("ready-for-agent") || !ticket.HasLabel("bug") || ticket.HasLabel("spec") || ticket.HasLabel("") {
+		t.Errorf("Ticket.HasLabel on %v", ticket.Labels)
+	}
+	if !sub.HasLabel("spec") || sub.HasLabel("bug") {
+		t.Errorf("SubIssue.HasLabel on %v", sub.Labels)
+	}
 }
 
 func TestNew(t *testing.T) {
