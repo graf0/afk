@@ -85,9 +85,14 @@ func (q Quarantine) FetchBase(ctx context.Context, repo, commit, branch string) 
 	return
 }
 
-// Bundle writes a git bundle of the base ref of branch (full history) to path.
+// Bundle writes a git bundle of the base ref of branch and, when there is
+// one, of its result (the Spec's branch so far), with full history, to path.
 func (q Quarantine) Bundle(ctx context.Context, branch, path string) (err error) {
-	if _, err = q.git(ctx, "bundle", "create", "--quiet", path, baseRef(branch)); err != nil {
+	refs := []string{baseRef(branch)}
+	if _, refErr := q.git(ctx, "rev-parse", "--quiet", "--verify", resultRef(branch)); refErr == nil {
+		refs = append(refs, resultRef(branch))
+	}
+	if _, err = q.git(ctx, append([]string{"bundle", "create", "--quiet", path}, refs...)...); err != nil {
 		err = fmt.Errorf("bundling the base: %w", err)
 	}
 	return
@@ -143,11 +148,69 @@ func (q Quarantine) Validate(ctx context.Context, base, head string, protected [
 	return
 }
 
-// Accept creates the result branch at the validated head; an existing
-// branch is never overwritten.
-func (q Quarantine) Accept(ctx context.Context, branch, head string) (err error) {
-	if _, err = q.git(ctx, "update-ref", resultRef(branch), head, ""); err != nil {
-		err = fmt.Errorf("accepting the result (does %s already exist?): %w", resultRef(branch), err)
+// Accept sets the result branch to the validated head. It only moves the
+// branch from old, which is empty when it must not exist yet: nothing
+// else is ever overwritten.
+func (q Quarantine) Accept(ctx context.Context, branch, head, old string) (err error) {
+	if _, err = q.git(ctx, "update-ref", resultRef(branch), head, old); err != nil {
+		err = fmt.Errorf("accepting the result (is %s not at %q?): %w", resultRef(branch), old, err)
+	}
+	return
+}
+
+// Resume imports the tip of branch from remote as the result branch of a
+// Spec. The base ref of branch moves to the merge base of the tip and
+// the base it had (the base branch may have moved on since the Spec began);
+// the tip is validated against it like any result. The result branch may
+// already exist from the run that pushed the tip: it must be at the tip or
+// behind it, and is moved to it. A branch with commits the remote lacks is an
+// error, as nothing here may overwrite them. It returns the tip and the new base.
+func (q Quarantine) Resume(ctx context.Context, remote forge.Remote, branch string, protected []string) (tip, base string, err error) {
+	ref := incomingRef(branch)
+	if _, err = q.gitWith(ctx, remote.Env, "", "fetch", "--quiet", "--no-tags", "--no-write-fetch-head", "--end-of-options", remote.URL, "+"+resultRef(branch)+":"+ref); err != nil {
+		err = fmt.Errorf("fetching %s from %s: %w", branch, remote.URL, err)
+		return
+	}
+	if tip, err = q.git(ctx, "rev-parse", "--verify", "--end-of-options", ref+"^{commit}"); err != nil {
+		err = fmt.Errorf("reading the tip of %s: %w", branch, err)
+		return
+	}
+	if base, err = q.git(ctx, "merge-base", baseRef(branch), tip); err != nil {
+		err = fmt.Errorf("%s on %s has no common history with the base: %w", branch, remote.URL, err)
+		return
+	}
+	if _, err = q.Validate(ctx, base, tip, protected); err != nil {
+		err = fmt.Errorf("%s on %s rejected: %w", branch, remote.URL, err)
+		return
+	}
+	// The result of the previous run, if any.
+	local, refErr := q.git(ctx, "rev-parse", "--quiet", "--verify", resultRef(branch)+"^{commit}")
+	if refErr != nil {
+		local = ""
+	}
+	if local != "" {
+		if _, ancestorErr := q.git(ctx, "merge-base", "--is-ancestor", local, tip); ancestorErr != nil {
+			err = fmt.Errorf("%s in %s (%s) has commits that %s lacks: push them (git --git-dir=%s push %s %s) or drop them (git --git-dir=%s update-ref -d %s), then run again",
+				branch, q.Dir, local, remote.URL, q.Dir, remote.URL, branch, q.Dir, resultRef(branch))
+			return
+		}
+	}
+	if _, err = q.git(ctx, "update-ref", baseRef(branch), base); err != nil {
+		err = fmt.Errorf("moving the base of %s: %w", branch, err)
+		return
+	}
+	err = q.Accept(ctx, branch, tip, local)
+	return
+}
+
+// Subjects lists the subjects of the commits in base..head, oldest first.
+func (q Quarantine) Subjects(ctx context.Context, base, head string) (subjects []string, err error) {
+	out, err := q.git(ctx, "log", "--reverse", "--format=%s", base+".."+head)
+	if err != nil {
+		return
+	}
+	if out != "" {
+		subjects = strings.Split(out, "\n")
 	}
 	return
 }
@@ -167,8 +230,8 @@ func (q Quarantine) Squash(ctx context.Context, base, head, message string, iden
 	return
 }
 
-// RemoteHasBranch reports whether remote has branch.
-func (q Quarantine) RemoteHasBranch(ctx context.Context, remote forge.Remote, branch string) (exists bool, err error) {
+// RemoteTip returns the commit of branch on remote, empty when it has none.
+func (q Quarantine) RemoteTip(ctx context.Context, remote forge.Remote, branch string) (tip string, err error) {
 	out, err := q.gitWith(ctx, remote.Env, "", "ls-remote", "--heads", "--end-of-options", remote.URL, resultRef(branch))
 	if err != nil {
 		err = fmt.Errorf("listing branches of %s: %w", remote.URL, err)
@@ -176,19 +239,20 @@ func (q Quarantine) RemoteHasBranch(ctx context.Context, remote forge.Remote, br
 	}
 	// The pattern matches any ref ending in it; only the exact one counts.
 	for line := range strings.Lines(out) {
-		if _, ref, _ := strings.Cut(strings.TrimSpace(line), "\t"); ref == resultRef(branch) {
-			exists = true
+		if sha, ref, _ := strings.Cut(strings.TrimSpace(line), "\t"); ref == resultRef(branch) {
+			tip = sha
 		}
 	}
 	return
 }
 
-// Push creates branch on remote from the result branch. It never
-// overwrites: the lease with an empty value lets the push only create the
-// branch, so one that exists on the remote fails it.
-func (q Quarantine) Push(ctx context.Context, remote forge.Remote, branch string) (err error) {
+// Push sends the result branch to remote. It never overwrites someone's
+// work: the lease lets the push only create the branch (old is empty, so
+// one that exists on the remote fails it) or move it from old, the commit
+// afk pushed or read last.
+func (q Quarantine) Push(ctx context.Context, remote forge.Remote, branch, old string) (err error) {
 	ref := resultRef(branch)
-	if _, err = q.gitWith(ctx, remote.Env, "", "push", "--quiet", "--no-verify", "--force-with-lease="+ref+":", "--end-of-options", remote.URL, ref+":"+ref); err != nil {
+	if _, err = q.gitWith(ctx, remote.Env, "", "push", "--quiet", "--no-verify", "--force-with-lease="+ref+":"+old, "--end-of-options", remote.URL, ref+":"+ref); err != nil {
 		err = fmt.Errorf("pushing %s to %s: %w", branch, remote.URL, err)
 	}
 	return

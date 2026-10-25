@@ -39,8 +39,8 @@ type step struct {
 // checkRemote fails when ticket-N already exists on the Forge: a Run never
 // touches someone's branch, and a second Run of a ticket is a human's call.
 func (r run) checkRemote(ctx context.Context) (err error) {
-	exists, err := r.quarantine.RemoteHasBranch(ctx, r.Forge.Remote(), r.branch)
-	if err != nil || !exists {
+	tip, err := r.quarantine.RemoteTip(ctx, r.Forge.Remote(), r.branch)
+	if err != nil || tip == "" {
 		return
 	}
 	err = fmt.Errorf("branch %s already exists on %s: finish or close its pull request, or delete it (git push origin --delete %s), then run again",
@@ -53,75 +53,132 @@ func (r run) checkRemote(ctx context.Context) (err error) {
 // publish writes the outcome of the Run to the Forge. done: push of
 // ticket-N, pull request, report comment, review report comment,
 // ready_for_human when a person must look (result.human), ready_for_agent
-// off the ticket. needs_info: the
-// questions on the ticket, needs_info on and ready_for_agent off; no push.
+// off the ticket. needs_info: the questions on the ticket, needs_info on and
+// ready_for_agent off; no push.
 // The steps run in order; a failure lists what is done and, one line per
 // step, what is left to do by hand.
 func (r run) publish(ctx context.Context, res result) (err error) {
 	report := res.Report
-	labels := r.Base.Config.Labels
 	n := r.Ticket.Number
-	ticket := fmt.Sprintf("#%d", n)
-	var steps []step
 	if report.Status == agent.StatusNeedsInfo {
-		steps = append(steps, step{
-			name: "comment the questions on " + ticket,
-			todo: "comment the agent's reason and questions (printed above) on " + ticket,
-			do:   func() (err error) { return r.Forge.Comment(ctx, n, needsInfoComment(report)) },
-		})
-		if labels.NeedsInfo != "" {
-			steps = append(steps, step{
-				name: "add " + labels.NeedsInfo + " to " + ticket,
-				todo: "add the label " + labels.NeedsInfo + " to " + ticket,
-				do:   func() (err error) { return r.Forge.AddLabel(ctx, n, labels.NeedsInfo) },
-			})
-		}
-	} else {
-		var pull forge.PullRequest
-		// afk's own closing keyword: added after agentText, it must work.
-		body := "Closes " + ticket + "\n"
-		steps = append(steps, step{
-			name: "push " + r.branch,
-			todo: fmt.Sprintf("git --git-dir=%s push %s %s", r.quarantine.Dir, r.Forge.GitURL, r.branch),
-			do:   func() (err error) { return r.quarantine.Push(ctx, r.Forge.Remote(), r.branch) },
-		}, step{
-			name: "open the pull request",
-			todo: fmt.Sprintf("open a pull request %s → %s titled %q with the body %q", r.branch, r.Base.Branch, r.Ticket.Title, body),
-			do: func() (err error) {
-				pull, err = r.Forge.CreatePull(ctx, r.branch, r.Base.Branch, r.Ticket.Title, body)
-				return
-			},
-		}, step{
-			name: "comment the report on the pull request",
-			todo: "comment the agent report (printed above) on the pull request",
-			do:   func() (err error) { return r.Forge.Comment(ctx, pull.Number, reportComment(report)) },
-		})
-		if res.Review != nil {
-			steps = append(steps, step{
-				name: "comment the review report on the pull request",
-				todo: "comment the review report (printed above) on the pull request",
-				do:   func() (err error) { return r.Forge.Comment(ctx, pull.Number, reviewComment(*res.Review)) },
-			})
-		}
-		if labels.ReadyForHuman != "" && res.human() {
-			steps = append(steps, step{
-				name: "add " + labels.ReadyForHuman + " to the pull request",
-				todo: "add the label " + labels.ReadyForHuman + " to the pull request",
-				do:   func() (err error) { return r.Forge.AddLabel(ctx, pull.Number, labels.ReadyForHuman) },
-			})
-		}
-		defer func() {
-			if pull.Number != 0 {
-				r.say("pull request #%d: %s", pull.Number, pull.URL)
-			}
-		}()
+		err = r.runSteps(r.needsInfoSteps(ctx, n, needsInfoComment(report)))
+		return
 	}
-	steps = append(steps, step{
-		name: "remove " + labels.ReadyForAgent + " from " + ticket,
-		todo: "remove the label " + labels.ReadyForAgent + " from " + ticket,
-		do:   func() (err error) { return r.Forge.RemoveLabel(ctx, n, labels.ReadyForAgent) },
-	})
+	var pushed string
+	var pull forge.PullRequest
+	// afk's own closing keyword: added after agentText, it must work.
+	body := fmt.Sprintf("Closes #%d\n", n)
+	steps := []step{
+		r.pushStep(ctx, &pushed, res.Commit),
+		r.pullStep(ctx, &pull, r.Ticket.Title, body, false),
+		r.commentStep(ctx, &pull, "agent report", reportComment("Implementacja", report)),
+	}
+	if res.Review != nil {
+		steps = append(steps, r.commentStep(ctx, &pull, "review report", reviewComment(*res.Review)))
+	}
+	if r.needsHuman(res) {
+		steps = append(steps, r.humanStep(ctx, &pull))
+	}
+	steps = append(steps, r.removeReadyStep(ctx, n))
+	defer func() {
+		if pull.Number != 0 {
+			r.say("pull request #%d: %s", pull.Number, pull.URL)
+		}
+	}()
+	err = r.runSteps(steps)
+	return
+}
 
+// pushStep pushes the result branch, moving it from *pushed (empty: creating
+// it) and remembering the commit.
+func (r run) pushStep(ctx context.Context, pushed *string, commit string) (s step) {
+	return step{
+		name: "push " + r.branch,
+		todo: fmt.Sprintf("git --git-dir=%s push %s %s", r.quarantine.Dir, r.Forge.GitURL, r.branch),
+		do: func() (err error) {
+			if err = r.quarantine.Push(ctx, r.Forge.Remote(), r.branch, *pushed); err == nil {
+				*pushed = commit
+			}
+			return
+		},
+	}
+}
+
+// pullStep opens the pull request of the result branch into *pull.
+func (r run) pullStep(ctx context.Context, pull *forge.PullRequest, title, body string, draft bool) (s step) {
+	kind := "pull request"
+	if draft {
+		kind = "draft pull request"
+	}
+	return step{
+		name: "open the " + kind,
+		todo: fmt.Sprintf("open a %s %s → %s titled %q with the body %q", kind, r.branch, r.Base.Branch, title, body),
+		do: func() (err error) {
+			*pull, err = r.Forge.CreatePull(ctx, r.branch, r.Base.Branch, title, body, draft)
+			return
+		},
+	}
+}
+
+// commentStep comments text, the what of the Run, on *pull.
+func (r run) commentStep(ctx context.Context, pull *forge.PullRequest, what, text string) (s step) {
+	return step{
+		name: "comment the " + what + " on the pull request",
+		todo: "comment the " + what + " (printed above) on the pull request",
+		do:   func() (err error) { return r.Forge.Comment(ctx, pull.Number, text) },
+	}
+}
+
+// needsHuman reports whether the pull request of res gets ready_for_human.
+func (r run) needsHuman(res result) (ok bool) {
+	return r.Base.Config.Labels.ReadyForHuman != "" && res.human()
+}
+
+// humanStep marks *pull ready_for_human.
+func (r run) humanStep(ctx context.Context, pull *forge.PullRequest) (s step) {
+	label := r.Base.Config.Labels.ReadyForHuman
+	return step{
+		name: "add " + label + " to the pull request",
+		todo: "add the label " + label + " to the pull request",
+		do:   func() (err error) { return r.Forge.AddLabel(ctx, pull.Number, label) },
+	}
+}
+
+// needsInfoSteps puts text on issue n, which the Agent could not do, and
+// marks it needs_info instead of ready_for_agent.
+func (r run) needsInfoSteps(ctx context.Context, n int, text string) (steps []step) {
+	labels := r.Base.Config.Labels
+	ticket := fmt.Sprintf("#%d", n)
+	steps = append(steps, step{
+		name: "comment the questions on " + ticket,
+		todo: "comment the agent's reason and questions (printed above) on " + ticket,
+		do:   func() (err error) { return r.Forge.Comment(ctx, n, text) },
+	})
+	if labels.NeedsInfo != "" {
+		steps = append(steps, step{
+			name: "add " + labels.NeedsInfo + " to " + ticket,
+			todo: "add the label " + labels.NeedsInfo + " to " + ticket,
+			do:   func() (err error) { return r.Forge.AddLabel(ctx, n, labels.NeedsInfo) },
+		})
+	}
+	steps = append(steps, r.removeReadyStep(ctx, n))
+	return
+}
+
+// removeReadyStep takes ready_for_agent off issue n.
+func (r run) removeReadyStep(ctx context.Context, n int) (s step) {
+	label := r.Base.Config.Labels.ReadyForAgent
+	ticket := fmt.Sprintf("#%d", n)
+	return step{
+		name: "remove " + label + " from " + ticket,
+		todo: "remove the label " + label + " from " + ticket,
+		do:   func() (err error) { return r.Forge.RemoveLabel(ctx, n, label) },
+	}
+}
+
+// runSteps does steps in order. A failure lists what is done and what is
+// left to do by hand.
+func (r run) runSteps(steps []step) (err error) {
 	for i, s := range steps {
 		if err = s.do(); err != nil {
 			err = fmt.Errorf("%s: %w\ndone:%s\nleft, to do by hand:%s", s.name, err, stepList(steps[:i], false), stepList(steps[i:], true))
@@ -160,11 +217,11 @@ func (r run) commitMessage(report agent.Report) (message string) {
 	return
 }
 
-// reportComment is the Agent's report on the pull request (report() in
-// docs/reference/ralph.sh).
-func reportComment(report agent.Report) (text string) {
+// reportComment is the Agent's report on the pull request, under heading
+// (report() in docs/reference/ralph.sh).
+func reportComment(heading string, report agent.Report) (text string) {
 	var b strings.Builder
-	fmt.Fprintf(&b, "### Implementacja\n\n%s\n", report.Summary)
+	fmt.Fprintf(&b, "### %s\n\n%s\n", heading, report.Summary)
 	writeList(&b, "Odstępstwa od ticketu", report.Deviations)
 	writeList(&b, "Wątpliwości do sprawdzenia", report.Doubts)
 	return agentText(b.String())

@@ -13,9 +13,10 @@ import (
 	"github.com/graf0/afk/run"
 )
 
-const factoryUsage = "usage: afk factory '#N' (one ticket; '*' and lists are not supported yet)"
+const factoryUsage = "usage: afk factory '#N' (one ticket or Spec; '*' and lists are not supported yet)"
 
-// runFactory executes `afk factory '#N'`: one Run of ticket N.
+// runFactory executes `afk factory '#N'`: one Run of ticket N, or of a Spec
+// (a ticket with sub-issues) a Run of each of its children and a review.
 func runFactory(ctx context.Context, args []string, dir string, stdout io.Writer) (err error) {
 	n, err := parseSelector(args)
 	if err != nil {
@@ -45,7 +46,12 @@ func runFactory(ctx context.Context, args []string, dir string, stdout io.Writer
 	if err != nil {
 		return
 	}
-	err = run.Execute(ctx, run.Options{Base: base, Ticket: ticket, ClaudeToken: claudeToken, Paths: paths, Out: stdout, Forge: github})
+	opts := run.Options{Base: base, Ticket: ticket, ClaudeToken: claudeToken, Paths: paths, Out: stdout, Forge: github}
+	if ticket.SubIssues > 0 {
+		err = run.ExecuteSpec(ctx, opts)
+		return
+	}
+	err = run.Execute(ctx, opts)
 	return
 }
 

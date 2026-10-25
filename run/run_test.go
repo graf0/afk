@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/graf0/afk/config"
+	"github.com/graf0/afk/forge"
 )
 
 func TestTailBuffer(t *testing.T) {
@@ -67,6 +68,24 @@ func TestRunPrompt(t *testing.T) {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("prompt lacks %q", want)
 		}
+	}
+}
+
+func TestExecuteRefusesSpec(t *testing.T) {
+	err := Execute(t.Context(), Options{Ticket: forge.Ticket{Number: 9, SubIssues: 2}})
+	if err == nil || !strings.Contains(err.Error(), "is a Spec") {
+		t.Errorf("err = %v", err)
+	}
+}
+
+func TestTaskSpec(t *testing.T) {
+	r := run{branch: "ticket-9"}
+	if got := r.task().SpecPath; got != "" {
+		t.Errorf("SpecPath without a Spec = %q", got)
+	}
+	r.spec = &forge.Ticket{Number: 9}
+	if got := r.task().SpecPath; got != guestSpec {
+		t.Errorf("SpecPath = %q, want %q", got, guestSpec)
 	}
 }
 

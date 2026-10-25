@@ -14,6 +14,7 @@ type Task struct {
 	Branch     string   // checked out branch, e.g. ticket-5
 	BaseRef    string   // base branch in the clone, e.g. origin/main
 	TicketPath string   // ticket file, outside the clone
+	SpecPath   string   // the Spec of the ticket as context, outside the clone; empty without a Spec
 	Protected  []string // [protect].paths
 	Plugins    []string // names of the plugins in the image, without marketplace
 }
@@ -40,6 +41,9 @@ func Prompt(task Task) (prompt string) {
 	b.WriteString("Zasady:\n")
 	fmt.Fprintf(&b, "- Pracujesz na gotowym branchu `%s` w świeżym klonie repo `%s` (bieżący katalog), odgałęzionym od `%s`. Nie zmieniaj brancha.\n", task.Branch, task.RepoDir, task.BaseRef)
 	fmt.Fprintf(&b, "- Treść ticketu leży w `%s`, poza repo; nie commituj jej. To jedyne źródło wiedzy o zadaniu: tracker jest celowo niedostępny (nie masz `gh` ani poświadczeń), więc nie szukaj zgłoszeń w sieci ani w historii commitów i nie zgaduj brakujących szczegółów. Gdy ticket odsyła do czegoś, czego tam nie ma, zwróć `needs_info`. Podaj tę ścieżkę subagentom: nie dziedziczą tego promptu.\n", task.TicketPath)
+	if task.SpecPath != "" {
+		fmt.Fprintf(&b, "- Ticket jest częścią speca z pliku `%s` (poza repo, nie commituj go): to kontekst, nie zakres. Poprzednie tickety speca są już w historii brancha; zrób tylko ten ticket. Podaj tę ścieżkę subagentom.\n", task.SpecPath)
+	}
 	b.WriteString("- Nikt nie odpowie na pytania w trakcie pracy. Seamy testowe dobierz jak w najbliższych istniejących testach w repo i wymień wybór w `summary`.\n")
 	b.WriteString("- Sieć działa tylko przez proxy z listą dozwolonych domen; WebFetch i WebSearch są wyłączone. Gdy do pracy potrzebujesz czegoś spoza tej listy, zwróć `needs_info`.\n")
 	writeCommitRules(&b, task)

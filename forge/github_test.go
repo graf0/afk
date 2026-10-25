@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -44,9 +45,27 @@ func fakeGitHub(t *testing.T) (g *GitHub) {
 			issue(w, `{"number":9,"title":"Closed","state":"closed"}`)
 		case "10":
 			issue(w, `{"number":10,"title":"Spec","state":"open","sub_issues_summary":{"total":2}}`)
+		case "20":
+			issue(w, `{"number":20,"title":"Done blocker","state":"closed"}`)
+		case "21":
+			issue(w, `{"number":21,"title":"Open blocker","state":"open"}`)
 		default:
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = fmt.Fprint(w, `{"message":"Not Found"}`)
+		}
+	})
+	mux.HandleFunc("GET /repos/o/r/issues/10/sub_issues", func(w http.ResponseWriter, r *http.Request) {
+		issue(w, `[{"number":13,"state":"closed","labels":[]},{"number":11,"state":"open","labels":[{"name":"ready-for-agent"}]}]`)
+	})
+	mux.HandleFunc("GET /repos/o/r/issues/10/comments", func(w http.ResponseWriter, r *http.Request) { issue(w, `[]`) })
+	mux.HandleFunc("GET /repos/o/r/issues/{n}/dependencies/blocked_by", func(w http.ResponseWriter, r *http.Request) {
+		switch r.PathValue("n") {
+		case "11":
+			issue(w, `[{"number":20,"state":"closed"}]`)
+		case "12":
+			issue(w, `[{"number":20,"state":"closed"},{"number":21,"state":"open"}]`)
+		default:
+			issue(w, `[]`)
 		}
 	})
 	mux.HandleFunc("GET /repos/o/r/issues/7/comments", func(w http.ResponseWriter, r *http.Request) {
@@ -102,7 +121,7 @@ func TestGitHubReadyTicket(t *testing.T) {
 
 func TestGitHubTicketRefused(t *testing.T) {
 	g := fakeGitHub(t)
-	for n, want := range map[int]string{8: "pull request", 9: "closed", 10: "sub-issues", 11: "Not Found"} {
+	for n, want := range map[int]string{8: "pull request", 9: "closed", 11: "Not Found"} {
 		if _, err := g.Ticket(t.Context(), n); err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("Ticket(%d): err = %v, want %q", n, err, want)
 		}
@@ -110,6 +129,37 @@ func TestGitHubTicketRefused(t *testing.T) {
 	g.Token = "wrong"
 	if _, err := g.Ticket(t.Context(), 7); err == nil || !strings.Contains(err.Error(), "Bad credentials") {
 		t.Errorf("wrong token: err = %v", err)
+	}
+}
+
+func TestGitHubSpec(t *testing.T) {
+	g := fakeGitHub(t)
+	spec, err := g.Ticket(t.Context(), 10)
+	if err != nil || spec.SubIssues != 2 {
+		t.Errorf("Ticket(10) = %+v, %v; want a Spec of 2 sub-issues", spec, err)
+	}
+	subs, err := g.SubIssues(t.Context(), 10)
+	want := []SubIssue{{Number: 13}, {Number: 11, Open: true, Labels: []string{"ready-for-agent"}}}
+	if err != nil || !reflect.DeepEqual(subs, want) {
+		t.Errorf("SubIssues(10) = %+v, %v; want %+v", subs, err, want)
+	}
+	for name, tc := range map[string]struct {
+		ticket  Ticket
+		blocked bool
+	}{
+		"none":                  {Ticket{Number: 7}, false},
+		"native, closed":        {Ticket{Number: 11}, false},
+		"native, open":          {Ticket{Number: 12}, true},
+		"body, closed":          {Ticket{Number: 7, Body: "Intro\nBlocked by: #20\n"}, false},
+		"body, one open":        {Ticket{Number: 7, Body: "blocked by: #20, #21"}, true},
+		"not at the line start": {Ticket{Number: 7, Body: "Not blocked by: #21"}, false},
+	} {
+		if blocked, err := g.Blocked(t.Context(), tc.ticket); err != nil || blocked != tc.blocked {
+			t.Errorf("%s: Blocked = %v, %v; want %v", name, blocked, err, tc.blocked)
+		}
+	}
+	if _, err = g.Blocked(t.Context(), Ticket{Number: 7, Body: "Blocked by: #99"}); err == nil || !strings.Contains(err.Error(), "Not Found") {
+		t.Errorf("unknown blocker: err = %v", err)
 	}
 }
 
@@ -143,7 +193,8 @@ func TestHostToken(t *testing.T) {
 // "METHOD path body" and answers them with status (201 unless set).
 type recorder struct {
 	requests []string
-	status   map[string]int // by "METHOD path"
+	status   map[string]int    // by "METHOD path"
+	reply    map[string]string // body of the response, by "METHOD path"; a pull request unless set
 }
 
 func (rec *recorder) serve(t *testing.T) (g *GitHub) {
@@ -157,7 +208,7 @@ func (rec *recorder) serve(t *testing.T) (g *GitHub) {
 		if len(body) > 0 && r.Header.Get("Content-Type") != "application/json" {
 			t.Errorf("%s %s: Content-Type %q", r.Method, r.URL.Path, r.Header.Get("Content-Type"))
 		}
-		rec.requests = append(rec.requests, strings.TrimSpace(r.Method+" "+r.URL.EscapedPath()+" "+string(body)))
+		rec.requests = append(rec.requests, strings.TrimSpace(r.Method+" "+r.URL.RequestURI()+" "+string(body)))
 		status, ok := rec.status[r.Method+" "+r.URL.EscapedPath()]
 		if !ok {
 			status = http.StatusCreated
@@ -167,7 +218,11 @@ func (rec *recorder) serve(t *testing.T) (g *GitHub) {
 			_, _ = fmt.Fprint(w, `{"message":"Nope"}`)
 			return
 		}
-		_, _ = fmt.Fprint(w, `{"number":42,"html_url":"https://github.com/o/r/pull/42"}`)
+		reply, ok := rec.reply[r.Method+" "+r.URL.EscapedPath()]
+		if !ok {
+			reply = `{"number":42,"html_url":"https://github.com/o/r/pull/42"}`
+		}
+		_, _ = fmt.Fprint(w, reply)
 	}))
 	t.Cleanup(server.Close)
 	g, err := NewGitHub(config.Forge{Kind: "github", Repo: "o/r"}, "secret")
@@ -181,7 +236,7 @@ func (rec *recorder) serve(t *testing.T) (g *GitHub) {
 func TestGitHubWrites(t *testing.T) {
 	rec := &recorder{status: map[string]int{"DELETE /repos/o/r/issues/8/labels/ready-for-agent": http.StatusNotFound}}
 	g := rec.serve(t)
-	pull, err := g.CreatePull(t.Context(), "ticket-7", "main", "Do it", "Closes #7\n")
+	pull, err := g.CreatePull(t.Context(), "ticket-7", "main", "Do it", "Closes #7\n", false)
 	if err != nil || pull.Number != 42 || pull.URL != "https://github.com/o/r/pull/42" {
 		t.Errorf("CreatePull = %+v, %v", pull, err)
 	}
@@ -190,6 +245,8 @@ func TestGitHubWrites(t *testing.T) {
 		g.AddLabel(t.Context(), 42, "ready-for-human"),
 		g.RemoveLabel(t.Context(), 7, "ready for/agent"),
 		g.RemoveLabel(t.Context(), 8, "ready-for-agent"), // not on the issue: fine
+		g.UpdatePullBody(t.Context(), 42, "new body"),
+		g.CloseIssue(t.Context(), 7),
 	} {
 		if err != nil {
 			t.Error(err)
@@ -201,6 +258,8 @@ func TestGitHubWrites(t *testing.T) {
 		`POST /repos/o/r/issues/42/labels {"labels":["ready-for-human"]}`,
 		`DELETE /repos/o/r/issues/7/labels/ready%20for%2Fagent`,
 		`DELETE /repos/o/r/issues/8/labels/ready-for-agent`,
+		`PATCH /repos/o/r/pulls/42 {"body":"new body"}`,
+		`PATCH /repos/o/r/issues/7 {"state":"closed","state_reason":"completed"}`,
 	}
 	if !slices.Equal(rec.requests, want) {
 		t.Errorf("requests:\n%s\nwant:\n%s", strings.Join(rec.requests, "\n"), strings.Join(want, "\n"))
@@ -210,11 +269,49 @@ func TestGitHubWrites(t *testing.T) {
 		"POST /repos/o/r/pulls":                             http.StatusUnprocessableEntity,
 		"DELETE /repos/o/r/issues/7/labels/ready-for-agent": http.StatusForbidden,
 	}
-	if _, err = g.CreatePull(t.Context(), "ticket-7", "main", "t", "b"); err == nil || !strings.Contains(err.Error(), "422") || !strings.Contains(err.Error(), "Nope") {
+	if _, err = g.CreatePull(t.Context(), "ticket-7", "main", "t", "b", false); err == nil || !strings.Contains(err.Error(), "422") || !strings.Contains(err.Error(), "Nope") {
 		t.Errorf("CreatePull refused: err = %v", err)
 	}
 	if err = g.RemoveLabel(t.Context(), 7, "ready-for-agent"); err == nil || !strings.Contains(err.Error(), "403") {
 		t.Errorf("RemoveLabel forbidden: err = %v", err)
+	}
+}
+
+func TestGitHubPulls(t *testing.T) {
+	rec := &recorder{reply: map[string]string{
+		"GET /repos/o/r/pulls": `[{"number":42,"html_url":"https://github.com/o/r/pull/42","state":"open","draft":true,"node_id":"PR_x"}]`,
+		"POST /graphql":        `{"data":null,"errors":[{"message":"Not a draft"}]}`,
+	}}
+	g := rec.serve(t)
+	draft, err := g.CreatePull(t.Context(), "ticket-7", "main", "Do it", "Closes #7\n", true)
+	if err != nil || draft.Number != 42 {
+		t.Errorf("CreatePull draft = %+v, %v", draft, err)
+	}
+	pull, found, err := g.FindPull(t.Context(), "ticket-7")
+	if err != nil || !found || pull.Number != 42 || pull.State != "open" || !pull.Draft || pull.NodeID != "PR_x" {
+		t.Errorf("FindPull = %+v, %v, %v", pull, found, err)
+	}
+	if err = g.ReadyPull(t.Context(), pull); err == nil || !strings.Contains(err.Error(), "Not a draft") {
+		t.Errorf("ReadyPull with a GraphQL error: err = %v", err)
+	}
+	rec.reply["POST /graphql"] = `{"data":{"markPullRequestReadyForReview":{"pullRequest":{"id":"PR_x"}}}}`
+	if err = g.ReadyPull(t.Context(), pull); err != nil {
+		t.Errorf("ReadyPull: %v", err)
+	}
+	rec.reply["GET /repos/o/r/pulls"] = `[]`
+	if _, found, err = g.FindPull(t.Context(), "ticket-8"); err != nil || found {
+		t.Errorf("FindPull of none = %v, %v", found, err)
+	}
+	graphql := `"query":"mutation($id: ID!) { markPullRequestReadyForReview(input: {pullRequestId: $id}) { pullRequest { id } } }","variables":{"id":"PR_x"}`
+	want := []string{
+		`POST /repos/o/r/pulls {"base":"main","body":"Closes #7\n","draft":true,"head":"ticket-7","title":"Do it"}`,
+		`GET /repos/o/r/pulls?state=all&sort=created&direction=desc&per_page=1&head=o%3Aticket-7`,
+		`POST /graphql {` + graphql + `}`,
+		`POST /graphql {` + graphql + `}`,
+		`GET /repos/o/r/pulls?state=all&sort=created&direction=desc&per_page=1&head=o%3Aticket-8`,
+	}
+	if !slices.Equal(rec.requests, want) {
+		t.Errorf("requests:\n%s\nwant:\n%s", strings.Join(rec.requests, "\n"), strings.Join(want, "\n"))
 	}
 }
 

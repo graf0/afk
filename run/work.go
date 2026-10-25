@@ -3,6 +3,7 @@ package run
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -27,6 +28,9 @@ type guest interface {
 	Agent(ctx context.Context, prompt, model string) (report agent.Report, err error)
 }
 
+// workFunc is what a Run does in a prepared guest.
+type workFunc func(ctx context.Context, g guest) (res result, err error)
+
 // sshGuest is the guest over ssh.
 type sshGuest struct {
 	run    run
@@ -38,6 +42,7 @@ type result struct {
 	Report agent.Report  // the implementation, with the reports of fix sessions appended
 	Review *agent.Report // nil when there was no review (needs_info)
 	Fixes  int           // fix sessions of the gate, over the whole Run
+	Commit string        // the Run's end of the branch, accepted in the Quarantine repo
 
 	gateRuns int // numbers the gate's output files
 }
@@ -87,6 +92,44 @@ func (res *result) addFix(fix agent.Report) {
 // committed anything, a "code review" commit on top. Every batch of commits
 // from the guest is validated like the first. needs_info returns early.
 func (r run) work(ctx context.Context, g guest) (res result, err error) {
+	res, head, implemented, err := r.implement(ctx, g)
+	if err != nil || res.Report.Status == agent.StatusNeedsInfo {
+		return
+	}
+	if err = r.review(ctx, g, &res, head, implemented); err != nil {
+		return
+	}
+	err = r.accept(ctx, res)
+	return
+}
+
+// workChild is work of a child of a Spec: the implementation only, squashed
+// on the tip of the Spec's branch, which it moves. The review is of the whole
+// branch at the end (workReview).
+func (r run) workChild(ctx context.Context, g guest) (res result, err error) {
+	res, _, _, err = r.implement(ctx, g)
+	if err != nil || res.Report.Status == agent.StatusNeedsInfo {
+		return
+	}
+	err = r.accept(ctx, res)
+	return
+}
+
+// workReview is the review of the whole branch of a Spec, in a guest that
+// starts at its tip; the result is the tip, with a "code review" commit on
+// top when the review committed anything.
+func (r run) workReview(ctx context.Context, g guest) (res result, err error) {
+	if err = r.review(ctx, g, &res, r.tip, r.tip); err != nil {
+		return
+	}
+	err = r.accept(ctx, res)
+	return
+}
+
+// implement runs the Agent's implementation session and the gate, and
+// squashes the result on the start of the Run. It returns the validated head
+// in the guest and the squashed commit. needs_info returns early.
+func (r run) implement(ctx context.Context, g guest) (res result, head, implemented string, err error) {
 	cfg := r.Base.Config
 	r.say("agent started")
 	if res.Report, err = r.agentSession(ctx, g, r.prompt(), cfg.Agent.Model); err != nil {
@@ -95,19 +138,26 @@ func (r run) work(ctx context.Context, g guest) (res result, err error) {
 	if res.Report.Status == agent.StatusNeedsInfo {
 		return
 	}
-	head, err := r.fetchResult(ctx, g)
-	if err != nil {
+	if head, err = r.fetchResult(ctx, g); err != nil {
+		return
+	}
+	if head == r.start() {
+		err = errors.New("the agent reported done without commits")
 		return
 	}
 	if head, err = r.gate(ctx, g, head, &res); err != nil {
 		return
 	}
-	implemented, err := r.squash(ctx, r.Base.Commit, head, r.commitMessage(res.Report))
-	if err != nil {
-		return
-	}
-	final := implemented
+	implemented, err = r.squash(ctx, r.start(), head, r.commitMessage(res.Report))
+	res.Commit = implemented
+	return
+}
 
+// review runs the review session after head, which implemented is the
+// squashed commit of, and sets res.Commit to the end of the branch: with
+// the review's fixes, through the gate, squashed in a second commit.
+func (r run) review(ctx context.Context, g guest, res *result, head, implemented string) (err error) {
+	cfg := r.Base.Config
 	r.say("code review (model %s)", cmp.Or(cfg.Agent.ReviewModel, "default"))
 	review, err := r.agentSession(ctx, g, agent.ReviewPrompt(r.task()), cfg.Agent.ReviewModel)
 	if err != nil {
@@ -118,19 +168,23 @@ func (r run) work(ctx context.Context, g guest) (res result, err error) {
 		return
 	}
 	res.Review = &review
+	res.Commit = implemented
 	reviewed, err := r.fetchResult(ctx, g)
 	if err != nil {
 		return
 	}
 	if reviewed != head {
-		if reviewed, err = r.gate(ctx, g, reviewed, &res); err != nil {
+		if reviewed, err = r.gate(ctx, g, reviewed, res); err != nil {
 			return
 		}
-		if final, err = r.squash(ctx, implemented, reviewed, r.reviewMessage(review)); err != nil {
-			return
-		}
+		res.Commit, err = r.squash(ctx, implemented, reviewed, r.reviewMessage(review))
 	}
-	if err = r.quarantine.Accept(ctx, r.branch, final); err != nil {
+	return
+}
+
+// accept moves the result branch to the result of the Run.
+func (r run) accept(ctx context.Context, res result) (err error) {
+	if err = r.quarantine.Accept(ctx, r.branch, res.Commit, r.tip); err != nil {
 		return
 	}
 	r.say("result valid, %s in %s", r.branch, r.quarantine.Dir)
@@ -164,7 +218,8 @@ func (r run) squash(ctx context.Context, parent, head, message string) (squashed
 
 // fetchResult brings HEAD of the guest's clone into the Quarantine repo as a
 // bundle, without running anything of the clone on the host (ADR-0002), and
-// validates it against the base. It returns the commit.
+// validates it against the start of the Run. It returns the commit; without
+// new commits that is the start itself.
 func (r run) fetchResult(ctx context.Context, g guest) (head string, err error) {
 	var status tailBuffer
 	if err = g.Exec(ctx, "git status --porcelain", &status); err != nil {
@@ -175,13 +230,22 @@ func (r run) fetchResult(ctx context.Context, g guest) (head string, err error) 
 		err = fmt.Errorf("the agent left uncommitted changes:\n%s", agent.Sanitize(dirty))
 		return
 	}
+	var tip tailBuffer
+	if err = g.Exec(ctx, "git rev-parse HEAD", &tip); err != nil {
+		err = fmt.Errorf("reading HEAD in the guest: %w", err)
+		return
+	}
+	if strings.TrimSpace(tip.String()) == r.start() {
+		head = r.start()
+		return
+	}
 	file, err := os.CreateTemp(r.stateDir, "result-*.bundle")
 	if err != nil {
 		err = fmt.Errorf("creating result bundle: %w", err)
 		return
 	}
 	defer func() { _ = os.Remove(file.Name()) }()
-	err = g.Exec(ctx, "git bundle create -q - "+agent.ShellQuote(r.Base.Commit+"..HEAD"), &limitWriter{w: file, left: maxResultSize})
+	err = g.Exec(ctx, "git bundle create -q - "+agent.ShellQuote(r.start()+"..HEAD"), &limitWriter{w: file, left: maxResultSize})
 	if closeErr := file.Close(); err == nil && closeErr != nil {
 		err = closeErr
 	}
@@ -192,12 +256,12 @@ func (r run) fetchResult(ctx context.Context, g guest) (head string, err error) 
 	if head, err = r.quarantine.Import(ctx, file.Name(), r.branch); err != nil {
 		return
 	}
-	commits, err := r.quarantine.Validate(ctx, r.Base.Commit, head, r.Base.Config.Protect.Paths)
+	commits, err := r.quarantine.Validate(ctx, r.start(), head, r.Base.Config.Protect.Paths)
 	if err != nil {
 		err = fmt.Errorf("result %s rejected: %w", head, err)
 		return
 	}
-	r.say("result %s: %d commit(s) on the base", head[:12], commits)
+	r.say("result %s: %d commit(s) on %s", head[:12], commits, r.start()[:12])
 	return
 }
 
@@ -282,13 +346,17 @@ func lastLines(text string, n int) (tail string) {
 
 // --- helpers ---
 
+// start is the commit the Agent's clone starts from: the tip of the Spec's
+// branch, else the base.
+func (r run) start() (commit string) { return cmp.Or(r.tip, r.Base.Commit) }
+
 func (r run) task() (task agent.Task) {
 	var names []string
 	for _, id := range r.Base.Plugins {
 		name, _, _ := strings.Cut(id, "@")
 		names = append(names, name)
 	}
-	return agent.Task{
+	task = agent.Task{
 		RepoDir:    guestRepo,
 		Branch:     r.branch,
 		BaseRef:    "origin/" + r.Base.Branch,
@@ -296,4 +364,8 @@ func (r run) task() (task agent.Task) {
 		Protected:  r.Base.Config.Protect.Paths,
 		Plugins:    names,
 	}
+	if r.spec != nil {
+		task.SpecPath = guestSpec
+	}
+	return
 }
