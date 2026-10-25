@@ -3,12 +3,32 @@ package main
 import (
 	"bytes"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
 )
+
+// TestRunNeedsBaseBranch: vm list and image build read the base branch first,
+// vm kill does not.
+func TestRunNeedsBaseBranch(t *testing.T) {
+	root := t.TempDir()
+	if out, err := exec.Command("git", "init", "-q", root).CombinedOutput(); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	for _, args := range [][]string{{"vm", "list"}, {"image", "build"}} {
+		err := runCommand(t.Context(), nil, args, root, &bytes.Buffer{})
+		if err == nil || !strings.Contains(err.Error(), "base branch") {
+			t.Errorf("%v: err = %v, want a base branch error", args, err)
+		}
+	}
+	err := runCommand(t.Context(), nil, []string{"vm", "kill", "x"}, root, &bytes.Buffer{})
+	if err != nil && strings.Contains(err.Error(), "base branch") {
+		t.Errorf("vm kill: err = %v, want no base branch read", err)
+	}
+}
 
 func TestRun(t *testing.T) {
 	root := t.TempDir()

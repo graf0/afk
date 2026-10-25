@@ -23,11 +23,18 @@ import (
 const vmUsage = "usage: afk vm up | afk vm list | afk vm shell <vm> | afk vm kill <vm>"
 
 // runVM executes the diagnostic `afk vm <subcommand>`.
-func runVM(ctx context.Context, args []string, dir string, cfg config.Config, stdout io.Writer) (err error) {
+func runVM(ctx context.Context, args []string, dir string, stdout io.Writer) (err error) {
 	argCount := map[string]int{"up": 1, "list": 1, "shell": 2, "kill": 2} // including the subcommand
 	if len(args) == 0 || argCount[args[0]] != len(args) {
 		err = errors.New(vmUsage)
 		return
+	}
+	// kill cleans up and needs no config (and must work without origin).
+	var base run.Base
+	if args[0] != "kill" {
+		if base, err = run.ReadBase(ctx, dir); err != nil {
+			return
+		}
 	}
 	conn, err := machine.Connect()
 	if err != nil {
@@ -36,12 +43,12 @@ func runVM(ctx context.Context, args []string, dir string, cfg config.Config, st
 	defer func() { _ = conn.Close() }()
 	switch args[0] {
 	case "up":
-		err = vmUp(ctx, conn, cfg, stdout)
+		err = vmUp(ctx, conn, base.Config, stdout)
 	case "list":
-		err = vmList(conn, cfg, stdout)
+		err = vmList(conn, base.Config, stdout)
 	case "shell":
 		var policy egress.Policy
-		if policy, err = shellPolicy(ctx, dir); err != nil {
+		if policy, err = run.EgressPolicy(base.Config); err != nil {
 			return
 		}
 		err = vmShell(ctx, conn, policy, args[1])
@@ -107,17 +114,6 @@ func vmList(conn *machine.Conn, cfg config.Config, stdout io.Writer) (err error)
 			return
 		}
 	}
-	return
-}
-
-// shellPolicy is the egress policy of a Run of the Project: built from the
-// config on the base branch, never the working tree (ADR-0010).
-func shellPolicy(ctx context.Context, dir string) (policy egress.Policy, err error) {
-	base, err := run.ReadBase(ctx, dir)
-	if err != nil {
-		return
-	}
-	policy, err = run.EgressPolicy(base.Config)
 	return
 }
 

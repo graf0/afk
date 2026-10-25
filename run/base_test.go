@@ -65,10 +65,38 @@ git push -q origin trunk`)
 
 	t.Run("no .afk.toml on the base", func(t *testing.T) {
 		sh(t, root, "cd other && git rm -q .afk.toml && git commit -qm rm && git push -q origin trunk")
-		if _, err := ReadBase(t.Context(), user); err == nil || !strings.Contains(err.Error(), ".afk.toml") {
+		if _, err := ReadBase(t.Context(), user); err == nil || !strings.Contains(err.Error(), ".afk.toml from origin/trunk") {
 			t.Errorf("err = %v", err)
 		}
 	})
+}
+
+// TestReadBaseIgnoresWorkingTree covers `afk image build` and `afk vm up`:
+// both take .afk.toml and settings.json only from ReadBase.
+func TestReadBaseIgnoresWorkingTree(t *testing.T) {
+	_, user, _ := userRepo(t)
+	sh(t, user, `printf '[forge]\nkind = "gitea"\nrepo = "x/y"\nurl = "https://g.example"\n[gate]\ncmd = "false"\n' > .afk.toml
+echo '{"enabledPlugins": {"local@m": true}}' > .claude/settings.json`)
+	got, err := ReadBase(t.Context(), user)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Config.Forge.Kind != "github" || got.Config.Gate.Cmd != "true" {
+		t.Errorf("config = %+v, want the committed one", got.Config)
+	}
+	if strings.Contains(string(got.Settings), "local@m") || len(got.Plugins) != 0 {
+		t.Errorf("settings = %s, plugins = %q, want the committed ones", got.Settings, got.Plugins)
+	}
+}
+
+func TestReadBaseErrors(t *testing.T) {
+	root, user, _ := userRepo(t)
+	sh(t, root, "git -C origin.git branch -m main other")
+	sh(t, user, "git update-ref -d refs/remotes/origin/main")
+	_, err := ReadBase(t.Context(), user)
+	if err == nil || !strings.Contains(err.Error(), "git remote set-head origin --auto") {
+		t.Errorf("without origin/HEAD and origin/main: err = %v, want a hint to set origin/HEAD", err)
+	}
 }
 
 func TestEgressPolicy(t *testing.T) {
