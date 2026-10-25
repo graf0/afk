@@ -54,7 +54,7 @@ source "qemu" "debian" {
   output_directory     = var.output_dir
   vm_name              = "debian13.qcow2"
   format               = "qcow2"
-  disk_size            = "10G"
+  disk_size            = "64G"            # qcow2 rzadki; cloud-init przy budowie rozciąga partycję
   accelerator          = "kvm"
   machine_type         = "q35"
   cpu_model            = "host"
@@ -78,12 +78,12 @@ source "qemu" "debian" {
 
 build {
   sources = ["source.qemu.debian"]
-  provisioner "shell" { inline = var.provision }       # kroki afk + [image].provision
+  provisioner "shell" { inline = var.provision }       # kroki afk + build maszyny i jej Tooli
   provisioner "shell" { inline = var.final_provision } # zawsze ostatni
 }
 ```
 
-Kroki końcowe (obowiązkowe, inaczej klony nie dostaną adresu albo dostaną ten sam) idą w osobnym, ostatnim provisionerze, więc `exit`/`exec` w `[image].provision` ich nie pominie:
+Kroki końcowe (obowiązkowe, inaczej klony nie dostaną adresu albo dostaną ten sam) idą w osobnym, ostatnim provisionerze, więc `exit`/`exec` w `build` ich nie pominie:
 
 ```sh
 sudo rm /etc/apt/apt.conf.d/90afk-proxy /etc/netplan/50-cloud-init.yaml
@@ -100,4 +100,6 @@ Czas budowy: 22–51 s.
 
 ## Po budowie
 
-Artefakt (`*.qcow2`, dla UEFI `efivars.fd`) trafia do `/var/lib/afk/base/<project>/<wersja>/` z grupą `kvm`; `/var/lib/afk/base` i katalog projektu mają grupę `kvm` i `2775`. Wersja to znacznik czasu UTC (`20261024T153000Z`, sortuje się leksykograficznie). Budowa idzie do `.build-*` w katalogu projektu i jest przenoszona `rename`-em, więc wersja jest zawsze kompletna; stare wersje zostają (sprzątanie przez Expiry z `[image].max_age`). Sandbox VM bierze najnowszą przez `image.Latest`.
+Kroki budowy w kolejności: `build` maszyny, `build` jej Tooli (alfabetycznie po nazwie), kroki końcowe `afk`. Konfiguracja z gałęzi bazowej (ADR-0010), także w `afk image build`.
+
+Artefakt (`*.qcow2`, dla UEFI `efivars.fd`) trafia do `/var/lib/afk/base/<project>/<maszyna>/<wersja>/` z grupą `kvm`, razem z hashem konfiguracji obrazu; katalogi nad nim mają grupę `kvm` i `2775`. Hash obejmuje `[machine.<maszyna>]` bez `memory`/`cpus`, `build` Tooli tej maszyny, pluginy i marketplace'y (`[agent]`, `.claude/settings.json`) oraz Template wbudowany w `afk` (z krokami końcowymi); nie obejmuje `env`, `prompt` ani `setup`. Wersja to znacznik czasu UTC (`20261024T153000Z`, sortuje się leksykograficznie). Budowa idzie do `.build-*` w katalogu projektu i jest przenoszona `rename`-em, więc wersja jest zawsze kompletna; stare wersje znikają po kolejnej udanej budowie, o ile nie są backing file żadnego overlayu w `runs/` ani `chats/`. Sandbox VM bierze najnowszą przez `image.Latest`; kiedy Factory przebudowuje: [workflow.md](workflow.md#base-image-w-factory).

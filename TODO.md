@@ -2,24 +2,36 @@
 
 Kamienie milowe po M1 (`docs/architecture.md`) z wstępnym planem. M1 to tickety #7–#10 w GitHub Issues. Przed rozbiciem kamienia na tickety: grilling i aktualizacja docs/ADR. Otwarte kwestie techniczne: `docs/open-questions.md`.
 
-## Odłożone z M1
+## M2 — `.afk.toml`, Base image, Gitea
 
-- [ ] `.afk.toml` dla dfmx na `main`: `[network].allow` dla Go (`proxy.golang.org`, `sum.golang.org`), `[image].provision` z toolchainem, `[gate].cmd`. Warunek zastąpienia `ralph.sh`.
-- [ ] Logowanie odmów Egress proxy (host, port, powód) do logu Run — dziś brakującą domenę widać tylko po zachowaniu Agenta.
-- [ ] Partycja w gościu zostaje 10G mimo overlayu 64G (brak growpart, cloud-init wyłączony): `growpart`/`resize2fs` przy starcie albo większy dysk w obrazie.
-- [ ] Hostname `afk` we wszystkich VM; RAM 2 GiB i 2 vCPU na sztywno — do `.afk.toml`?
+Cel: Project opisuje swoje maszyny i Toole (Postgres, Playwright w Sandbox VM); Base image sam się odświeża; Gitea jako drugi Forge. Decyzje: ADR-0010, ADR-0011, `README.md` (klucze), `docs/workflow.md`, `docs/images.md`.
+
+Domknięcie M1:
+
+- [ ] `.afk.toml` dla dfmx na `main`: `[network].allow` dla Go (`proxy.golang.org`, `sum.golang.org`), `[machine.sandbox].build` z toolchainem, `[gate].cmd`. Warunek zastąpienia `ralph.sh`.
+- [ ] Odmowy Egress proxy (host, port, powód) do `<log>-egress.txt`, podsumowanie na koniec Run; ścieżka logu wypisywana na starcie Run.
+- [ ] `disk_size = "64G"` w Template Debian (partycja w gościu dziś 10G).
 - [ ] `afk vm shell` dla VM po porażce: Egress proxy z tą samą polityką co Run.
 
-## M2 — `.afk.toml` i Tool
+`.afk.toml`:
 
-Cel: Project opisuje swoje zależności; Agent ma bazę danych itp. bez dostępu do hosta.
+- [ ] `[image]` → `[machine.<nazwa>]` (`template`, `build`, `max_age` domyślnie `168h`, `memory`, `cpus`); `sandbox` zastrzeżone, inne nazwy odrzucane do M4.
+- [ ] `[tool.<nazwa>]`: `on` (tylko `sandbox`), `build`, `setup`, `env`, `prompt`; usunięcie `kind`.
+- [ ] Walidacja wszystkich sekcji (lista w `README.md`), wszystkie błędy naraz z `linia:kolumna`; `afk config` z drzewa roboczego.
+- [ ] Toole w Run: `setup` po klonie (alfabetycznie, `<log>-setup.txt`, pomijany przy wznowieniu), `env` w sesjach i bramce, sekcja „Narzędzia” w promptach.
 
-- [ ] Domknięcie `.afk.toml`: walidacja wszystkich sekcji, `afk config` z wyjaśnieniem błędów, dokumentacja kluczy w `docs/project-config.md`.
-- [ ] Expiry (`[image].max_age`): przebudowa Base image po terminie przed startem Run/Chat; sprzątanie starych wersji w `/var/lib/afk/base/<project>/` (nieużywanych przez żadną VM).
-- [ ] Przebudowa obrazu, gdy zmieniły się `[image]` albo listy pluginów (`[agent].plugins`, `marketplaces`, `.claude/settings.json` Project; ADR-0009) (hash konfiguracji w katalogu wersji).
-- [ ] Tool `package`: pakiet instalowany w Base image (`provision` generowany z `[tool.*]`), np. Postgres jako usługa w gościu.
-- [ ] Tool `host-port`: usługa na hoście wystawiona Agentowi przez tunel ssh `-R` na loopbacku gościa (jak Egress proxy), tylko wskazany port; bez otwierania hosta na sieć VM. Test izolacji: inne porty hosta dalej zablokowane.
-- [ ] Gitea jako drugi Forge (REST): interfejs `Forge`, relacje w treści (`Part of #N`, `Blocked by: #N`).
+Base image:
+
+- [ ] Konfiguracja z gałęzi bazowej także w `afk image build` i `afk vm up` (ADR-0010).
+- [ ] Ścieżka per maszyna `/var/lib/afk/base/<project>/<maszyna>/<wersja>/`, hash konfiguracji obrazu w katalogu wersji.
+- [ ] Factory buduje obraz przed Run (brak / Expiry / inny hash) pod `flock` per Project, log `image-<maszyna>-<wersja>.log`.
+- [ ] Sprzątanie po udanej budowie: wersje nie najnowsze, niebędące backing file overlayu w `runs/` ani `chats/`.
+
+Forge:
+
+- [ ] Label `[labels].spec` definiuje Spec (GitHub i Gitea); usunięcie heurystyki `## User Stories`; ticket z sub-issues bez labela pomijany z ostrzeżeniem.
+- [ ] Preflight: wszystkie labele z `[labels]` istnieją w repo.
+- [ ] Gitea (REST) za interfejsem `Forge`: dzieci Spec z listy zadań `- [ ] #M`, blokery = natywne zależności + `Blocked by:`, token `GITEA_TOKEN` / `~/.local/state/afk/gitea-token`, push i PR.
 
 ## M3 — Chat, TUI, `afk-forge`
 
@@ -39,6 +51,6 @@ Cel: Projekty wymagające Windowsa i GUI (spike'i w `docs/windows-images.md`, AD
 
 - [ ] Template Windows (ws2025, win11) przez Packer CLI: ISO i SHA256 z `.afk.toml`, OpenSSH (Win11 z MSI), sysprep jako ostatni krok, UEFI + vTPM.
 - [ ] Sandbox VM Windows: NVRAM per maszyna, `undefine --nvram --tpm`, klucz hosta sshd per VM (odpowiednik credentiala SMBIOS dla Windows), test izolacji z sondą PowerShell.
-- [ ] Tool `vm`: osobna Tool VM w sieci tego samego Run (filtr dopuszcza ruch w /24 — dziś jedna VM na sieć), start przed Agentem, sprzątanie razem z Run.
+- [ ] Tool VM: `[machine.<nazwa>]` poza `sandbox`, Tool z `on = "<nazwa>"`, w sieci tego samego Run (filtr dopuszcza ruch w /24 — dziś jedna VM na sieć), podnoszona na żądanie Agenta przez kanał gość → `afk` (wspólny z `afk-forge`, ADR-0011), sprzątanie razem z Run.
 - [ ] Sterowanie ekranem: `afk-screen` w VM przez tunel ssh, zrzuty PNG przez `DomainScreenshot` (obejście błędu XDR), wejście przez QMP `input-send-event`/`send-key`; autologon w klonie.
 - [ ] Pozostałe punkty „Obrazy Windows” z open-questions.

@@ -6,23 +6,34 @@ Factory wzorowana na `ralph.sh` z dfmx; bez TUI ma go zastąpić już w pierwszy
 
 `afk factory [selektor]` bierze tylko Ticket z labelem `[labels].ready_for_agent` — bez niego odmawia, bez flagi obejścia. Selektor: `*` (domyślny — kolejne gotowe Tickety, jak `pick()` w ralph.sh, do wyczerpania kolejki) albo lista numerów `#12 #15` (w tej kolejności, potem koniec; zamknięty albo niegotowy ticket z listy to błąd, zablokowany jest pomijany z ostrzeżeniem). Bez limitu iteracji: `*` kończy się, gdy nie ma czego wziąć; Ctrl-C przerywa (VM bieżącego Run zostaje, jak po porażce).
 
-1. `*` czyta z Forge listę otwartych issue z labelem `ready-for-agent` (rosnąco po numerze) i każdy kandydat sprawdza na świeżym odczycie — lista po labelu bywa nieaktualna. Pomija: ticket bez labela, dziecko Spec (robi je Spec), ticket z otwartym blokerem (natywna zależność albo linia `Blocked by: #a, #b`), Spec z otwartym dzieckiem bez `ready-for-agent` i ticket z sekcją `## User Stories` bez dzieci (oba z ostrzeżeniem, raz), ticket zarezerwowany przez inną Factory oraz ticket już obsłużony w tym uruchomieniu.
+1. `*` czyta z Forge listę otwartych issue z labelem `ready-for-agent` (rosnąco po numerze) i każdy kandydat sprawdza na świeżym odczycie — lista po labelu bywa nieaktualna. Pomija: ticket bez labela, dziecko Spec (robi je Spec), ticket z otwartym blokerem (patrz [Blokery](#blokery)), Spec z otwartym dzieckiem bez `ready-for-agent`, Spec bez dzieci i ticket z sub-issues bez labela `[labels].spec` (trzy ostatnie z ostrzeżeniem, raz), ticket zarezerwowany przez inną Factory oraz ticket już obsłużony w tym uruchomieniu.
 2. Rezerwacja: `flock` na `~/.local/state/afk/claims/<project>/<n>`; spec rezerwuje też swoje otwarte dzieci. Po rezerwacji ticket jest czytany jeszcze raz (inna Factory mogła go skończyć w międzyczasie). Blokada znika ze śmiercią procesu. Jeden host — dwie maszyny z `afk` na tym samym repo są poza zakresem.
-3. Preflight przed pierwszym Run (nie przy pustej kolejce): poświadczenia (GitHub, Claude), Base image i klucz ssh, bramka `[gate].cmd` na czystym branchu bazowym w świeżej VM (niszczonej po teście). Gdy bramka pada, to nie wina Agenta: Factory kończy się błędem z ścieżką wyjścia bramki.
-4. Spec (ticket z sub-issues) to ciąg Runów, jeden na każde dziecko w kolejności, na wspólnym branchu, zakończony review całości — patrz [Spec](#spec).
-5. Każdy Run dostaje świeżą Sandbox VM (overlay na Base image). Po sukcesie VM jest niszczona.
+3. Preflight przed pierwszym Run (nie przy pustej kolejce): poświadczenia (Forge, Claude), istnienie wszystkich labeli z `[labels]` w repo (`afk` ich nie tworzy), Base image (patrz [Base image w Factory](#base-image-w-factory)) i klucz ssh, bramka `[gate].cmd` na czystym branchu bazowym w świeżej VM (niszczonej po teście). Gdy bramka pada, to nie wina Agenta: Factory kończy się błędem z ścieżką wyjścia bramki.
+4. Spec (ticket z labelem `[labels].spec`) to ciąg Runów, jeden na każde dziecko w kolejności, na wspólnym branchu, zakończony review całości — patrz [Spec](#spec).
+5. Każdy Run dostaje świeżą Sandbox VM (overlay na Base image). Po klonie, przed pierwszą sesją, `afk` uruchamia w `/work` polecenia `setup` Tooli (alfabetycznie po nazwie, z `env` Tooli, sieć jak w Run); wyjście do `<log>-setup.txt`, porażka = porażka Run. Wznowienie w zostawionej VM pomija `setup`. Po sukcesie VM jest niszczona.
 6. Runy jednej Factory idą po kolei. Równoległość = kilka Factory.
 7. Porażka Run zatrzymuje Factory z kodem wyjścia ≠ 0; VM zostaje do inspekcji (`afk vm list`, `afk vm shell <vm>`; `afk vm kill <vm>` niszczy). `needs_info` Ticketu nie jest porażką — VM jest niszczona, Factory idzie dalej (także gdy `needs_info` zatrzymało Spec: pytania są na dziecku i na Spec). Nie ma TTL — nie wiadomo, ile co trwa.
 8. Wznowienie: na starcie, przed kolejką, Factory szuka Runów tego Project zostawionych w VM (z metadanych domen libvirt; numer ticketu z id maszyny `<n>-<losowe>`). Przed ruszeniem czegokolwiek Factory bierze rezerwację ticketu leftovera (VM żywego Run innej Factory wygląda tak samo; zajęta → pomijana) i trzyma ją dla wznowionego Run; VM preflightu ma własną rezerwację `preflight-<vm>` na czas życia. Z selektorem-listą ruszane są tylko leftovery wymienionych ticketów i ich Specs. Ticket zamknięty → VM niszczona, w Quarantine repo znikają refy brancha, a branch `ticket-<n>` znika z remote tylko wtedy, gdy nie ma PR i nie ruszył się od odczytu (branch z PR nigdy); dla dziecka Spec ginie tylko VM — jego praca jest na branchu Spec. Wznowienie przepisuje `TICKET.md` (i `SPEC.md`) w VM ze świeżego odczytu. Ticket z `ready-for-agent` → Run kontynuowany w zostawionej VM, bez ponownego klonu, z notą „wznawiasz przerwaną pracę” w prompcie pierwszej sesji (jak `resume` w ralph.sh); VM dziecka Spec wznawia Spec, a VM review — review. Baza Run to ta z Quarantine repo (z początku przerwanego Run), nie dzisiejszy `origin/main`. Ticket bez labela → pominięty, VM zostaje (komunikat). VM po preflight zostawiona przez Ctrl-C jest niszczona. VM wyłączona (restart hosta) nie jest uruchamiana: wznowienie kończy się błędem ssh, `afk vm kill` i nowy Run.
 
-Forge: GitHub i Gitea przez REST (`net/http`). Gitea nie ma natywnych sub-issues ani blokerów, więc relacje są konwencją w treści: `Part of #N`, `Blocked by: #N`. Słownik labeli konfigurowalny (`[labels]`), domyślnie z `docs/agents/triage-labels.md`.
+Ścieżka logu Run jest wypisywana na starcie Run.
+
+Forge: GitHub i Gitea przez REST (`net/http`), interfejs `Forge`. Token Gitei: `GITEA_TOKEN`, a bez niego `~/.local/state/afk/gitea-token` (`0600`). Słownik labeli konfigurowalny (`[labels]`), domyślnie z `docs/agents/triage-labels.md`.
+
+#### Blokery
+
+Bloker ticketu to każde issue z natywnej zależności Forge **lub** z linii `Blocked by: #a, #b` w treści (suma, nie pierwszeństwo — dopisanie zależności w UI nie unieważnia linii). Ticket jest odblokowany, gdy wszystkie blokery są zamknięte. Gitea z wyłączonymi zależnościami w repo: liczy się sama linia.
+
+#### Base image w Factory
+
+Przed każdym Run Factory sprawdza najnowszą wersję Base image każdej potrzebnej maszyny i buduje nową, gdy jej brak, minęło Expiry (`max_age`) albo hash konfiguracji obrazu różni się od bieżącego (starszych wersji z pasującym hashem nie szuka). Konfiguracja zawsze z gałęzi bazowej (ADR-0010). Budowa pod `flock` per Project, log w `~/.local/state/afk/<project>/logs/image-<maszyna>-<wersja>.log`, na stdout jedna linia z powodem; porażka budowy kończy Factory. Po udanej budowie znikają wersje, które nie są najnowsze i nie są backing file żadnego overlayu w `runs/` ani `chats/`.
 
 ### Co dostaje agent
 
 - Host zapisuje Ticket (treść, komentarze, spec, blokery) do pliku w VM, np. `/work/TICKET.md`.
 - Prompt mówi: gdzie są dane, że tracker jest celowo niedostępny, że nie wolno zgadywać (ADR-0003).
 - `CLAUDE_CODE_OAUTH_TOKEN` jako zmienna środowiskowa sesji ssh, nigdy na dysku obrazu.
-- WebFetch/WebSearch wyłączone; sieć tylko przez Egress proxy z allowlistą.
+- WebFetch/WebSearch wyłączone; sieć tylko przez Egress proxy z allowlistą. Odmowy proxy (host, port, powód) idą do `<log>-egress.txt`, na koniec Run jedna linia podsumowania.
+- Toole: sekcja „Narzędzia” w prompcie każdej sesji (`prompt` każdego Toola i nazwy zmiennych z `env`); `env` Tooli ustawione w sesji Agenta i w bramce (ADR-0011).
 - Skille z repo (`.claude/skills/`): w klonie. Pluginy: tylko te zadeklarowane w Project config, zainstalowane w Base image przy budowie — patrz [Pluginy](#pluginy). Nic z `~/.claude` hosta (ADR-0009).
 
 ### Raport agenta
@@ -46,9 +57,9 @@ Strumień Agenta (stream-json) idzie do pliku logu w `~/.local/state/afk/<projec
 
 ### Spec
 
-`afk factory '#N'`, gdy N ma sub-issues (zachowanie jak `do_spec` w `ralph.sh`): ciąg Runów na branchu `ticket-<spec>`, zakończony review całego brancha.
+`afk factory '#N'`, gdy N ma label `[labels].spec` (zachowanie jak `do_spec` w `ralph.sh`): ciąg Runów na branchu `ticket-<spec>`, zakończony review całego brancha.
 
-- **Dzieci**: otwarte sub-issues rosnąco po numerze; za każdym razem pierwsze bez otwartego blokera (natywna zależność GitHuba albo linia `Blocked by: #a, #b` w treści, liczy się stan blokera). Otwarte dzieci wszystkie zablokowane → porażka. Każde otwarte dziecko musi mieć `ready-for-agent` (jak `pick()` w `ralph.sh`), inaczej odmowa przed pierwszą sesją: gotowość nadaje człowiek (ADR-0003). Dzieci ze swoimi sub-issues nie są obsługiwane.
+- **Dzieci**: na GitHubie sub-issues, na Gitei (bez sub-issues) referencje `#M` z listy zadań `- [ ] #M` w treści Spec — stan z odczytu issue, checkboxy ignorowane; referencja do PR albo innego repo to błąd. Otwarte dzieci rosnąco po numerze; za każdym razem pierwsze bez otwartego blokera ([Blokery](#blokery)). Otwarte dzieci wszystkie zablokowane → porażka. Każde otwarte dziecko musi mieć `ready-for-agent` (jak `pick()` w `ralph.sh`), inaczej odmowa przed pierwszą sesją: gotowość nadaje człowiek (ADR-0003). Dzieci ze swoimi dziećmi nie są obsługiwane. Ticket bez labela Spec z listą zadań na Gitei to zwykły ticket — lista to checklista.
 - **Run dziecka**: świeża VM; klon startuje z końca brancha `ticket-<spec>` (pierwsze dziecko: z bazy), `origin/<baza>` w klonie zostaje bazą. Prompt dostaje dziecko (`/work/TICKET.md`) i Spec jako kontekst (`/work/SPEC.md`: „kontekst, nie zakres”). Bramka przechodzi dla każdego dziecka; implementacja dziecka jest squashowana do jednego commita `<tytuł dziecka> (#M)` na końcu brancha. Walidacja: wynik sesji musi zawierać koniec brancha i nie dotykać chronionych ścieżek, a po squashu cała gałąź — bazę i te same chronione ścieżki. Review dziecka nie ma; jest jedno, na końcu.
 - **Po dziecku**: push brancha; po pierwszym dziecku draft PR (tytuł Spec) z `Closes #<spec>` i `Closes` dla wszystkich dzieci; komentarz z raportem dziecka na PR; `ready-for-human` na PR, gdy dziecko miało odstępstwa, wątpliwości albo sesję naprawczą bramki (od razu, bo Run może być wznowiony w innym procesie); komentarz na dziecku z odnośnikiem do PR, zamknięcie dziecka, zdjęcie z niego `ready-for-agent`.
 - **`needs_info` na dziecku**: komentarz z pytaniami i `needs-info` na dziecku oraz komentarz i `needs-info` na Spec, zdjęcie `ready-for-agent` z obu, porażka Spec (Factory idzie dalej). Zrobione dzieci zostają na branchu i na PR (draft). Aby Spec ruszył ponownie, człowiek przywraca `ready-for-agent` na dziecku i na Spec.

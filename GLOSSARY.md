@@ -21,7 +21,7 @@ Zadanie w trackerze z oznaczeniem `ready-for-agent`, zawierające wszystko, czeg
 _Avoid_: issue, task, zadanie
 
 **Spec**:
-Ticket z podrzędnymi ticketami; realizowany jako ciąg sesji, jedna na dziecko, zakończony review.
+Ticket oznaczony labelem Spec, z podrzędnymi ticketami (dziećmi); realizowany jako ciąg Runów na jednym branchu, jeden na dziecko, zakończony review. O tym, że ticket jest Spec, decyduje label, nie obecność dzieci.
 _Avoid_: epic, parent
 
 **Forge**:
@@ -48,18 +48,18 @@ _Avoid_: template (gdy chodzi o gotowy dysk), golden image
 Wbudowany przepis, z którego `afk` buduje Base image (Debian, Windows).
 
 **Tool**:
-Zdefiniowana w projekcie możliwość, którą dostaje Agent: pakiet w obrazie, port hosta albo Tool VM.
-_Avoid_: plugin, dependency
+Nazwane narzędzie zadeklarowane w Project config, którego Agent może użyć (np. Postgres, Playwright, Windows do testów). Działa w Sandbox VM (domyślnie, od jej startu) albo w Tool VM (podnoszonej na żądanie Agenta). Agent dowiaduje się o nim tak samo bez względu na to, gdzie działa.
+_Avoid_: capability, plugin, dependency, package
 
 **Plugin**:
 Rozszerzenie Claude Code (skille), które Project deklaruje w Project config, a `afk` instaluje w Base image. Daje Agentowi instrukcje, nie możliwości w środowisku — to nie Tool.
 _Avoid_: skill (gdy chodzi o cały pakiet)
 
 **Tool VM**:
-Osobna maszyna wirtualna podnoszona na czas Run, z którą Agent łączy się standardowymi protokołami lub przez sterowanie ekranem.
+Osobna maszyna wirtualna w sieci Run, hostująca jeden lub więcej Tooli; podnoszona na żądanie Agenta, ginie razem z Run. Agent łączy się z nią standardowymi protokołami lub przez sterowanie ekranem.
 
 **Expiry**:
-Ważność Base image zdefiniowanego w projekcie; po jej upływie obraz jest budowany od nowa z ISO.
+Ważność Base image zdefiniowana w projekcie; po jej upływie obraz jest budowany od nowa (Debian ze świeżego cloud image, Windows z ISO), zanim powstanie kolejna Sandbox VM.
 _Avoid_: lifetime, TTL
 
 **Gate**:

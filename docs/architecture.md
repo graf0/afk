@@ -40,11 +40,12 @@ ssh wszędzie, także Windows (sshd + klucz `afk` w obrazie). vsock odrzucony (b
 
 | Ścieżka | Zawartość |
 |---|---|
-| `/var/lib/afk/base/<project>/<wersja>/` | Base image (`*.qcow2`, dla UEFI `efivars.fd`), grupa `kvm`; wersja = znacznik czasu UTC `20261024T153000Z`, nowsza budowa = nowy katalog (stare zostają do Expiry) |
+| `/var/lib/afk/base/<project>/<maszyna>/<wersja>/` | Base image maszyny z `[machine.<maszyna>]` (`*.qcow2`, dla UEFI `efivars.fd`, hash konfiguracji obrazu), grupa `kvm`; wersja = znacznik czasu UTC `20261024T153000Z`, nowsza budowa = nowy katalog (stare znikają po kolejnej budowie, gdy nie używa ich żaden overlay) |
 | `/var/lib/afk/runs/<run>/` | Overlay i NVRAM jednego Run, katalog `2775` |
 | `/var/lib/afk/chats/<chat>/` | Overlay i NVRAM jednego Chat, jak wyżej |
 | `~/.local/state/afk/claims/<project>/<n>` | Rezerwacje ticketów (`flock`) |
-| `~/.local/state/afk/<project>/logs/` | Logi Run (stream-json) |
+| `~/.local/state/afk/<project>/logs/` | Logi Run (stream-json, `-setup.txt`, `-egress.txt`, `-gate-N.txt`) i budów obrazu (`image-<maszyna>-<wersja>.log`); poza repo — logi to niezaufana treść, nie dla narzędzi człowieka w drzewie roboczym |
+| `~/.local/state/afk/gitea-token` | Token Gitei, `0600`, gdy brak `GITEA_TOKEN` |
 | `~/.local/state/afk/<project>/quarantine.git` | Quarantine repo Project (bare): `refs/afk/base/ticket-<n>` baza Run, `refs/afk/incoming/ticket-<n>` surowy wynik z VM, `refs/heads/ticket-<n>` wynik po walidacji |
 | `~/.local/state/afk/claude-oauth-token` | Token Claude'a (`claude setup-token`), tryb `0600`, gdy brak `CLAUDE_CODE_OAUTH_TOKEN` |
 | `~/.cache/afk/bin/packer-<ver>` | Packer pobrany przez `afk` |
@@ -58,6 +59,6 @@ Quarantine repo w katalogu stanu użytkownika, nie w repo użytkownika ani w `/v
 ## Kamienie milowe
 
 1. Debian + izolacja + proxy + git + Factory bez TUI (`afk factory '*'`) → zastępuje `ralph.sh` dla dfmx.
-2. `.afk.toml`, Tool jako pakiet / port hosta.
+2. `.afk.toml` (maszyny, Toole w Sandbox VM), Expiry i przebudowa Base image, Gitea.
 3. Chat + TUI (tmux + sidebar w bubbletea), `afk-forge`.
-4. Windows, Tool VM, sterowanie ekranem.
+4. Windows, Tool VM (`[machine.<nazwa>]`, Tool z `on`), sterowanie ekranem.

@@ -1,12 +1,11 @@
 # Dokumentacja afk
 
-Słownik: [`GLOSSARY.md`](../GLOSSARY.md). Decyzje trudne do odwrócenia: [`adr/`](adr/).
+Słownik: [`GLOSSARY.md`](../GLOSSARY.md). `.afk.toml`: [`README.md`](../README.md). Decyzje trudne do odwrócenia: [`adr/`](adr/).
 
 | Plik | O czym |
 |---|---|
 | [workflow.md](workflow.md) | Factory (od ticketu do PR, raport agenta, needs-info, git), Chat, TUI, stan |
 | [architecture.md](architecture.md) | Pakiety, interfejsy, zależności, kamienie milowe, ścieżki na dysku |
-| [project-config.md](project-config.md) | Szkielet `.afk.toml` |
 | [isolation.md](isolation.md) | Sieć Run i budowy, nwfilter, wyniki testów izolacji |
 | [egress-proxy.md](egress-proxy.md) | Implementacja Egress proxy na kanale ssh |
 | [libvirt.md](libvirt.md) | Domeny libvirt, go-libvirt, czasy startu, ekran i wejście |
