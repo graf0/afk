@@ -58,7 +58,7 @@ func (g sshGuest) Exec(ctx context.Context, command string, stdout io.Writer) (e
 // execCommand is the shell command Exec sends to the guest: command in the
 // clone, with the env of the Tools.
 func execCommand(env map[string]string, command string) (full string) {
-	return agent.ExportEnv(env) + "cd " + guestRepo + " && " + command
+	return agent.ExportEnv(env) + "cd " + GuestRepo + " && " + command
 }
 
 // bashCommand runs script in bash, its stderr in its stdout.
@@ -71,7 +71,7 @@ func (g sshGuest) Agent(ctx context.Context, prompt, model string) (report agent
 	report, err = agent.Session{
 		Token:  r.ClaudeToken,
 		Prompt: prompt,
-		Dir:    guestRepo,
+		Dir:    GuestRepo,
 		Model:  model,
 		Proxy:  "http://" + machine.ProxyAddr,
 		Binary: r.AgentBinary,
@@ -258,7 +258,7 @@ type GuestBranch struct {
 }
 
 // Clone clones the branch's base from the Quarantine repo (FetchBase must
-// have stored it) into guestRepo over client, on the branch, with the base as
+// have stored it) into GuestRepo over client, on the branch, with the base as
 // origin/<baseBranch>. With fromTip the branch starts at its result ref (the
 // tip of a Spec's branch) instead.
 func (b GuestBranch) Clone(ctx context.Context, client *ssh.Client, baseBranch string, fromTip bool) (err error) {
@@ -289,8 +289,8 @@ func (b GuestBranch) Clone(ctx context.Context, client *ssh.Client, baseBranch s
 		"set -eu",
 		`sudo install -d -o "$(id -u)" -g "$(id -g)" ` + guestWork,
 		"cat > " + guestBundle,
-		"git init -q -b " + q(b.Name) + " " + guestRepo,
-		"cd " + guestRepo,
+		"git init -q -b " + q(b.Name) + " " + GuestRepo,
+		"cd " + GuestRepo,
 		"git config user.name " + q(guestGitName),
 		"git config user.email " + q(guestGitEmail),
 		"git fetch -q --no-tags " + guestBundle + " " + fetch,
@@ -446,7 +446,7 @@ func (r run) task() (task agent.Task) {
 		tools = append(tools, agent.Tool{Name: name, Prompt: strings.TrimSpace(tool.Prompt), Env: tool.EnvNames()})
 	}
 	task = agent.Task{
-		RepoDir:    guestRepo,
+		RepoDir:    GuestRepo,
 		Branch:     r.branch,
 		BaseRef:    "origin/" + r.Base.Branch,
 		TicketPath: guestTicket,

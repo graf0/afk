@@ -69,11 +69,11 @@ Strumień Agenta (stream-json) idzie do pliku logu w `~/.local/state/afk/<projec
 
 ## Chat
 
-`afk chat new <nazwa> [--model …] [--effort …]`, `attach <nazwa>`, `export <nazwa>`, `rm [--force] <nazwa>`, `list`. Nazwa wymagana: `[a-z0-9-]{1,32}`, unikalna w Project; Chat o tej nazwie albo branch `chat-<nazwa>` na remote → odmowa przy tworzeniu.
+`afk chat new <nazwa> [--model …] [--effort …]`, `attach <nazwa>`, `export <nazwa>`, `rm [--force] <nazwa>`, `list`. Nazwa wymagana: `[a-z0-9-]{1,32}`, nie zaczyna się od `-`, unikalna w Project; Chat o tej nazwie albo branch `chat-<nazwa>` na remote → odmowa przy tworzeniu.
 
 - Własna, długo żyjąca Sandbox VM; kod to snapshot gałęzi bazowej z chwili utworzenia, bez synchronizacji (świeży stan = nowy Chat). `setup` i `env` Tooli jak w Run (log `<log>-setup.txt`).
-- Claude Code interaktywnie na pty po ssh, `--dangerously-skip-permissions`; model i effort z `[agent]`, do nadpisania przy tworzeniu.
-- Cały internet przez Egress proxy (bez adresów prywatnych i hosta), odmowy do `chat-<nazwa>-egress.txt`. Token i kod uznajemy za możliwe do wyniesienia (ADR-0003).
+- Claude Code interaktywnie na pty po ssh, `--dangerously-skip-permissions`; model z `[agent]` (do nadpisania `--model`), effort tylko flagą `--effort` (`claude --effort`); oba w metadanych VM. Brak Base image albo nieaktualny → budowany jak w Factory. Porażka przed startem `claude` usuwa VM, stan i refy Chat (zostają logi); po starcie Chat zostaje zawsze.
+- Cały internet przez Egress proxy (bez adresów prywatnych i hosta), odmowy do `chat-<nazwa>-<czas>-egress.txt` (logi per proces, jak w Run: także `-setup.txt`). Token i kod uznajemy za możliwe do wyniesienia (ADR-0003).
 - `--append-system-prompt` od `afk`: izolowana VM, brak `gh` i Forge, tickety przez `afk-forge`, kod to snapshot, eksport tylko przez `afk`, pełny internet.
 - Proces `attach` trzyma ssh, Egress proxy, kanał `afk-forge` i pty; `flock` na `~/.local/state/afk/<project>/chats/<nazwa>/lock` — drugi `attach` dostaje odmowę z PID właściciela. Koniec `claude` (`/exit`, crash) kończy proces, VM zostaje; kolejny `attach` uruchamia `claude --continue`. Wyłączona VM (restart hosta) jest startowana przy `attach`, `export` i `rm`; bez autostartu przy boocie.
 - Shell w VM Chat (`M-s`): to samo Egress proxy, bez kanału `afk-forge`.
@@ -87,7 +87,7 @@ ADR-0012. Binarka `afk` kopiowana przy `attach` do `/usr/local/bin/afk-forge`; w
 - `issue create`, `issue comment` — treść ze stopką `— z Chat <nazwa>`.
 - `issue edit` — labele dowolnego issue; treść i tytuł tylko issue utworzonych przez ten Chat (lista numerów w `~/.local/state/afk/<project>/chats/<nazwa>/issues`).
 - `ready-for-agent` z Chat jest zamieniany na `needs-triage` — gotowość dla Factory nadaje człowiek. Bez zamykania issue i bez PR.
-- Każde wywołanie (operacja, numer, wynik) do `~/.local/state/afk/<project>/logs/chat-<nazwa>-forge.txt`.
+- Każde wywołanie (operacja, numer, wynik) do `~/.local/state/afk/<project>/logs/chat-<nazwa>-<czas>-forge.txt`.
 
 ### Eksport
 

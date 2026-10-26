@@ -64,7 +64,7 @@ func TestRunPrompt(t *testing.T) {
 		branch:  "ticket-7",
 	}
 	prompt := r.prompt()
-	for _, want := range []string{guestTicket, guestRepo, "`ticket-7`", "`origin/trunk`", "`.afk.toml`"} {
+	for _, want := range []string{guestTicket, GuestRepo, "`ticket-7`", "`origin/trunk`", "`.afk.toml`"} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("prompt lacks %q", want)
 		}
@@ -83,7 +83,7 @@ func TestExecuteRefusesSpec(t *testing.T) {
 
 func TestDenialLogIsCreatedByTheFirstDenial(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "ticket-1-egress.txt")
-	l := &denialLog{path: path}
+	l := &DenialLog{path: path}
 	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("file exists without a denial: %v", err)
 	}
@@ -114,7 +114,7 @@ func TestCloseLogsSummarizesDenials(t *testing.T) {
 			r := run{
 				Options: Options{Out: &out},
 				log:     &rotatingLog{path: path, file: file},
-				denials: &denialLog{path: filepath.Join(dir, name+"-egress.txt")},
+				denials: &DenialLog{path: filepath.Join(dir, name+"-egress.txt")},
 			}
 			for _, line := range denials {
 				_, _ = r.denials.Write([]byte(line))

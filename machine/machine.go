@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/digitalocean/go-libvirt"
 	"github.com/digitalocean/go-libvirt/socket/dialers"
@@ -93,6 +94,11 @@ type Spec struct {
 	BaseDisk  string // Base image disk the overlay is based on
 	MemoryMiB int    // RAM of the VM
 	CPUs      int    // vCPUs of the VM
+	// Repo, Model and Effort are kept in the metadata for whoever lists the
+	// machine later (a Chat); all optional.
+	Repo   string
+	Model  string
+	Effort string
 }
 
 // Machine is a running Sandbox VM.
@@ -103,6 +109,11 @@ type Machine struct {
 	ID      string
 	Addr    string        // guest IPv4 address
 	HostKey ssh.PublicKey // sshd host key of the guest, pinned by SSH
+	Repo    string        // see Spec
+	Model   string
+	Effort  string
+	Created time.Time // zero for a machine without the time in its metadata
+	Running bool      // the domain is running (Up: always)
 }
 
 // Conn is a connection to libvirt (qemu:///system).
@@ -231,6 +242,10 @@ func (c *Conn) Up(ctx context.Context, spec Spec) (m Machine, err error) {
 		ID:      spec.ID,
 		Addr:    def.Net.Addr(),
 		HostKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(hostKey))),
+		Repo:    spec.Repo,
+		Model:   spec.Model,
+		Effort:  spec.Effort,
+		Created: time.Now().UTC().Format(time.RFC3339),
 	}
 	if err = ctx.Err(); err != nil {
 		return
@@ -262,7 +277,9 @@ func (c *Conn) Up(ctx context.Context, spec Spec) (m Machine, err error) {
 	if err = ctx.Err(); err != nil {
 		return
 	}
-	m = Machine{Name: name, Project: spec.Project, Kind: spec.Kind, ID: spec.ID, Addr: def.Meta.Addr, HostKey: hostKey}
+	created, _ := time.Parse(time.RFC3339, def.Meta.Created)
+	m = Machine{Name: name, Project: spec.Project, Kind: spec.Kind, ID: spec.ID, Addr: def.Meta.Addr, HostKey: hostKey,
+		Repo: spec.Repo, Model: spec.Model, Effort: spec.Effort, Created: created, Running: true}
 	return
 }
 
@@ -290,7 +307,15 @@ func (c *Conn) Get(name string) (m Machine, err error) {
 		err = fmt.Errorf("parsing host key of %s: %w", name, err)
 		return
 	}
-	m = Machine{Name: name, Project: meta.Project, Kind: meta.Kind, ID: meta.ID, Addr: meta.Addr, HostKey: hostKey}
+	state, _, err := c.lv.DomainGetState(dom, 0)
+	if err != nil {
+		err = fmt.Errorf("reading state of %s: %w", name, err)
+		return
+	}
+	created, _ := time.Parse(time.RFC3339, meta.Created) // none or malformed: zero
+	m = Machine{Name: name, Project: meta.Project, Kind: meta.Kind, ID: meta.ID, Addr: meta.Addr, HostKey: hostKey,
+		Repo: meta.Repo, Model: meta.Model, Effort: meta.Effort, Created: created,
+		Running: libvirt.DomainState(state) == libvirt.DomainRunning}
 	return
 }
 

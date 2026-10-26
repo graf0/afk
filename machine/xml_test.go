@@ -21,6 +21,10 @@ func testDefinition() (def definition) {
 			ID:      "abc",
 			Addr:    "10.99.5.10",
 			HostKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIK",
+			Repo:    "/home/me/code/dfmx",
+			Model:   "opus",
+			Effort:  "high",
+			Created: "2026-10-26T10:00:00Z",
 		},
 	}
 }

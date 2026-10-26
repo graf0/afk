@@ -39,6 +39,10 @@ var (
       <id>{{x .Meta.ID}}</id>
       <addr>{{x .Meta.Addr}}</addr>
       <hostkey>{{x .Meta.HostKey}}</hostkey>
+      <repo>{{x .Meta.Repo}}</repo>
+      <model>{{x .Meta.Model}}</model>
+      <effort>{{x .Meta.Effort}}</effort>
+      <created>{{x .Meta.Created}}</created>
     </afk:machine>
   </metadata>
   <memory unit='MiB'>{{.MemoryMiB}}</memory>
@@ -119,6 +123,10 @@ type metadata struct {
 	ID      string `xml:"id"`
 	Addr    string `xml:"addr"`    // guest IPv4 address
 	HostKey string `xml:"hostkey"` // sshd host key, authorized_keys format
+	Repo    string `xml:"repo"`    // root of the Project's repository on the host
+	Model   string `xml:"model"`   // Agent model, empty: the default
+	Effort  string `xml:"effort"`  // Agent effort, empty: the default
+	Created string `xml:"created"` // RFC 3339
 }
 
 // definition is the input of the XML templates.

@@ -28,8 +28,9 @@ import (
 
 const (
 	// Paths in the guest: the clone, and the ticket next to it, outside.
-	guestWork   = "/work"
-	guestRepo   = guestWork + "/repo"
+	guestWork = "/work"
+	// GuestRepo is the Agent's clone, in a Run and in a Chat.
+	GuestRepo   = guestWork + "/repo"
 	guestTicket = guestWork + "/TICKET.md"
 	guestSpec   = guestWork + "/SPEC.md"
 	// guestStart is where the guest fetches the tip of a Spec's branch.
@@ -75,7 +76,7 @@ type run struct {
 	branch     string // ticket-N, in the guest and the Quarantine repo
 	quarantine Quarantine
 	log        *rotatingLog
-	denials    *denialLog // Egress proxy denials of the session, next to log
+	denials    *DenialLog // Egress proxy denials of the session, next to log
 	id         string     // machine id of the VM, random when empty
 	resumed    bool       // the guest holds the Agent's earlier work: the next prompt says so
 
@@ -274,7 +275,7 @@ func (r run) prepared(prepare bool, work workFunc) (prepared workFunc) {
 	return work
 }
 
-// prepareGuest clones the base into guestRepo on the ticket branch, with the
+// prepareGuest clones the base into GuestRepo on the ticket branch, with the
 // base as origin/<branch>, and writes the ticket next to it. Inside a Spec
 // the branch starts at its tip instead, and the Spec is written too.
 func (r run) prepareGuest(ctx context.Context, client *ssh.Client) (err error) {
@@ -323,7 +324,7 @@ func (r *run) openLog(name string) (path string, err error) {
 	}
 	path = filepath.Join(dir, fmt.Sprintf("%s-%s.jsonl", name, time.Now().UTC().Format("20060102T150405Z")))
 	r.log = &rotatingLog{path: path, max: logRotateSize}
-	r.denials = &denialLog{path: strings.TrimSuffix(path, ".jsonl") + "-egress.txt"}
+	r.denials = &DenialLog{path: strings.TrimSuffix(path, ".jsonl") + "-egress.txt"}
 	if r.log.file, err = os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600); err != nil {
 		err = fmt.Errorf("creating log: %w", err)
 	}
@@ -455,9 +456,9 @@ func (l *limitWriter) Write(p []byte) (n int, err error) {
 	return
 }
 
-// denialLog is the file of the Egress proxy's denials, one line per Write.
+// DenialLog is the file of the Egress proxy's denials, one line per Write.
 // The file is created by the first denial: a Run without any leaves none.
-type denialLog struct {
+type DenialLog struct {
 	path string
 
 	mu    sync.Mutex
@@ -465,7 +466,13 @@ type denialLog struct {
 	count int
 }
 
-func (l *denialLog) Write(p []byte) (n int, err error) {
+// NewDenialLog is the DenialLog in the file at path.
+func NewDenialLog(path string) (l *DenialLog) { return &DenialLog{path: path} }
+
+// Path is the file of the log.
+func (l *DenialLog) Path() (path string) { return l.path }
+
+func (l *DenialLog) Write(p []byte) (n int, err error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.out == nil {
@@ -480,7 +487,7 @@ func (l *denialLog) Write(p []byte) (n int, err error) {
 }
 
 // Close closes the file and returns the number of denials written.
-func (l *denialLog) Close() (denied int, err error) {
+func (l *DenialLog) Close() (denied int, err error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	denied = l.count

@@ -20,6 +20,14 @@ type buildFunc func(ctx context.Context, opts image.Options) (dir string, err er
 // that is current for base.Config and not expired (image.Ensure). A build
 // is announced on out in one line with its reason; its full output goes to
 // logs/image-sandbox-<version>.log in the Project's state directory.
+// EnsureImage makes sure the Sandbox VM's Base image of base exists and is
+// current (not expired, same configuration), building it otherwise; as the
+// Factory does before every new VM.
+func EnsureImage(ctx context.Context, base Base, paths image.Paths, out io.Writer) (err error) {
+	err = ensureSandboxImage(ctx, base, paths, out, image.Build)
+	return
+}
+
 func ensureSandboxImage(ctx context.Context, base Base, paths image.Paths, out io.Writer, build buildFunc) (err error) {
 	cfg := base.Config
 	project, err := image.ProjectName(cfg.Forge.Repo)

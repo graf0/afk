@@ -7,7 +7,7 @@ Połączenie `qemu:///system` przez `digitalocean/go-libvirt` (przypięty commit
 Diagnostyka: `afk vm up` (start + ssh, wypisuje nazwę i czas), `afk vm shell <vm>` (shell z tunelem Egress proxy), `afk vm kill <vm>`. Konfigurację (`.afk.toml`, `.claude/settings.json`) `up`, `list` i `shell` biorą z gałęzi bazowej (ADR-0010); `kill` jej nie potrzebuje.
 
 - Nazwa `afk-<run|chat>-<id>` — wspólna dla domeny, sieci i nwfiltra; katalog `/var/lib/afk/{runs,chats}/<id>/`.
-- `<metadata>` domeny (`xmlns:afk='https://github.com/graf0/afk/machine'`): Project, rodzaj, identyfikator, adres gościa, klucz hosta. To jedyny stan — `afk vm shell` czyta z niego, dokąd i z jakim kluczem się łączyć.
+- `<metadata>` domeny (`xmlns:afk='https://github.com/graf0/afk/machine'`): Project, rodzaj, identyfikator, adres gościa, klucz hosta, ścieżka repo, model, effort i czas utworzenia (dla Chat: `afk chat list`). To jedyny stan — `afk vm shell` czyta z niego, dokąd i z jakim kluczem się łączyć.
 - Podsieć `10.99.<n>.0/24`, most `afkbr<n>`: najniższe `n` wolne wśród sieci libvirt (adres lub nazwa mostu). Most wyprowadzony z `n`, więc libvirt odrzuca drugą sieć na tym samym `n` już przy define („nazwa mostka … jest już używana”) → ponowna próba (max 5). Sprawdzone: 3 równoległe `vm up` dostały 0, 1, 2.
 - `kill`: destroy + undefine domeny, sieci, nwfiltra (w tej kolejności — filtr w użyciu nie da się usunąć), `rm -rf` katalogu; brakujące części pomija. Nieudany lub anulowany `up` woła to samo (test: anulowanie w 0–2 s nie zostawia QEMU ani niczego w libvirt).
 - Domena trwała (define + create), nie transient — po restarcie hosta zostaje wyłączona i `kill` ją sprząta.

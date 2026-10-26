@@ -7,11 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"time"
-
-	"golang.org/x/crypto/ssh"
-	"golang.org/x/term"
 
 	"github.com/graf0/afk/config"
 	"github.com/graf0/afk/egress"
@@ -151,39 +147,8 @@ func vmShell(ctx context.Context, conn *machine.Conn, policy egress.Policy, name
 	}
 	defer stop()
 
-	session, err := client.NewSession()
-	if err != nil {
-		err = fmt.Errorf("opening ssh session: %w", err)
-		return
-	}
-	defer func() { _ = session.Close() }()
-	session.Stdin, session.Stdout, session.Stderr = os.Stdin, os.Stdout, os.Stderr
-	if fd := int(os.Stdin.Fd()); term.IsTerminal(fd) {
-		var state *term.State
-		if state, err = term.MakeRaw(fd); err != nil {
-			err = fmt.Errorf("setting terminal raw mode: %w", err)
-			return
-		}
-		defer func() { _ = term.Restore(fd, state) }()
-		cols, rows, sizeErr := term.GetSize(int(os.Stdout.Fd()))
-		if sizeErr != nil || rows == 0 { // unknown size
-			cols, rows = 80, 24
-		}
-		termName := os.Getenv("TERM")
-		if termName == "" {
-			termName = "xterm"
-		}
-		if err = session.RequestPty(termName, rows, cols, ssh.TerminalModes{ssh.ECHO: 1}); err != nil {
-			err = fmt.Errorf("requesting pty: %w", err)
-			return
-		}
-	}
 	proxy := "http://" + machine.ProxyAddr
-	if err = session.Start("export http_proxy=" + proxy + " https_proxy=" + proxy + "; exec bash -l"); err != nil {
-		err = fmt.Errorf("starting shell: %w", err)
-		return
-	}
-	if err = session.Wait(); err != nil {
+	if err = machine.Interactive(ctx, client, "export http_proxy="+proxy+" https_proxy="+proxy+"; exec bash -l", ""); err != nil {
 		err = fmt.Errorf("shell: %w", err)
 	}
 	return
