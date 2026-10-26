@@ -252,7 +252,7 @@ func TestWorkReviewFixesGoThroughGateAndValidation(t *testing.T) {
 				return agent.Report{Status: agent.StatusDone}
 			},
 		}
-		if _, err := r.work(t.Context(), g); err == nil || !strings.Contains(err.Error(), "protected paths: secrets/key") {
+		if _, err := r.work(t.Context(), g); err == nil || !strings.Contains(err.Error(), "sneaky: secrets/key") {
 			t.Fatalf("err = %v, want protected paths rejection", err)
 		}
 		if err := r.quarantine.CheckNew(t.Context(), r.branch); err != nil {
@@ -382,9 +382,16 @@ func TestGuestBranchFetch(t *testing.T) {
 		t.Fatalf("Fetch = %q, %v", head, err)
 	}
 
+	// Uncommitted changes are the caller's to judge: Fetch ignores them.
 	sh(t, g.dir, "echo x > dirty")
-	if _, err = fetch(); err == nil || !strings.Contains(err.Error(), "uncommitted") {
-		t.Errorf("dirty tree: err = %v", err)
+	if status, err := Dirty(t.Context(), g.Exec); err != nil || status != "?? dirty" {
+		t.Errorf("Dirty = %q, %v", status, err)
+	}
+	if _, err = fetch(); err != nil {
+		t.Errorf("dirty tree: Fetch err = %v", err)
+	}
+	if _, err = r.fetchResult(t.Context(), g); err == nil || !strings.Contains(err.Error(), "uncommitted") {
+		t.Errorf("dirty tree: fetchResult err = %v", err)
 	}
 	sh(t, g.dir, "rm dirty")
 

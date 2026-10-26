@@ -235,6 +235,14 @@ func (r run) squash(ctx context.Context, parent, head, message string) (squashed
 // fetchResult brings HEAD of the guest's clone into the Quarantine repo; see
 // GuestBranch.Fetch.
 func (r run) fetchResult(ctx context.Context, g guest) (head string, err error) {
+	dirty, err := Dirty(ctx, g.Exec)
+	if err != nil {
+		return
+	}
+	if dirty != "" {
+		err = fmt.Errorf("the agent left uncommitted changes:\n%s", agent.Sanitize(dirty))
+		return
+	}
 	return r.guestBranch().Fetch(ctx, g.Exec, r.start(), r.Base.Config.Protect.Paths, r.Out)
 }
 
@@ -247,6 +255,18 @@ func NewExec(client *ssh.Client, env map[string]string) (exec ExecFunc) {
 		err = remote(ctx, client, execCommand(env, command), nil, stdout)
 		return
 	}
+}
+
+// Dirty returns the uncommitted changes of the guest's clone, `git status
+// --porcelain`: empty when it is clean.
+func Dirty(ctx context.Context, exec ExecFunc) (status string, err error) {
+	var out tailBuffer
+	if err = exec(ctx, "git status --porcelain", &out); err != nil {
+		err = fmt.Errorf("checking the guest's working tree: %w", err)
+		return
+	}
+	status = strings.TrimSpace(out.String())
+	return
 }
 
 // GuestBranch is a branch of the Quarantine repo that a guest works on: its
@@ -307,17 +327,9 @@ func (b GuestBranch) Clone(ctx context.Context, client *ssh.Client, baseBranch s
 // Fetch brings HEAD of the guest's clone into the Quarantine repo as a
 // bundle, without running anything of the clone on the host (ADR-0002), and
 // validates it against start and protected. It returns the commit; without
-// new commits that is start itself, unvalidated. A dirty clone is an error.
+// new commits that is start itself, unvalidated. Uncommitted changes in the
+// clone are not part of the bundle: see Dirty.
 func (b GuestBranch) Fetch(ctx context.Context, exec ExecFunc, start string, protected []string, out io.Writer) (head string, err error) {
-	var status tailBuffer
-	if err = exec(ctx, "git status --porcelain", &status); err != nil {
-		err = fmt.Errorf("checking the guest's working tree: %w", err)
-		return
-	}
-	if dirty := strings.TrimSpace(status.String()); dirty != "" {
-		err = fmt.Errorf("the agent left uncommitted changes:\n%s", agent.Sanitize(dirty))
-		return
-	}
 	var tip tailBuffer
 	if err = exec(ctx, "git rev-parse HEAD", &tip); err != nil {
 		err = fmt.Errorf("reading HEAD in the guest: %w", err)

@@ -174,9 +174,45 @@ func (q Quarantine) Validate(ctx context.Context, base, head string, protected [
 		return
 	}
 	if hits := protectedChanges(strings.Split(out, "\x00"), protected); len(hits) > 0 {
-		// The paths come from the guest.
-		err = fmt.Errorf("the result changes protected paths: %s", agent.Sanitize(strings.Join(hits, ", ")))
+		err = q.protectedError(ctx, base, head, protected)
 	}
+	return
+}
+
+// protectedError names, per commit of base..head, the protected paths it
+// touches. Subjects and paths come from the guest.
+func (q Quarantine) protectedError(ctx context.Context, base, head string, protected []string) (err error) {
+	shas, err := q.git(ctx, "rev-list", base+".."+head)
+	if err != nil {
+		return
+	}
+	var lines []string
+	for sha := range strings.FieldsSeq(shas) {
+		var out, subject string
+		if out, err = q.git(ctx, "log", "-1", "-m", "--no-renames", "--no-ext-diff", "--no-textconv", "--name-only", "--format=", "-z", sha); err != nil {
+			return
+		}
+		hits := protectedChanges(strings.Split(out, "\x00"), protected)
+		if len(hits) == 0 {
+			continue
+		}
+		if subject, err = q.git(ctx, "log", "-1", "--format=%s", sha); err != nil {
+			return
+		}
+		// One line per commit: a path holding a newline must not fake a line of its own.
+		paths := strings.NewReplacer("\n", `\n`, "\r", `\r`).Replace(agent.Sanitize(strings.Join(hits, ", ")))
+		lines = append(lines, fmt.Sprintf("  %s %s: %s", sha[:12], agent.Sanitize(subject), paths))
+	}
+	err = fmt.Errorf("the result changes protected paths (commit, paths):\n%s", strings.Join(lines, "\n"))
+	return
+}
+
+// Result returns the commit of the result branch, empty when it has none.
+func (q Quarantine) Result(ctx context.Context, branch string) (commit string, err error) {
+	if _, refErr := q.git(ctx, "rev-parse", "--quiet", "--verify", resultRef(branch)); refErr != nil {
+		return
+	}
+	commit, err = q.git(ctx, "rev-parse", "--verify", "--end-of-options", resultRef(branch)+"^{commit}")
 	return
 }
 

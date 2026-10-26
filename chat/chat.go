@@ -137,7 +137,7 @@ func New(ctx context.Context, opts Options) (err error) {
 		return
 	}
 	defer unlock()
-	snap := snapshot{BaseBranch: opts.Base.Branch, Env: cfg.ToolEnv()}
+	snap := snapshot{BaseBranch: opts.Base.Branch, Env: cfg.ToolEnv(), Protect: cfg.Protect.Paths}
 	if err = snap.write(chatDir); err != nil {
 		_ = os.RemoveAll(chatDir)
 		return
@@ -217,24 +217,12 @@ func New(ctx context.Context, opts Options) (err error) {
 // Chat for its whole life. Only opts.Base, Name, ClaudeToken, Paths, Out and
 // Command are used.
 func Attach(ctx context.Context, opts Options) (err error) {
-	if err = ValidateName(opts.Name); err != nil {
-		return
-	}
 	if opts.ClaudeToken == "" {
 		err = errors.New("no Claude token")
 		return
 	}
-	project, err := image.ProjectName(opts.Base.Config.Forge.Repo)
+	project, stateDir, chatDir, err := existingChat(opts)
 	if err != nil {
-		return
-	}
-	stateDir := filepath.Join(opts.Paths.StateDir, project)
-	chatDir := filepath.Join(stateDir, stateName, opts.Name)
-	if _, err = os.Stat(chatDir); errors.Is(err, fs.ErrNotExist) {
-		err = fmt.Errorf("chat %s does not exist (see `afk chat list`)", opts.Name)
-		return
-	} else if err != nil {
-		err = fmt.Errorf("reading the state of Chat %s: %w", opts.Name, err)
 		return
 	}
 	unlock, err := lockChat(opts.Name, chatDir)
@@ -255,21 +243,9 @@ func Attach(ctx context.Context, opts Options) (err error) {
 		return
 	}
 	defer func() { _ = conn.Close() }()
-	machines, err := conn.List(project)
+	m, err := startVM(conn, project, opts.Name, opts.Out)
 	if err != nil {
 		return
-	}
-	i := slices.IndexFunc(machines, func(m machine.Machine) bool { return m.Kind == machine.KindChat && m.ID == opts.Name })
-	if i < 0 {
-		err = fmt.Errorf("chat %s does not exist (see `afk chat list`): no VM", opts.Name)
-		return
-	}
-	m := machines[i]
-	if !m.Running {
-		say(opts.Out, "Chat %s: starting VM %s", opts.Name, m.Name)
-		if m, err = conn.Start(m.Name); err != nil {
-			return
-		}
 	}
 	logs, _, closeLogs, denials, err := openLogs(stateDir, BranchPrefix+opts.Name, opts.Out)
 	if err != nil {
@@ -292,7 +268,44 @@ func Attach(ctx context.Context, opts Options) (err error) {
 	return
 }
 
-// --- shared by New and Attach ---
+// --- shared by the Chat's commands ---
+
+// existingChat returns the Project and the state directories of the Chat
+// opts.Name, which must exist.
+func existingChat(opts Options) (project, stateDir, chatDir string, err error) {
+	if err = ValidateName(opts.Name); err != nil {
+		return
+	}
+	if project, err = image.ProjectName(opts.Base.Config.Forge.Repo); err != nil {
+		return
+	}
+	stateDir = filepath.Join(opts.Paths.StateDir, project)
+	chatDir = filepath.Join(stateDir, stateName, opts.Name)
+	if _, err = os.Stat(chatDir); errors.Is(err, fs.ErrNotExist) {
+		err = fmt.Errorf("chat %s does not exist (see `afk chat list`)", opts.Name)
+	} else if err != nil {
+		err = fmt.Errorf("reading the state of Chat %s: %w", opts.Name, err)
+	}
+	return
+}
+
+// startVM returns the VM of the Chat name running: a shut-off one is started.
+func startVM(conn *machine.Conn, project, name string, out io.Writer) (m machine.Machine, err error) {
+	machines, err := conn.List(project)
+	if err != nil {
+		return
+	}
+	i := slices.IndexFunc(machines, func(m machine.Machine) bool { return m.Kind == machine.KindChat && m.ID == name })
+	if i < 0 {
+		err = fmt.Errorf("chat %s has no VM", name)
+		return
+	}
+	if m = machines[i]; !m.Running {
+		say(out, "Chat %s: starting VM %s", name, m.Name)
+		m, err = conn.Start(m.Name)
+	}
+	return
+}
 
 // snapshotName is the file of a Chat's snapshot in its state directory.
 const snapshotName = "snapshot.json"
@@ -302,13 +315,19 @@ const snapshotName = "snapshot.json"
 // branch says later.
 type snapshot struct {
 	BaseBranch string            `json:"base_branch"`
-	Env        map[string]string `json:"env"` // [tool.<name>].env
+	Env        map[string]string `json:"env"`                // [tool.<name>].env
+	Protect    []string          `json:"protect"`            // [protect].paths with the required ones; nil in a Chat of an older afk
+	Exported   string            `json:"exported,omitempty"` // the commit Export pushed last
 }
 
+// write replaces the snapshot atomically: a crash leaves the old one or the new one.
 func (s snapshot) write(chatDir string) (err error) {
 	data, err := json.Marshal(s)
 	if err == nil {
-		err = os.WriteFile(filepath.Join(chatDir, snapshotName), data, 0o600)
+		temp := filepath.Join(chatDir, snapshotName+".new")
+		if err = os.WriteFile(temp, data, 0o600); err == nil {
+			err = os.Rename(temp, filepath.Join(chatDir, snapshotName))
+		}
 	}
 	if err != nil {
 		err = fmt.Errorf("writing the snapshot of the Chat: %w", err)

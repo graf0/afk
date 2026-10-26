@@ -51,6 +51,7 @@ private=$(curl -s -m 20 -o /dev/null -w '%{http_connect}' https://10.99.0.1/ || 
 [ "$public" != 000 ] || fail "public host unreachable"
 [ "$private" = 403 ] || fail "private address not denied: $private"
 echo first > session-marker
+echo work > work.txt && git add work.txt && git commit -qm "work in the chat"
 sync # the VM is destroyed (power off) later
 `
 
@@ -163,15 +164,41 @@ git rev-parse HEAD`
 	if err = Attach(t.Context(), opts); err == nil || !strings.Contains(err.Error(), "PID "+strconv.Itoa(os.Getpid())) {
 		t.Errorf("Attach of a Chat in use: err = %v, want a refusal naming the PID", err)
 	}
+	// Export does not take the lock: it pushes the Chat's commit to the remote.
+	output.Reset()
+	err = Export(t.Context(), opts)
+	t.Logf("export output:\n%s", &output)
+	if err != nil {
+		t.Fatalf("Export while the Chat is in use: %v", err)
+	}
+	tip := func() string {
+		out, _ := exec.Command("git", "--git-dir", remoteDir, "log", "-1", "--format=%H %s", "chat-itest").CombinedOutput()
+		return strings.TrimSpace(string(out))
+	}
+	if got := tip(); !strings.HasSuffix(got, " work in the chat") || !strings.Contains(output.String(), "exported chat-itest at "+got[:12]) {
+		t.Errorf("remote chat-itest = %q, output:\n%s", got, &output)
+	}
 	unlock()
 
-	// The host restarts: the VM is shut off. Attach starts it and returns to the same clone.
-	if out, virshErr := exec.Command("virsh", "-c", "qemu:///system", "destroy", "afk-chat-itest").CombinedOutput(); virshErr != nil {
-		t.Fatalf("virsh destroy: %v\n%s", virshErr, out)
+	// The host restarts: the VM is shut off.
+	shutOff := func() {
+		t.Helper()
+		if out, virshErr := exec.Command("virsh", "-c", "qemu:///system", "destroy", "afk-chat-itest").CombinedOutput(); virshErr != nil {
+			t.Fatalf("virsh destroy: %v\n%s", virshErr, out)
+		}
+		if m, err = conn.Get("afk-chat-itest"); err != nil || m.Running {
+			t.Fatalf("after destroy: %+v, %v", m, err)
+		}
 	}
-	if m, err = conn.Get("afk-chat-itest"); err != nil || m.Running {
-		t.Fatalf("after destroy: %+v, %v", m, err)
+	// Export starts it, finds nothing new and pushes nothing.
+	shutOff()
+	before := tip()
+	output.Reset()
+	if err = Export(t.Context(), opts); err != nil || !strings.Contains(output.String(), "no new commits") || tip() != before {
+		t.Errorf("second Export: %v, tip %q, output:\n%s", err, tip(), &output)
 	}
+	// Attach starts it and returns to the same clone.
+	shutOff()
 	output.Reset()
 	opts.Command = []string{"bash", "-c", fakeContinue}
 	err = Attach(t.Context(), opts)

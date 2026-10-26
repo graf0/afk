@@ -15,7 +15,7 @@ import (
 	"github.com/graf0/afk/run"
 )
 
-const chatUsage = "usage: afk chat new <name> [--model <model>] [--effort <low|medium|high|xhigh|max>] | afk chat attach <name> | afk chat list"
+const chatUsage = "usage: afk chat new <name> [--model <model>] [--effort <low|medium|high|xhigh|max>] | afk chat attach <name> | afk chat export <name> | afk chat list"
 
 // runChat executes `afk chat <subcommand>`.
 func runChat(ctx context.Context, args []string, dir string, stdout io.Writer) (err error) {
@@ -32,6 +32,12 @@ func runChat(ctx context.Context, args []string, dir string, stdout io.Writer) (
 			return
 		}
 		err = chatAttach(ctx, args[1], dir, stdout)
+	case "export":
+		if len(args) != 2 {
+			err = errors.New(chatUsage)
+			return
+		}
+		err = chatExport(ctx, args[1], dir, stdout)
 	case "list":
 		if len(args) != 1 {
 			err = errors.New(chatUsage)
@@ -91,6 +97,27 @@ func chatAttach(ctx context.Context, name string, dir string, stdout io.Writer) 
 		return
 	}
 	err = chat.Attach(ctx, chat.Options{Base: base, Name: name, ClaudeToken: claudeToken, Paths: paths, Out: stdout})
+	return
+}
+
+// chatExport pushes the commits of the Chat name to chat-<name> on the Forge.
+func chatExport(ctx context.Context, name string, dir string, stdout io.Writer) (err error) {
+	if err = chat.ValidateName(name); err != nil {
+		return
+	}
+	paths, err := image.DefaultPaths()
+	if err != nil {
+		return
+	}
+	base, err := run.ReadBase(ctx, dir)
+	if err != nil {
+		return
+	}
+	gitForge, err := forge.New(ctx, base.Config, paths.StateDir)
+	if err != nil {
+		return
+	}
+	err = chat.Export(ctx, chat.Options{Base: base, Name: name, Paths: paths, Forge: gitForge, Out: stdout})
 	return
 }
 
