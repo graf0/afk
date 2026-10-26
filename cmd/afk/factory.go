@@ -34,7 +34,10 @@ func runFactory(ctx context.Context, args []string, dir string, stdout io.Writer
 	if err != nil {
 		return
 	}
-	gitForge, err := forge.New(ctx, base.Config.Forge)
+	if err = forge.CheckWrites(base.Config.Forge); err != nil {
+		return
+	}
+	gitForge, err := forge.New(ctx, base.Config, paths.StateDir)
 	if err != nil {
 		return
 	}

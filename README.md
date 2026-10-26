@@ -49,7 +49,9 @@ prompt = "Zrzut ekranu: playwright screenshot <url> shot.png (globalne CLI, prze
 | `repo` | string | — (wymagany) | `owner/name` |
 | `url` | string | — | Adres `https://` instancji; wymagany dla `gitea`, zakazany dla `github` |
 
-Token: GitHub — `GITHUB_TOKEN`, a bez niego `gh auth token`; Gitea — `GITEA_TOKEN`, a bez niego `~/.local/state/afk/gitea-token` (`0600`).
+Token: GitHub — `GITHUB_TOKEN`, a bez niego `gh auth token`; Gitea — `GITEA_TOKEN`, a bez niego plik `~/.local/state/afk/gitea-token`, który musi mieć tryb `0600` (luźniejszy jest odrzucany). Bez żadnego z nich `afk` kończy się błędem z obiema drogami podania tokenu. Token nie trafia do logów.
+
+Gitea: odczyty (ticket, lista gotowych, labele, dzieci Spec, blokery); zapisy (push, PR, komentarze) w przygotowaniu (#34), więc `afk factory` na Gitei odmawia na starcie, przed jakąkolwiek VM. `afk` nie podąża za przekierowaniami: `forge.url` musi być ostatecznym adresem instancji. dzieci Spec to `- [ ] #M` / `- [x] #M` z treści ticketu z labelem `[labels].spec` (checkbox jest ignorowany, stan bierze się z issue M; PR albo issue z innego repo to błąd). Spec ticketu `afk` wyznacza, przeglądając otwarte issues z tym labelem (jedno zapytanie na 50 Spec). Blokery to natywne zależności Gitei (`/issues/{n}/dependencies`) plus linie `Blocked by:`; gdy repo ma zależności wyłączone, liczy się sama linia.
 
 ### `[labels]`
 

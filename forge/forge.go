@@ -1,4 +1,4 @@
-// Package forge talks to the Forge (GitHub, later Gitea) over REST with the
+// Package forge talks to the Forge (GitHub, Gitea) over REST with the
 // host's credentials. Only afk on the host does that; the Agent never has
 // Forge access (ADR-0003).
 package forge
@@ -6,7 +6,9 @@ package forge
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/graf0/afk/config"
@@ -14,7 +16,7 @@ import (
 
 // Forge is what afk needs of the Project's Forge: tickets, Specs, the pull
 // request of a Run and the git remote its branch is pushed to. GitHub is the
-// first implementation; Gitea is the second, on its way (Spec #21), which is
+// first implementation; Gitea is the second (reads so far, Spec #21), which is
 // what makes this an interface (docs/architecture.md).
 type Forge interface {
 	// ReadyTicket reads ticket n like Ticket and refuses it without label.
@@ -108,16 +110,44 @@ type Remote struct {
 }
 
 // New returns the Forge of the Project's config, with the host's credentials.
-func New(ctx context.Context, cfg config.Forge) (f Forge, err error) {
-	switch cfg.Kind {
+// [labels].spec: Gitea has no sub-issues, so it is the label that
+// makes a task list the children of a Spec. stateDir (~/.local/state/afk)
+// holds the Gitea token file.
+func New(ctx context.Context, cfg config.Config, stateDir string) (f Forge, err error) {
+	switch cfg.Forge.Kind {
 	case "github":
 		var token string
 		if token, err = HostToken(ctx); err != nil {
 			return
 		}
-		f, err = NewGitHub(cfg, token)
+		f, err = NewGitHub(cfg.Forge, token)
+	case "gitea":
+		var token string
+		if token, err = GiteaToken(stateDir); err != nil {
+			return
+		}
+		f, err = NewGitea(cfg.Forge, token, cfg.Labels.Spec)
 	default:
-		err = fmt.Errorf("forge.kind %q is not supported yet", cfg.Kind)
+		err = fmt.Errorf("forge.kind %q is not supported yet", cfg.Forge.Kind)
+	}
+	return
+}
+
+var (
+	// blockedBy is a line of a ticket's body naming its blockers: the
+	// convention for Forges without native dependencies (docs/workflow.md).
+	blockedBy = regexp.MustCompile(`(?im)^blocked by:(.*)$`)
+	issueRef  = regexp.MustCompile(`#(\d+)`)
+)
+
+// blockedByRefs returns the issues named in the "Blocked by: #a, #b" lines of body.
+func blockedByRefs(body string) (refs []int) {
+	for _, line := range blockedBy.FindAllStringSubmatch(body, -1) {
+		for _, ref := range issueRef.FindAllStringSubmatch(line[1], -1) {
+			if n, err := strconv.Atoi(ref[1]); err == nil {
+				refs = append(refs, n)
+			}
+		}
 	}
 	return
 }

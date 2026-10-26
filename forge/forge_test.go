@@ -72,14 +72,24 @@ func contractLabels() (labels []string) {
 	return append(labels, "ready-for-agent", "spec")
 }
 
-// testContract is the suite every Forge passes: reads (tickets, lists by
-// label, Spec children, blockers) and writes (pull requests, comments,
-// labels, closing).
+// testContract is the suite every Forge passes: reads and writes.
 func testContract(t *testing.T, newFake newFakeForge) {
-	forge := func(t *testing.T) (f Forge, state func() fakeState) {
+	testContractReads(t, newFake)
+	testContractWrites(t, newFake)
+}
+
+// contractForge starts a fresh fake Forge with the contract's issues and labels.
+func contractForge(newFake newFakeForge) (forge func(t *testing.T) (f Forge, state func() fakeState)) {
+	return func(t *testing.T) (f Forge, state func() fakeState) {
 		t.Helper()
 		return newFake(t, contractIssues(), contractLabels())
 	}
+}
+
+// testContractReads is the reads of the contract: tickets, lists by label,
+// labels, Spec children, blockers.
+func testContractReads(t *testing.T, newFake newFakeForge) {
+	forge := contractForge(newFake)
 
 	t.Run("Ticket", func(t *testing.T) {
 		f, _ := forge(t)
@@ -201,6 +211,12 @@ func testContract(t *testing.T, newFake newFakeForge) {
 			t.Error("unknown blocker: want error")
 		}
 	})
+}
+
+// testContractWrites is the writes of the contract: pull requests, comments,
+// labels, closing.
+func testContractWrites(t *testing.T, newFake newFakeForge) {
+	forge := contractForge(newFake)
 
 	t.Run("pull requests", func(t *testing.T) {
 		f, state := forge(t)
@@ -287,9 +303,17 @@ func TestHasLabel(t *testing.T) {
 	}
 }
 
+// cfgOf is the config of a Project on forge, with the spec label "spec".
+func cfgOf(forge config.Forge) (cfg config.Config) {
+	cfg.Forge, cfg.Labels.Spec = forge, "spec"
+	return
+}
+
 func TestNew(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "t")
-	f, err := New(t.Context(), config.Forge{Kind: "github", Repo: "o/r"})
+	t.Setenv("GITEA_TOKEN", "")
+	stateDir := t.TempDir()
+	f, err := New(t.Context(), cfgOf(config.Forge{Kind: "github", Repo: "o/r"}), stateDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -300,13 +324,23 @@ func TestNew(t *testing.T) {
 		t.Errorf("Remote().Repo = %q", got)
 	}
 	for _, cfg := range []config.Forge{
-		{Kind: "gitea", Repo: "o/r", URL: "https://gitea.example"},
+		{Kind: "gitlab", Repo: "o/r", URL: "https://gitlab.example"},
 		{Kind: "github", Repo: "o/r", URL: "https://ghe.example"},
 		{Kind: "github", Repo: "o"},
 		{Kind: "github", Repo: "o/r/x"},
+		{Kind: "gitea", Repo: "o/r", URL: "https://gitea.example"}, // no token
 	} {
-		if _, err = New(t.Context(), cfg); err == nil {
+		if _, err = New(t.Context(), cfgOf(cfg), stateDir); err == nil {
 			t.Errorf("New(%+v): want error", cfg)
 		}
+	}
+
+	t.Setenv("GITEA_TOKEN", "t")
+	f, err = New(t.Context(), cfgOf(config.Forge{Kind: "gitea", Repo: "o/r", URL: "https://gitea.example"}), stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g, ok := f.(*Gitea); !ok || g.SpecLabel != "spec" || g.APIURL != "https://gitea.example/api/v1" {
+		t.Errorf("New(gitea) = %#v", f)
 	}
 }
