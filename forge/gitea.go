@@ -62,8 +62,8 @@ func NewGitea(forge config.Forge, token, specLabel string) (g *Gitea, err error)
 		err = fmt.Errorf("invalid forge.repo %q: want owner/name", forge.Repo)
 		return
 	}
-	url := strings.TrimSuffix(forge.URL, "/")
-	g = &Gitea{APIURL: url + "/api/v1", GitURL: url + "/" + forge.Repo + ".git", Repo: forge.Repo, Token: token, SpecLabel: specLabel, Client: noRedirects()}
+	baseURL := strings.TrimSuffix(forge.URL, "/")
+	g = &Gitea{APIURL: baseURL + "/api/v1", GitURL: baseURL + "/" + forge.Repo + ".git", Repo: forge.Repo, Token: token, SpecLabel: specLabel, Client: noRedirects()}
 	return
 }
 
@@ -104,9 +104,7 @@ type giteaComment struct {
 // stateDir/gitea-token, which must not be readable by others.
 func GiteaToken(stateDir string) (token string, err error) {
 	if token = strings.TrimSpace(os.Getenv(giteaTokenEnv)); token != "" {
-		if strings.ContainsAny(token, "\r\n") {
-			err = errors.New("the Gitea token contains a line break")
-		}
+		err = checkGiteaToken(token)
 		return
 	}
 	path := filepath.Join(stateDir, giteaTokenFile)
@@ -133,6 +131,12 @@ func GiteaToken(stateDir string) (token string, err error) {
 		err = fmt.Errorf("token file %s is empty: %s", path, hint)
 		return
 	}
+	err = checkGiteaToken(token)
+	return
+}
+
+// checkGiteaToken refuses a token that would break the Authorization header.
+func checkGiteaToken(token string) (err error) {
 	if strings.ContainsAny(token, "\r\n") {
 		err = errors.New("the Gitea token contains a line break")
 	}
@@ -165,13 +169,11 @@ func (g *Gitea) ticket(ctx context.Context, n int, label string) (ticket Ticket,
 	if err != nil {
 		return
 	}
-	switch {
-	case issue.PullRequest != nil:
-		err = fmt.Errorf("#%d is a pull request, not a ticket", n)
-	case issue.State != "open":
-		err = fmt.Errorf("ticket #%d is %s", n, issue.State)
+	if err = notPull(issue); err != nil {
+		return
 	}
-	if err != nil {
+	if issue.State != "open" {
+		err = fmt.Errorf("ticket #%d is %s", n, issue.State)
 		return
 	}
 	if ticket, err = g.ticketOf(ctx, issue); err != nil {
@@ -200,14 +202,21 @@ func (g *Gitea) Peek(ctx context.Context, n int) (ticket Ticket, open bool, err 
 	if err != nil {
 		return
 	}
-	if issue.PullRequest != nil {
-		err = fmt.Errorf("#%d is a pull request, not a ticket", n)
+	if err = notPull(issue); err != nil {
 		return
 	}
 	if ticket, err = g.ticketOf(ctx, issue); err != nil {
 		return
 	}
 	open = issue.State == "open"
+	return
+}
+
+// notPull refuses issue when it is a pull request: Gitea serves both as issues.
+func notPull(issue giteaIssue) (err error) {
+	if issue.PullRequest != nil {
+		err = fmt.Errorf("#%d is a pull request, not a ticket", issue.Number)
+	}
 	return
 }
 
@@ -258,7 +267,7 @@ func (g *Gitea) listOpen(ctx context.Context, label string) (issues []giteaIssue
 		return
 	}
 	for _, issue := range listed {
-		if issue.PullRequest == nil && hasLabel(issue.ticket().Labels, label) {
+		if issue.PullRequest == nil && ContainsLabel(issue.ticket().Labels, label) {
 			issues = append(issues, issue)
 		}
 	}
@@ -319,7 +328,7 @@ func (g *Gitea) SubIssues(ctx context.Context, n int) (subs []SubIssue, err erro
 	if err != nil {
 		return
 	}
-	if !hasLabel(spec.ticket().Labels, g.SpecLabel) {
+	if !ContainsLabel(spec.ticket().Labels, g.SpecLabel) {
 		return
 	}
 	children, err := specChildren(spec.ticket())
@@ -348,6 +357,10 @@ func (g *Gitea) SubIssues(ctx context.Context, n int) (subs []SubIssue, err erro
 // reads every open issue with the spec label (a page of 50 per request, bodies
 // included): one request for a repository with fewer than 50 open Specs. A
 // malformed task list of another Spec is not this ticket's problem.
+//
+// ponytail: every Peek and Ticket pays this list, so a Factory round costs
+// two requests per ready ticket. Not cached: a stale parent would run a
+// child on its own. Upgrade (cache per round) if the Specs outgrow a page.
 func (g *Gitea) parentOf(ctx context.Context, n int) (parent int, err error) {
 	if g.SpecLabel == "" {
 		return
@@ -370,7 +383,7 @@ func (g *Gitea) parentOf(ctx context.Context, n int) (parent int, err error) {
 // or an issue named in a "Blocked by: #a, #b" line of its body. With
 // dependencies disabled in the repository only the line counts.
 func (g *Gitea) Blocked(ctx context.Context, ticket Ticket) (blocked bool, err error) {
-	blockers, _, err := g.dependencies(ctx, ticket.Number)
+	blockers, err := g.dependencies(ctx, ticket.Number)
 	if err != nil {
 		return
 	}
@@ -392,9 +405,9 @@ func (g *Gitea) Blocked(ctx context.Context, ticket Ticket) (blocked bool, err e
 	return
 }
 
-// dependencies returns the native blockers of issue n; enabled is false when
-// the repository has dependencies disabled.
-func (g *Gitea) dependencies(ctx context.Context, n int) (blockers []giteaIssue, enabled bool, err error) {
+// dependencies returns the native blockers of issue n; none when the
+// repository has dependencies disabled.
+func (g *Gitea) dependencies(ctx context.Context, n int) (blockers []giteaIssue, err error) {
 	blockers, err = giteaList(ctx, g, fmt.Sprintf("/repos/%s/issues/%d/dependencies?", g.Repo, n), func(i giteaIssue) int { return i.Number })
 	if apiErr, ok := errors.AsType[*apiError](err); ok && apiErr.Status == http.StatusNotFound {
 		// Gitea answers 404 when the repository has dependencies
@@ -405,9 +418,7 @@ func (g *Gitea) dependencies(ctx context.Context, n int) (blockers []giteaIssue,
 	}
 	if err != nil {
 		err = fmt.Errorf("reading blockers of #%d: %w", n, err)
-		return
 	}
-	enabled = true
 	return
 }
 
@@ -508,15 +519,19 @@ func (g *Gitea) UpdatePullBody(ctx context.Context, n int, body string) (err err
 func (g *Gitea) ReadyPull(ctx context.Context, pull PullRequest) (err error) {
 	path := fmt.Sprintf("/repos/%s/pulls/%d", g.Repo, pull.Number)
 	var current giteaPull
-	if err = g.call(ctx, http.MethodGet, path, nil, &current); err == nil && current.Draft {
-		title, known := splitWIP(current.Title)
-		if !known {
-			err = fmt.Errorf("title %q starts with a WIP prefix of the instance that afk does not know", current.Title)
-		} else {
-			err = g.call(ctx, http.MethodPatch, path, map[string]string{"title": title}, nil)
-		}
+	if err = g.call(ctx, http.MethodGet, path, nil, &current); err != nil {
+		err = fmt.Errorf("marking pull request #%d ready for review: %w", pull.Number, err)
+		return
 	}
-	if err != nil {
+	if !current.Draft {
+		return
+	}
+	title, known := splitWIP(current.Title)
+	if !known {
+		err = fmt.Errorf("marking pull request #%d ready for review: title %q starts with a WIP prefix of the instance that afk does not know", pull.Number, current.Title)
+		return
+	}
+	if err = g.call(ctx, http.MethodPatch, path, map[string]string{"title": title}, nil); err != nil {
 		err = fmt.Errorf("marking pull request #%d ready for review: %w", pull.Number, err)
 	}
 	return
@@ -544,14 +559,16 @@ func (g *Gitea) Comment(ctx context.Context, n int, body string) (err error) {
 // repository: it is sent by id, so an unknown one is an error here.
 func (g *Gitea) AddLabel(ctx context.Context, n int, label string) (err error) {
 	id, found, err := g.labelID(ctx, label)
-	if err == nil && !found {
-		err = errors.New("no such label in the repository")
-	}
-	if err == nil {
-		in := map[string][]int64{"labels": {id}}
-		err = g.call(ctx, http.MethodPost, fmt.Sprintf("/repos/%s/issues/%d/labels", g.Repo, n), in, nil)
-	}
 	if err != nil {
+		err = fmt.Errorf("adding label %q to #%d: %w", label, n, err)
+		return
+	}
+	if !found {
+		err = fmt.Errorf("adding label %q to #%d: no such label in the repository", label, n)
+		return
+	}
+	in := map[string][]int64{"labels": {id}}
+	if err = g.call(ctx, http.MethodPost, fmt.Sprintf("/repos/%s/issues/%d/labels", g.Repo, n), in, nil); err != nil {
 		err = fmt.Errorf("adding label %q to #%d: %w", label, n, err)
 	}
 	return
@@ -561,10 +578,14 @@ func (g *Gitea) AddLabel(ctx context.Context, n int, label string) (err error) {
 // doesn't have (Gitea answers 204), or the repository doesn't, is no error.
 func (g *Gitea) RemoveLabel(ctx context.Context, n int, label string) (err error) {
 	id, found, err := g.labelID(ctx, label)
-	if err == nil && found {
-		err = g.call(ctx, http.MethodDelete, fmt.Sprintf("/repos/%s/issues/%d/labels/%d", g.Repo, n, id), nil, nil)
-	}
 	if err != nil {
+		err = fmt.Errorf("removing label %q from #%d: %w", label, n, err)
+		return
+	}
+	if !found {
+		return
+	}
+	if err = g.call(ctx, http.MethodDelete, fmt.Sprintf("/repos/%s/issues/%d/labels/%d", g.Repo, n, id), nil, nil); err != nil {
 		err = fmt.Errorf("removing label %q from #%d: %w", label, n, err)
 	}
 	return

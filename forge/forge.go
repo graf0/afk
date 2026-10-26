@@ -16,6 +16,13 @@ import (
 	"github.com/graf0/afk/config"
 )
 
+var (
+	// blockedBy is a line of a ticket's body naming its blockers: the
+	// convention for Forges without native dependencies (docs/workflow.md).
+	blockedBy = regexp.MustCompile(`(?im)^blocked by:(.*)$`)
+	issueRef  = regexp.MustCompile(`#(\d+)`)
+)
+
 // Forge is what afk needs of the Project's Forge: tickets, Specs, the pull
 // request of a Run and the git remote its branch is pushed to. GitHub is the
 // first implementation; Gitea is the second (Spec #21), which is
@@ -74,17 +81,6 @@ type Ticket struct {
 	Parent int
 }
 
-// HasLabel reports whether the ticket carries label, ignoring case: GitHub
-// and Gitea both treat label names that way.
-func (t Ticket) HasLabel(name string) (has bool) { return hasLabel(t.Labels, name) }
-
-// HasLabel reports whether the sub-issue carries label, ignoring case.
-func (s SubIssue) HasLabel(name string) (has bool) { return hasLabel(s.Labels, name) }
-
-func hasLabel(labels []string, name string) (has bool) {
-	return slices.ContainsFunc(labels, func(label string) bool { return strings.EqualFold(label, name) })
-}
-
 // SubIssue is a sub-issue of a Spec as listed on the Forge.
 type SubIssue struct {
 	Number int
@@ -111,6 +107,22 @@ type Remote struct {
 	Env  []string
 }
 
+// --- labels ---
+
+// HasLabel reports whether the ticket carries label, ignoring case: GitHub
+// and Gitea both treat label names that way.
+func (t Ticket) HasLabel(name string) (has bool) { return ContainsLabel(t.Labels, name) }
+
+// HasLabel reports whether the sub-issue carries label, ignoring case.
+func (s SubIssue) HasLabel(name string) (has bool) { return ContainsLabel(s.Labels, name) }
+
+// ContainsLabel reports whether labels has name, ignoring case.
+func ContainsLabel(labels []string, name string) (has bool) {
+	return slices.ContainsFunc(labels, func(label string) bool { return strings.EqualFold(label, name) })
+}
+
+// --- remote ---
+
 // tokenRemote is gitURL with token in an Authorization header scoped to
 // gitURL, given to git through GIT_CONFIG_* variables: never on argv, never in
 // a config file. The user's global and system git config is ignored, so no
@@ -133,19 +145,21 @@ func tokenRemote(repo, gitURL, user, token string) (remote Remote) {
 	}}
 }
 
+// --- forge ---
+
 // New returns the Forge of the Project's config, with the host's credentials.
 // [labels].spec: Gitea has no sub-issues, so it is the label that
 // makes a task list the children of a Spec. stateDir (~/.local/state/afk)
 // holds the Gitea token file.
 func New(ctx context.Context, cfg config.Config, stateDir string) (f Forge, err error) {
 	switch cfg.Forge.Kind {
-	case "github":
+	case config.ForgeGitHub:
 		var token string
 		if token, err = HostToken(ctx); err != nil {
 			return
 		}
 		f, err = NewGitHub(cfg.Forge, token)
-	case "gitea":
+	case config.ForgeGitea:
 		var token string
 		if token, err = GiteaToken(stateDir); err != nil {
 			return
@@ -157,12 +171,7 @@ func New(ctx context.Context, cfg config.Config, stateDir string) (f Forge, err 
 	return
 }
 
-var (
-	// blockedBy is a line of a ticket's body naming its blockers: the
-	// convention for Forges without native dependencies (docs/workflow.md).
-	blockedBy = regexp.MustCompile(`(?im)^blocked by:(.*)$`)
-	issueRef  = regexp.MustCompile(`#(\d+)`)
-)
+// --- blockers ---
 
 // blockedByRefs returns the issues named in the "Blocked by: #a, #b" lines of body.
 func blockedByRefs(body string) (refs []int) {

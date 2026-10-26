@@ -17,7 +17,7 @@ import (
 )
 
 var (
-	forgeKinds = []string{"github", "gitea"}
+	forgeKinds = []string{ForgeGitHub, ForgeGitea}
 
 	// ImageTemplates are the [machine.<name>].template values the image package can
 	// build; image's tests assert that it knows exactly these.
@@ -70,8 +70,8 @@ func (v *validator) reportChoice(path string, choices []string, got string) {
 }
 
 func (v *validator) reportDecodeError(err error) {
-	var detail *toml.DecodeError
-	if !errors.As(err, &detail) {
+	detail, ok := errors.AsType[*toml.DecodeError](err)
+	if !ok {
 		v.issues = append(v.issues, issue{msg: fmt.Sprintf("parsing config: %v", err)})
 		return
 	}
@@ -153,9 +153,9 @@ func (c Config) validateForge(v *validator) {
 		v.report("forge.repo", "want owner/name, got %q", c.Forge.Repo)
 	}
 	switch {
-	case c.Forge.Kind == "gitea" && c.Forge.URL == "":
+	case c.Forge.Kind == ForgeGitea && c.Forge.URL == "":
 		v.report("forge.url", "required for gitea")
-	case c.Forge.Kind == "github" && c.Forge.URL != "":
+	case c.Forge.Kind == ForgeGitHub && c.Forge.URL != "":
 		v.report("forge.url", "not allowed for github")
 	case c.Forge.URL != "":
 		// https only: the forge token is sent in a header.

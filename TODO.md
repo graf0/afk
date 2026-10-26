@@ -11,28 +11,28 @@ Domknięcie M1:
 - [ ] `.afk.toml` dla dfmx na `main`: `[network].allow` dla Go (`proxy.golang.org`, `sum.golang.org`), `[machine.sandbox].build` z toolchainem, `[gate].cmd`. Warunek zastąpienia `ralph.sh`.
 - [x] Odmowy Egress proxy (host, port, powód) do `<log>-egress.txt`, podsumowanie na koniec Run; ścieżka logu wypisywana na starcie Run.
 - [x] `disk_size = "64G"` w Template Debian (partycja w gościu dziś 10G).
-- [ ] `afk vm shell` dla VM po porażce: Egress proxy z tą samą polityką co Run.
+- [x] `afk vm shell` dla VM po porażce: Egress proxy z tą samą polityką co Run.
 
 `.afk.toml`:
 
 - [x] `[image]` → `[machine.<nazwa>]` (`template`, `build`, `max_age` domyślnie `168h`, `memory`, `cpus`); `sandbox` zastrzeżone, inne nazwy odrzucane do M4.
-- [ ] `[tool.<nazwa>]`: `on` (tylko `sandbox`), `build`, `setup`, `env`, `prompt`; usunięcie `kind`.
-- [ ] Walidacja wszystkich sekcji (lista w `README.md`), wszystkie błędy naraz z `linia:kolumna`; `afk config` z drzewa roboczego.
-- [ ] Toole w Run: `setup` po klonie (alfabetycznie, `<log>-setup.txt`, pomijany przy wznowieniu), `env` w sesjach i bramce, sekcja „Narzędzia” w promptach.
+- [x] `[tool.<nazwa>]`: `on` (tylko `sandbox`), `build`, `setup`, `env`, `prompt`; usunięcie `kind`.
+- [x] Walidacja wszystkich sekcji (lista w `README.md`), wszystkie błędy naraz z `linia:kolumna`; `afk config` z drzewa roboczego.
+- [x] Toole w Run: `setup` po klonie (alfabetycznie, `<log>-setup.txt`, pomijany przy wznowieniu), `env` w sesjach i bramce, sekcja „Narzędzia” w promptach.
 
 Base image:
 
-- [ ] Konfiguracja z gałęzi bazowej także w `afk image build` i `afk vm up` (ADR-0010).
+- [x] Konfiguracja z gałęzi bazowej także w `afk image build` i `afk vm up` (ADR-0010).
 - [x] Base image w katalogu per maszyna `/var/lib/afk/base/<project>/<maszyna>/<wersja>/`.
 - [x] Hash konfiguracji obrazu w katalogu wersji.
 - [x] Factory buduje obraz przed Run (brak / Expiry / inny hash) pod `flock` per Project, log `image-<maszyna>-<wersja>.log`.
-- [ ] Sprzątanie po udanej budowie: wersje nie najnowsze, niebędące backing file overlayu w `runs/` ani `chats/`.
+- [x] Sprzątanie po udanej budowie: wersje nie najnowsze, nie poprzednia najnowsza, niebędące backing file overlayu w `runs/` ani `chats/`.
 
 Forge:
 
-- [ ] Label `[labels].spec` definiuje Spec (GitHub i Gitea); usunięcie heurystyki `## User Stories`; ticket z sub-issues bez labela pomijany z ostrzeżeniem.
-- [ ] Preflight: wszystkie labele z `[labels]` istnieją w repo.
-- [ ] Gitea (REST) za interfejsem `Forge`: dzieci Spec z listy zadań `- [ ] #M`, blokery = natywne zależności + `Blocked by:`, token `GITEA_TOKEN` / `~/.local/state/afk/gitea-token`, push i PR.
+- [x] Label `[labels].spec` definiuje Spec (GitHub i Gitea); usunięcie heurystyki `## User Stories`; ticket z sub-issues bez labela pomijany z ostrzeżeniem (podany jawnie: błąd).
+- [x] Preflight: wszystkie labele z `[labels]` istnieją w repo.
+- [ ] Gitea (REST) za interfejsem `Forge`: dzieci Spec z listy zadań `- [ ] #M`, blokery = natywne zależności + `Blocked by:`, token `GITEA_TOKEN` / `~/.local/state/afk/gitea-token`, push i PR. Zrobione na fałszywej Gitei; zostaje sprawdzenie na żywej instancji (kroki w PR #36).
 
 ## M3 — Chat, TUI, `afk-forge`
 

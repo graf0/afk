@@ -9,7 +9,9 @@ import (
 	"strings"
 
 	"github.com/graf0/afk/agent"
+	"github.com/graf0/afk/config"
 	"github.com/graf0/afk/forge"
+	"github.com/graf0/afk/image"
 )
 
 // sessionFunc runs work in a fresh guest prepared for r: in production a
@@ -39,7 +41,8 @@ type specRun struct {
 
 // ExecuteSpec runs the Spec opts.Ticket like docs/reference/ralph.sh, do_spec:
 // its open sub-issues in ascending order, the first one without an open
-// blocker each time, every one as a Run in a fresh VM that starts from the
+// blocker each time, every one as a Run in a fresh VM (from a Base image
+// ensured right before it, as a Spec runs for hours) that starts from the
 // end of the branch ticket-<spec>; then a review of the whole branch.
 // After each child the branch is pushed, the first one opens a draft pull
 // request (Closes for the Spec and all children), and the report goes on the
@@ -57,7 +60,18 @@ func ExecuteSpec(ctx context.Context, opts Options) (err error) {
 		return
 	}
 	s := specRun{run: r, leftover: leftover, open: func(ctx context.Context, r run, work workFunc) (res result, err error) {
-		return r.enter(ctx, setup, work)
+		// A Spec runs for hours: every fresh VM starts from a current image.
+		if r.Resume == nil {
+			if err = ensureSandboxImage(ctx, r.Base, r.Paths, r.Out, image.Build); err != nil {
+				err = fmt.Errorf("ensuring the Base image: %w", err)
+				return
+			}
+			if setup.disk, err = image.LatestDisk(r.Paths, r.project, config.SandboxMachine); err != nil {
+				return
+			}
+		}
+		res, err = r.enter(ctx, setup, work)
+		return
 	}}
 	err = s.execute(ctx)
 	return

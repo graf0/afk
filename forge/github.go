@@ -349,11 +349,12 @@ func (g *GitHub) ReadyPull(ctx context.Context, pull PullRequest) (err error) {
 			Message string `json:"message"`
 		} `json:"errors"`
 	}
-	if err = g.call(ctx, http.MethodPost, "/graphql", in, &out); err == nil && len(out.Errors) > 0 {
-		err = errors.New(out.Errors[0].Message)
-	}
-	if err != nil {
+	if err = g.call(ctx, http.MethodPost, "/graphql", in, &out); err != nil {
 		err = fmt.Errorf("marking pull request #%d ready for review: %w", pull.Number, err)
+		return
+	}
+	if len(out.Errors) > 0 {
+		err = fmt.Errorf("marking pull request #%d ready for review: %s", pull.Number, out.Errors[0].Message)
 	}
 	return
 }

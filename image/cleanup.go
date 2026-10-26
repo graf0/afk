@@ -61,7 +61,7 @@ func Cleanup(paths Paths, project, machine string, overlays []string) (removed [
 	var errs []error
 	for _, version := range versions[:len(versions)-2] {
 		dir := filepath.Join(machineDir, version)
-		if used[dir] {
+		if used[realPath(dir)] {
 			continue
 		}
 		if rmErr := os.RemoveAll(dir); rmErr != nil {
@@ -83,8 +83,19 @@ func usedBackingDirs(overlays []string) (dirs map[string]bool, err error) {
 			return
 		}
 		if backing != "" {
-			dirs[filepath.Dir(backing)] = true
+			dirs[realPath(filepath.Dir(backing))] = true
 		}
+	}
+	return
+}
+
+// realPath is path with symlinks resolved, so that a backing file and the
+// version directory compare equal however they were named; path itself when
+// it cannot be resolved (a backing file outside the Base images may be gone).
+func realPath(path string) (resolved string) {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		resolved = path
 	}
 	return
 }

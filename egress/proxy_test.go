@@ -262,6 +262,15 @@ func TestDenialOfResolvedAddressIsWritten(t *testing.T) {
 	}
 }
 
+func TestDenialLineHasNoControlCharacters(t *testing.T) {
+	var denials strings.Builder
+	p := &Proxy{Denials: &denials}
+	p.logDenial("evil\x1b[2J\rhost", 443, ErrDenied)
+	if got, want := denials.String(), "evil?[2J?host:443: egress denied\n"; got != want {
+		t.Errorf("denial line = %q, want %q", got, want)
+	}
+}
+
 func TestDenialsNeedNoWriter(t *testing.T) {
 	p := &Proxy{Policy: mustAllowlist(t, "allowed.example")}
 	if _, err := p.dial(t.Context(), "tcp", "evil.example:443"); !errors.Is(err, ErrDenied) {

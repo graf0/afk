@@ -73,7 +73,12 @@ func NewFactory(ctx context.Context, base Base, gitForge forge.Forge, paths imag
 		Selector: selector,
 		Claims:   claims,
 		Out:      out,
-		ReadBase: func(ctx context.Context) (current Base, err error) { return ReadBase(ctx, base.Repo) },
+		ReadBase: func(ctx context.Context) (current Base, err error) {
+			current, err = ReadBase(ctx, base.Repo)
+			// The Runs decide with the labels of the Factory: the ones its preflight checked.
+			current.Config.Labels = f.Labels
+			return
+		},
 		EnsureImage: func(ctx context.Context, current Base) (err error) {
 			err = ensureSandboxImage(ctx, current, paths, out, image.Build)
 			return
@@ -137,7 +142,7 @@ func (f *Factory) checkLabels(ctx context.Context) (err error) {
 	}
 	var missing []string
 	for _, name := range f.Labels.Names() {
-		if !hasName(have, name) && !hasName(missing, name) {
+		if !forge.ContainsLabel(have, name) && !forge.ContainsLabel(missing, name) {
 			missing = append(missing, name)
 		}
 	}
@@ -298,7 +303,7 @@ func (f *Factory) pick(ctx context.Context, n int, explicit bool) (ticket forge.
 		f.warn(n, "skipping #%d: it has sub-issues but lacks the label %q", n, f.Labels.Spec)
 		return
 	case isSpec && ticket.SubIssues == 0:
-		f.warn(n, "skipping spec #%d: it has no sub-issues: split it first", n)
+		f.warn(n, "skipping spec #%d: it has no children (sub-issues, on Gitea a task list): split it first", n)
 		return
 	}
 	blocked, err := f.Forge.Blocked(ctx, ticket)
@@ -323,11 +328,6 @@ func (f *Factory) pick(ctx context.Context, n int, explicit bool) (ticket forge.
 	}
 	ok = true
 	return
-}
-
-// hasName reports whether names has name, ignoring case like the Forge does.
-func hasName(names []string, name string) (has bool) {
-	return slices.ContainsFunc(names, func(n string) bool { return strings.EqualFold(n, name) })
 }
 
 // isSpec reports whether ticket is a Spec: it carries [labels].spec.

@@ -19,6 +19,9 @@ import (
 	"github.com/graf0/afk/config"
 )
 
+// waitingMessage is what Ensure says while another build holds the lock.
+const waitingMessage = "another build is running, waiting"
+
 // lockPollInterval is how often a waiting Ensure tries the build lock again.
 var lockPollInterval = 200 * time.Millisecond
 
@@ -125,25 +128,32 @@ func Ensure(ctx context.Context, opts EnsureOptions) (dir string, err error) {
 	}
 	version := newVersion(opts.Now())
 	say("building ("+reason+")", version)
-	dir, err = opts.Build(ctx, version)
-	if err == nil {
-		cleanupWarn(opts.Paths, opts.Project, opts.Machine, opts.Overlays, opts.Warn)
+	if dir, err = opts.Build(ctx, version); err != nil {
+		return
 	}
+	cleanupWarn(opts)
 	return
 }
 
 // cleanupWarn runs Cleanup; its failure does not invalidate the build that
-// came before, so it is only reported through warn (nil: silent).
-func cleanupWarn(paths Paths, project, machine string, overlays func() ([]string, error), warn func(msg string)) {
-	err := errors.New("no source of overlays")
-	if overlays != nil {
-		var disks []string
-		if disks, err = overlays(); err == nil {
-			_, err = Cleanup(paths, project, machine, disks)
+// came before, so it is only reported through opts.Warn (nil: silent).
+func cleanupWarn(opts EnsureOptions) {
+	warn := func(err error) {
+		if opts.Warn != nil {
+			opts.Warn(fmt.Sprintf("cleaning old image versions: %v", oneLine(err)))
 		}
 	}
-	if err != nil && warn != nil {
-		warn(fmt.Sprintf("cleaning old image versions: %v", oneLine(err)))
+	if opts.Overlays == nil {
+		warn(errors.New("no source of overlays"))
+		return
+	}
+	disks, err := opts.Overlays()
+	if err != nil {
+		warn(err)
+		return
+	}
+	if _, err = Cleanup(opts.Paths, opts.Project, opts.Machine, disks); err != nil {
+		warn(err)
 	}
 }
 
@@ -210,15 +220,13 @@ func buildExclusive(ctx context.Context, opts Options, overlays func() ([]string
 	if imageDir, err = build(ctx, opts); err != nil {
 		return
 	}
-	cleanupWarn(opts.Paths, project, config.SandboxMachine, overlays, func(msg string) {
+	cleanupWarn(EnsureOptions{Paths: opts.Paths, Project: project, Machine: config.SandboxMachine, Overlays: overlays, Warn: func(msg string) {
 		_, _ = fmt.Fprintln(out, "==> afk: warning: "+msg)
-	})
+	}})
 	return
 }
 
 // --- lock ---
-
-const waitingMessage = "another build is running, waiting"
 
 // lockBuild takes the build lock of project.
 func lockBuild(ctx context.Context, paths Paths, project string, waiting func()) (unlock func(), err error) {

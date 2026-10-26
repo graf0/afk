@@ -20,6 +20,10 @@ const (
 	// SandboxMachine is the name of the Sandbox VM in [machine.<name>].
 	SandboxMachine = "sandbox"
 
+	// ForgeGitHub and ForgeGitea are the values of forge.kind.
+	ForgeGitHub = "github"
+	ForgeGitea  = "gitea"
+
 	// defaultMaxFixes is the default number of fix attempts after a failed gate.
 	defaultMaxFixes = 3
 
@@ -70,11 +74,6 @@ type Labels struct {
 	ReadyForHuman string `toml:"ready_for_human"`
 	Wontfix       string `toml:"wontfix"`
 	Spec          string `toml:"spec"`
-}
-
-// Names returns the names of all labels, in the order of the fields.
-func (l Labels) Names() (names []string) {
-	return []string{l.NeedsTriage, l.NeedsInfo, l.ReadyForAgent, l.ReadyForHuman, l.Wontfix, l.Spec}
 }
 
 // Agent configures models and the Claude Code plugins installed in the
@@ -128,6 +127,13 @@ type Tool struct {
 	Prompt string            `toml:"prompt"` // what the Agent is told about the Tool
 }
 
+// --- accessors ---
+
+// Names returns the names of all labels, in the order of the fields.
+func (l Labels) Names() (names []string) {
+	return []string{l.NeedsTriage, l.NeedsInfo, l.ReadyForAgent, l.ReadyForHuman, l.Wontfix, l.Spec}
+}
+
 // EnvNames are the names of the Tool's env variables, sorted.
 func (t Tool) EnvNames() (names []string) { return slices.Sorted(maps.Keys(t.Env)) }
 
@@ -179,8 +185,10 @@ func parse(prefix string, data []byte) (cfg Config, err error) {
 	v := validator{data: data}
 	decoder := toml.NewDecoder(bytes.NewReader(data)).DisallowUnknownFields()
 	if decodeErr := decoder.Decode(&cfg); decodeErr != nil {
-		var strictErr *toml.StrictMissingError
-		if !errors.As(decodeErr, &strictErr) {
+		strictErr, ok := errors.AsType[*toml.StrictMissingError](decodeErr)
+		if !ok {
+			// Any other decoding error (a wrong type) ends go-toml's decoding:
+			// it is the only issue reported.
 			v.reportDecodeError(decodeErr)
 			err = v.err(prefix)
 			return

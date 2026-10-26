@@ -128,7 +128,7 @@ func TestFactoryPick(t *testing.T) {
 	if want := []int{10, 60, 80}; !slices.Equal(env.executed, want) {
 		t.Errorf("executed %v, want %v\n%s", env.executed, want, env.out)
 	}
-	for _, want := range []string{"skipping spec #20: its open child #22 lacks", "skipping spec #30: it has no sub-issues", "skipping #31: it has sub-issues but lacks the label \"spec\""} {
+	for _, want := range []string{"skipping spec #20: its open child #22 lacks", "skipping spec #30: it has no children", "skipping #31: it has sub-issues but lacks the label \"spec\""} {
 		if got := env.out.String(); strings.Count(got, want) != 1 {
 			t.Errorf("want one %q in:\n%s", want, got)
 		}
@@ -178,7 +178,7 @@ func TestFactoryList(t *testing.T) {
 	if want := []int{2, 1}; !slices.Equal(env.executed, want) {
 		t.Errorf("executed %v, want %v in the order given", env.executed, want)
 	}
-	for _, want := range []string{"skipping #3: it has an open blocker", "skipping #5: it is closed", "skipping #6: it is closed or lacks", "skipping spec #7: it has no sub-issues", "skipping #11: it is part of Spec #10: run #10"} {
+	for _, want := range []string{"skipping #3: it has an open blocker", "skipping #5: it is closed", "skipping #6: it is closed or lacks", "skipping spec #7: it has no children", "skipping #11: it is part of Spec #10: run #10"} {
 		if !strings.Contains(env.out.String(), want) {
 			t.Errorf("output lacks %q:\n%s", want, env.out)
 		}

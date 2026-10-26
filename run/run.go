@@ -497,12 +497,9 @@ func (l *denialLog) Write(p []byte) (n int, err error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.out == nil {
-		var file *os.File
-		if file, err = os.OpenFile(l.path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600); err != nil {
-			err = fmt.Errorf("creating egress denials file: %w", err)
+		if l.out, err = newRotatingLog(l.path); err != nil {
 			return
 		}
-		l.out = &rotatingLog{path: l.path, max: logRotateSize, file: file}
 	}
 	if n, err = l.out.Write(p); err == nil {
 		l.count++

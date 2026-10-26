@@ -11,8 +11,10 @@ import (
 	"net/netip"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
+	"unicode"
 )
 
 const dialTimeout = 10 * time.Second
@@ -234,12 +236,21 @@ func (p *Proxy) dial(ctx context.Context, network, address string) (conn net.Con
 	return
 }
 
-// logDenial writes a line to p.Denials when err is a denial.
+// logDenial writes a line to p.Denials when err is a denial. The host comes
+// from the guest: control characters become "?", so that it cannot forge
+// lines or drive the terminal of whoever reads the file.
 func (p *Proxy) logDenial(host string, port int, err error) {
 	if p.Denials == nil || !errors.Is(err, ErrDenied) {
 		return
 	}
-	_, _ = fmt.Fprintf(p.Denials, "%s: %v\n", net.JoinHostPort(host, strconv.Itoa(port)), err)
+	line := fmt.Sprintf("%s: %v", net.JoinHostPort(host, strconv.Itoa(port)), err)
+	line = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return '?'
+		}
+		return r
+	}, line)
+	_, _ = fmt.Fprintln(p.Denials, line)
 }
 
 // resolve returns the addresses of host, IPv4 first. IP literals skip DNS.

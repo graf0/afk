@@ -114,6 +114,31 @@ func TestCleanup(t *testing.T) {
 	}
 }
 
+func TestCleanupThroughSymlink(t *testing.T) {
+	const v1, v2, v3, v4 = "20261021T000000Z", "20261022T000000Z", "20261023T000000Z", "20261024T000000Z"
+	realDir := filepath.Join(t.TempDir(), "realDir")
+	paths := Paths{BaseDir: filepath.Join(t.TempDir(), "base")}
+	if err := os.MkdirAll(realDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realDir, paths.BaseDir); err != nil {
+		t.Fatal(err)
+	}
+	machineDir := paths.machineDir("p", "sandbox")
+	for _, version := range []string{v1, v2, v3, v4} {
+		if err := os.MkdirAll(filepath.Join(machineDir, version), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The overlay names v1 by the realDir path, Paths by the symlink.
+	overlay := writeOverlay(t, t.TempDir(), filepath.Join(realDir, "p", "sandbox", v1, "disk.qcow2"))
+
+	removed, err := Cleanup(paths, "p", "sandbox", []string{overlay})
+	if err != nil || !slices.Equal(removed, []string{v2}) {
+		t.Errorf("removed = %v, %v; want [%s]", removed, err, v2)
+	}
+}
+
 func TestCleanupNothingToDo(t *testing.T) {
 	for _, versions := range [][]string{{".build-1"}, {"20261024T000000Z"}, {"20261021T000000Z", "20261024T000000Z"}} {
 		paths, machineDir := cleanupEnv(t, versions...)
