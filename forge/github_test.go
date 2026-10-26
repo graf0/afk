@@ -1,15 +1,11 @@
 package forge
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -442,64 +438,7 @@ func TestGitHubPulls(t *testing.T) {
 	}
 }
 
-// TestGitHubRemote checks that git sends the token in a header to GitURL
-// only, that it appears neither on argv nor in git's error, and that the
-// user's global config (url.insteadOf) and redirects can't send it elsewhere.
 func TestGitHubRemote(t *testing.T) {
-	var (
-		mu   sync.Mutex
-		auth []string
-	)
-	record := func(request string) {
-		mu.Lock()
-		defer mu.Unlock()
-		auth = append(auth, request)
-	}
-	requests := func() (got []string) {
-		mu.Lock()
-		defer mu.Unlock()
-		got, auth = auth, nil
-		return
-	}
-	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		record("other " + r.URL.Path + " " + r.Header.Get("Authorization"))
-		w.WriteHeader(http.StatusNotFound)
-	}))
-	t.Cleanup(other.Close)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		record(r.URL.Path + " " + r.Header.Get("Authorization"))
-		if strings.HasPrefix(r.URL.Path, "/moved/") {
-			http.Redirect(w, r, other.URL+r.URL.Path, http.StatusFound)
-			return
-		}
-		w.WriteHeader(http.StatusNotFound)
-	}))
-	t.Cleanup(server.Close)
-
-	// The user's global config sends everything for server to other.
-	home := t.TempDir()
-	rule := fmt.Sprintf("[url %q]\n\tinsteadOf = %s/\n\tpushInsteadOf = %s/\n", other.URL+"/", server.URL, server.URL)
-	if err := os.WriteFile(filepath.Join(home, ".gitconfig"), []byte(rule), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_CONFIG_HOME", home)
-	t.Setenv("GIT_CONFIG_GLOBAL", "")
-	_ = os.Unsetenv("GIT_CONFIG_GLOBAL")
-	lsRemote := func(url string, env []string) (out string, args []string) {
-		cmd := exec.Command("git", "ls-remote", url)
-		cmd.Env = append(os.Environ(), env...)
-		data, err := cmd.CombinedOutput()
-		if err == nil {
-			t.Fatalf("ls-remote %s: want error", url)
-		}
-		return string(data), cmd.Args
-	}
-	lsRemote(server.URL+"/o/r.git", nil)
-	if got := requests(); len(got) != 1 || !strings.HasPrefix(got[0], "other ") {
-		t.Fatalf("without Remote's env the rule applies, got requests %q", got)
-	}
-
 	g, err := NewGitHub(config.Forge{Kind: "github", Repo: "o/r"}, "secret")
 	if err != nil {
 		t.Fatal(err)
@@ -507,20 +446,8 @@ func TestGitHubRemote(t *testing.T) {
 	if g.GitURL != "https://github.com/o/r.git" {
 		t.Errorf("GitURL = %q", g.GitURL)
 	}
-	for _, url := range []string{server.URL + "/o/r.git", server.URL + "/x/r.git", server.URL + "/moved/r.git"} {
-		g.GitURL = server.URL + "/o/r.git"
-		if strings.HasPrefix(url, server.URL+"/moved/") {
-			g.GitURL = url
-		}
-		remote := g.Remote()
-		out, args := lsRemote(url, remote.Env)
-		if strings.Contains(out, "secret") || strings.Contains(strings.Join(args, " "), "secret") {
-			t.Errorf("token leaked: %s %s", args, out)
-		}
-	}
-	basic := "Basic " + base64.StdEncoding.EncodeToString([]byte("x-access-token:secret"))
-	want := []string{"/o/r.git/info/refs " + basic, "/x/r.git/info/refs ", "/moved/r.git/info/refs " + basic}
-	if got := requests(); !slices.Equal(got, want) {
-		t.Errorf("requests with Authorization = %q, want %q", got, want)
-	}
+	testRemote(t, "x-access-token", func(gitURL string) Remote {
+		g.GitURL = gitURL
+		return g.Remote()
+	})
 }

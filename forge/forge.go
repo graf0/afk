@@ -5,7 +5,9 @@ package forge
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
+	"os"
 	"regexp"
 	"slices"
 	"strconv"
@@ -16,7 +18,7 @@ import (
 
 // Forge is what afk needs of the Project's Forge: tickets, Specs, the pull
 // request of a Run and the git remote its branch is pushed to. GitHub is the
-// first implementation; Gitea is the second (reads so far, Spec #21), which is
+// first implementation; Gitea is the second (Spec #21), which is
 // what makes this an interface (docs/architecture.md).
 type Forge interface {
 	// ReadyTicket reads ticket n like Ticket and refuses it without label.
@@ -107,6 +109,28 @@ type Remote struct {
 	Repo string
 	URL  string
 	Env  []string
+}
+
+// tokenRemote is gitURL with token in an Authorization header scoped to
+// gitURL, given to git through GIT_CONFIG_* variables: never on argv, never in
+// a config file. The user's global and system git config is ignored, so no
+// url.insteadOf can send the push elsewhere (another host, ssh with the
+// user's key); redirects, credential helpers and prompts are off.
+func tokenRemote(repo, gitURL, user, token string) (remote Remote) {
+	auth := base64.StdEncoding.EncodeToString([]byte(user + ":" + token))
+	return Remote{Repo: repo, URL: gitURL, Env: []string{
+		"GIT_CONFIG_GLOBAL=" + os.DevNull,
+		"GIT_CONFIG_NOSYSTEM=1",
+		"GIT_TERMINAL_PROMPT=0",
+		"GIT_TRACE_REDACT=1",
+		"GIT_CONFIG_COUNT=3",
+		"GIT_CONFIG_KEY_0=http." + gitURL + ".extraHeader",
+		"GIT_CONFIG_VALUE_0=Authorization: Basic " + auth,
+		"GIT_CONFIG_KEY_1=credential.helper",
+		"GIT_CONFIG_VALUE_1=",
+		"GIT_CONFIG_KEY_2=http.followRedirects",
+		"GIT_CONFIG_VALUE_2=false",
+	}}
 }
 
 // New returns the Forge of the Project's config, with the host's credentials.

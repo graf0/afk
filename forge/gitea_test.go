@@ -3,6 +3,7 @@ package forge
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -22,7 +23,8 @@ import (
 type fakeGitea struct {
 	mu     sync.Mutex
 	issues map[int]*seedIssue
-	labels []string
+	labels []string // the id of a label is its index plus one
+	pulls  []*seedPull
 
 	depsDisabled bool // Gitea answers 404 to the dependencies of every issue
 	ignoreLabels bool // the list ignores labels=, as Gitea does for a name it does not know
@@ -65,6 +67,11 @@ func (fake *fakeGitea) snapshot() (state fakeState) {
 	state.Issues = map[int]seedIssue{}
 	for n, issue := range fake.issues {
 		state.Issues[n] = *issue
+	}
+	for _, pull := range fake.pulls {
+		// Gitea's draft is the prefix of the title.
+		title, draft := splitWIP(pull.Title)
+		state.Pulls = append(state.Pulls, seedPull{Number: pull.Number, Head: pull.Head, Base: pull.Base, Title: title, Body: pull.Body, Draft: draft})
 	}
 	return
 }
@@ -111,7 +118,8 @@ func (fake *fakeGitea) mux() (handler http.Handler) {
 	}
 	// handle serves pattern under the lock, for the token "secret" only.
 	handle := func(pattern string, serve func(w http.ResponseWriter, r *http.Request)) {
-		mux.HandleFunc("GET /api/v1/repos/o/r/"+pattern, func(w http.ResponseWriter, r *http.Request) {
+		method, path, _ := strings.Cut(pattern, " ")
+		mux.HandleFunc(method+" /api/v1/repos/o/r/"+path, func(w http.ResponseWriter, r *http.Request) {
 			if r.Header.Get("Authorization") != "token secret" {
 				reply(w, http.StatusUnauthorized, map[string]string{"message": "token is required"})
 				return
@@ -133,17 +141,17 @@ func (fake *fakeGitea) mux() (handler http.Handler) {
 		})
 	}
 
-	issue("issues/{n}", func(w http.ResponseWriter, r *http.Request, issue *seedIssue) {
+	issue("GET issues/{n}", func(w http.ResponseWriter, r *http.Request, issue *seedIssue) {
 		reply(w, http.StatusOK, issueJSON(issue))
 	})
-	issue("issues/{n}/comments", func(w http.ResponseWriter, r *http.Request, issue *seedIssue) {
+	issue("GET issues/{n}/comments", func(w http.ResponseWriter, r *http.Request, issue *seedIssue) {
 		comments := []map[string]any{}
 		for i, body := range issue.Comments {
 			comments = append(comments, map[string]any{"id": issue.Number*1000 + i, "body": body})
 		}
 		reply(w, http.StatusOK, giteaPage(r, comments))
 	})
-	issue("issues/{n}/dependencies", func(w http.ResponseWriter, r *http.Request, issue *seedIssue) {
+	issue("GET issues/{n}/dependencies", func(w http.ResponseWriter, r *http.Request, issue *seedIssue) {
 		if fake.depsDisabled {
 			notFound(w)
 			return
@@ -154,7 +162,7 @@ func (fake *fakeGitea) mux() (handler http.Handler) {
 		}
 		reply(w, http.StatusOK, giteaPage(r, blockers))
 	})
-	handle("issues", func(w http.ResponseWriter, r *http.Request) {
+	handle("GET issues", func(w http.ResponseWriter, r *http.Request) {
 		query := r.URL.Query()
 		var listed []*seedIssue
 		for _, issue := range fake.issues {
@@ -172,18 +180,118 @@ func (fake *fakeGitea) mux() (handler http.Handler) {
 		}
 		reply(w, http.StatusOK, resources)
 	})
-	handle("labels", func(w http.ResponseWriter, r *http.Request) {
-		resources := []map[string]string{}
-		for _, name := range giteaPage(r, fake.labels) {
-			resources = append(resources, map[string]string{"name": name})
+	handle("GET labels", func(w http.ResponseWriter, r *http.Request) {
+		resources := []map[string]any{}
+		for i, name := range fake.labels {
+			resources = append(resources, map[string]any{"id": i + 1, "name": name})
 		}
-		reply(w, http.StatusOK, resources)
+		reply(w, http.StatusOK, giteaPage(r, resources))
+	})
+	body := func(r *http.Request) (in map[string]any) {
+		data, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(data, &in)
+		return
+	}
+	issue("PATCH issues/{n}", func(w http.ResponseWriter, r *http.Request, issue *seedIssue) {
+		issue.Open = body(r)["state"] != "closed"
+		reply(w, http.StatusCreated, issueJSON(issue))
+	})
+	issue("POST issues/{n}/comments", func(w http.ResponseWriter, r *http.Request, issue *seedIssue) {
+		issue.Comments = append(issue.Comments, fmt.Sprint(body(r)["body"]))
+		reply(w, http.StatusCreated, map[string]any{})
+	})
+	issue("POST issues/{n}/labels", func(w http.ResponseWriter, r *http.Request, issue *seedIssue) {
+		ids, _ := body(r)["labels"].([]any)
+		for _, id := range ids {
+			i, ok := id.(float64) // Gitea takes ids as numbers
+			if !ok || i < 1 || int(i) > len(fake.labels) {
+				reply(w, http.StatusUnprocessableEntity, map[string]string{"message": "label does not exist"})
+				return
+			}
+			issue.Labels = append(issue.Labels, fake.labels[int(i)-1])
+		}
+		reply(w, http.StatusOK, []string{})
+	})
+	issue("DELETE issues/{n}/labels/{id}", func(w http.ResponseWriter, r *http.Request, issue *seedIssue) {
+		id, _ := strconv.Atoi(r.PathValue("id"))
+		i := -1
+		if id >= 1 && id <= len(fake.labels) {
+			i = slices.Index(issue.Labels, fake.labels[id-1])
+		}
+		if id < 1 || id > len(fake.labels) {
+			reply(w, http.StatusUnprocessableEntity, map[string]string{"message": "label does not exist"})
+			return
+		}
+		if i >= 0 { // a label the issue doesn't have is 204 too
+			issue.Labels = slices.Delete(issue.Labels, i, i+1)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	pullJSON := func(pull *seedPull) map[string]any {
+		upper := strings.ToUpper(pull.Title) // Gitea's IsWorkInProgress, default prefixes
+		return map[string]any{
+			"number": pull.Number, "html_url": fmt.Sprintf("https://gitea.example/o/r/pulls/%d", pull.Number),
+			"state": "open", "title": pull.Title, "draft": strings.HasPrefix(upper, "WIP:") || strings.HasPrefix(upper, "[WIP]"),
+			"head": map[string]any{"ref": pull.Head, "repo": map[string]string{"full_name": "o/r"}},
+		}
+	}
+	handle("POST pulls", func(w http.ResponseWriter, r *http.Request) {
+		in := body(r)
+		pull := &seedPull{Number: 1, Head: fmt.Sprint(in["head"]), Base: fmt.Sprint(in["base"]), Title: fmt.Sprint(in["title"]), Body: fmt.Sprint(in["body"])}
+		for n := range fake.issues {
+			pull.Number = max(pull.Number, n+1)
+		}
+		fake.pulls = append(fake.pulls, pull)
+		fake.issues[pull.Number] = &seedIssue{Number: pull.Number, Title: pull.Title, Body: pull.Body, Open: true, IsPull: true}
+		reply(w, http.StatusCreated, pullJSON(pull))
+	})
+	handle("GET pulls", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("state") != "all" {
+			reply(w, http.StatusBadRequest, map[string]string{"message": "state"})
+			return
+		}
+		pulls := []map[string]any{}
+		for _, pull := range fake.pulls { // oldest first: the client picks the latest
+			pulls = append(pulls, pullJSON(pull))
+		}
+		reply(w, http.StatusOK, giteaPage(r, pulls))
+	})
+	pullOf := func(r *http.Request) *seedPull {
+		n, _ := strconv.Atoi(r.PathValue("n"))
+		for _, pull := range fake.pulls {
+			if pull.Number == n {
+				return pull
+			}
+		}
+		return nil
+	}
+	handle("GET pulls/{n}", func(w http.ResponseWriter, r *http.Request) {
+		if pull := pullOf(r); pull != nil {
+			reply(w, http.StatusOK, pullJSON(pull))
+			return
+		}
+		notFound(w)
+	})
+	handle("PATCH pulls/{n}", func(w http.ResponseWriter, r *http.Request) {
+		pull := pullOf(r)
+		if pull == nil {
+			notFound(w)
+			return
+		}
+		in := body(r)
+		if title, ok := in["title"].(string); ok {
+			pull.Title = title
+		}
+		if text, ok := in["body"].(string); ok {
+			pull.Body = text
+		}
+		reply(w, http.StatusCreated, pullJSON(pull))
 	})
 	return mux
 }
 
 func TestGiteaContract(t *testing.T) {
-	testContractReads(t, newFakeGitea)
+	testContract(t, newFakeGitea)
 }
 
 func TestGiteaTaskListNeedsSpecLabel(t *testing.T) {
@@ -355,37 +463,68 @@ func TestGiteaBadToken(t *testing.T) {
 	}
 }
 
-func TestGiteaWritesNotSupported(t *testing.T) {
-	g, _ := startFakeGitea(t, contractIssues(), contractLabels())
+func TestGiteaPulls(t *testing.T) {
+	g, fake := startFakeGitea(t, contractIssues(), contractLabels())
 	ctx := t.Context()
-	_, createErr := g.CreatePull(ctx, "b", "main", "t", "b", true)
-	_, _, findErr := g.FindPull(ctx, "b")
-	for name, err := range map[string]error{
-		"CreatePull":     createErr,
-		"FindPull":       findErr,
-		"UpdatePullBody": g.UpdatePullBody(ctx, 1, "b"),
-		"ReadyPull":      g.ReadyPull(ctx, PullRequest{}),
-		"CloseIssue":     g.CloseIssue(ctx, 1),
-		"Comment":        g.Comment(ctx, 1, "b"),
-		"AddLabel":       g.AddLabel(ctx, 1, "l"),
-		"RemoveLabel":    g.RemoveLabel(ctx, 1, "l"),
-	} {
-		if err == nil || !strings.Contains(err.Error(), "forge gitea:") || !strings.Contains(err.Error(), "not supported yet") {
-			t.Errorf("%s: err = %v", name, err)
-		}
+	draft, err := g.CreatePull(ctx, "ticket-7", "main", "Do it", "b", true)
+	if err != nil || !draft.Draft {
+		t.Fatalf("CreatePull = %+v, %v", draft, err)
 	}
-	if remote := g.Remote(); remote.Repo != "o/r" || remote.URL != "" || len(remote.Env) != 0 {
-		t.Errorf("Remote = %+v", remote)
+	if got := fake.pulls[0].Title; got != "WIP: Do it" {
+		t.Errorf("draft title = %q", got)
+	}
+	// An edited title and the other prefix survive the move to ready.
+	fake.pulls[0].Title = "[wip] Better title"
+	if err = g.ReadyPull(ctx, draft); err != nil || fake.pulls[0].Title != "Better title" {
+		t.Errorf("ReadyPull: title %q, err %v", fake.pulls[0].Title, err)
+	}
+	if err = g.ReadyPull(ctx, draft); err != nil || fake.pulls[0].Title != "Better title" { // not a draft any more
+		t.Errorf("ReadyPull of a ready pull: title %q, err %v", fake.pulls[0].Title, err)
+	}
+	// The latest pull request of the branch wins.
+	if _, err = g.CreatePull(ctx, "ticket-7", "main", "Again", "b", false); err != nil {
+		t.Fatal(err)
+	}
+	if found, ok, err := g.FindPull(ctx, "ticket-7"); err != nil || !ok || found.Draft || found.Number != fake.pulls[1].Number {
+		t.Errorf("FindPull = %+v, %v, %v", found, ok, err)
 	}
 }
 
-func TestCheckWrites(t *testing.T) {
-	if err := CheckWrites(config.Forge{Kind: "github"}); err != nil {
-		t.Errorf("github: %v", err)
+func TestGiteaLabels(t *testing.T) {
+	g, fake := startFakeGitea(t, contractIssues(), contractLabels())
+	ctx := t.Context()
+	if err := g.AddLabel(ctx, 7, "no-such-label"); err == nil || !strings.Contains(err.Error(), "no such label") {
+		t.Errorf("AddLabel of an unknown label: err = %v", err)
 	}
-	if err := CheckWrites(config.Forge{Kind: "gitea"}); err == nil || !strings.Contains(err.Error(), "Gitea: writes (push, pull requests, comments) are not supported yet") {
-		t.Errorf("gitea: err = %v", err)
+	if err := g.RemoveLabel(ctx, 7, "no-such-label"); err != nil {
+		t.Errorf("RemoveLabel of an unknown label: %v", err)
 	}
+	if err := g.RemoveLabel(ctx, 7, "spec"); err != nil { // not on the issue: Gitea answers 204
+		t.Errorf("RemoveLabel of a label the issue doesn't have: %v", err)
+	}
+	if err := g.RemoveLabel(ctx, 999, "ready-for-agent"); err == nil { // 404 is the issue, not the label
+		t.Error("RemoveLabel on a missing issue: no error")
+	}
+	if err := g.AddLabel(ctx, 7, "Spec"); err != nil { // ignoring case, as Gitea
+		t.Error(err)
+	}
+	if got := fake.issues[7].Labels; !slices.Equal(got, []string{"bug", "ready-for-agent", "spec"}) {
+		t.Errorf("labels = %v", got)
+	}
+}
+
+func TestGiteaRemote(t *testing.T) {
+	g, err := NewGitea(config.Forge{Kind: "gitea", Repo: "o/r", URL: "https://gitea.example/"}, "secret", "spec")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g.GitURL != "https://gitea.example/o/r.git" {
+		t.Errorf("GitURL = %q", g.GitURL)
+	}
+	testRemote(t, "afk", func(gitURL string) Remote {
+		g.GitURL = gitURL
+		return g.Remote()
+	})
 }
 
 func TestGiteaLabelFilterOnTheClient(t *testing.T) {

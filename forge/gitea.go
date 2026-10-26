@@ -37,11 +37,12 @@ var (
 
 var _ Forge = (*Gitea)(nil)
 
-// Gitea reads tickets of Repo through the Gitea REST API (1.27). It has no
-// native sub-issues: the children of a Spec are the `- [ ] #M` items of its
-// body. Writes and pushes come in Spec #21's next ticket.
+// Gitea works on tickets and pull requests of Repo through the Gitea REST API
+// (1.27). It has no native sub-issues: the children of a Spec are the
+// `- [ ] #M` items of its body.
 type Gitea struct {
 	APIURL    string // <forge.url>/api/v1 (tests: the fake server)
+	GitURL    string // <forge.url>/<repo>.git
 	Repo      string // owner/name
 	Token     string
 	SpecLabel string       // [labels].spec: only a ticket with it has children
@@ -61,7 +62,8 @@ func NewGitea(forge config.Forge, token, specLabel string) (g *Gitea, err error)
 		err = fmt.Errorf("invalid forge.repo %q: want owner/name", forge.Repo)
 		return
 	}
-	g = &Gitea{APIURL: strings.TrimSuffix(forge.URL, "/") + "/api/v1", Repo: forge.Repo, Token: token, SpecLabel: specLabel, Client: noRedirects()}
+	url := strings.TrimSuffix(forge.URL, "/")
+	g = &Gitea{APIURL: url + "/api/v1", GitURL: url + "/" + forge.Repo + ".git", Repo: forge.Repo, Token: token, SpecLabel: specLabel, Client: noRedirects()}
 	return
 }
 
@@ -266,12 +268,8 @@ func (g *Gitea) listOpen(ctx context.Context, label string) (issues []giteaIssue
 
 // Labels lists the names of the labels of the repository.
 func (g *Gitea) Labels(ctx context.Context) (names []string, err error) {
-	type label struct {
-		Name string `json:"name"`
-	}
-	labels, err := giteaList(ctx, g, "/repos/"+g.Repo+"/labels?", func(l label) string { return l.Name })
+	labels, err := g.repoLabels(ctx)
 	if err != nil {
-		err = fmt.Errorf("listing labels: %w", err)
 		return
 	}
 	for _, label := range labels {
@@ -413,87 +411,211 @@ func (g *Gitea) dependencies(ctx context.Context, n int) (blockers []giteaIssue,
 	return
 }
 
-// --- not yet ---
+// --- git ---
 
-// notSupported is what the writes of Gitea answer until Spec #21's next ticket.
-func notSupported(op string) (err error) {
-	err = fmt.Errorf("forge gitea: %s is not supported yet", op)
-	return
-}
-
-// Remote is empty: pushing to Gitea is not supported yet, and the Factory
-// refuses a Gitea Project before it needs one.
+// Remote is GitURL with Token in an Authorization header scoped to GitURL,
+// with the same safeguards as GitHub's (see tokenRemote). Gitea takes an access
+// token as the password of Basic auth, whatever the user name.
 func (g *Gitea) Remote() (remote Remote) {
-	return Remote{Repo: g.Repo}
+	return tokenRemote(g.Repo, g.GitURL, "afk", g.Token)
 }
 
-// CreatePull is not supported yet.
+// --- writes ---
+
+// wipPrefixes are Gitea's default WORK_IN_PROGRESS_PREFIXES; the first one is
+// what afk writes. Gitea has no GraphQL and cannot create a draft with a flag:
+// a pull request is a draft (the read-only `draft` of the API) exactly while
+// its title starts with one of the instance's prefixes, so ReadyPull is a
+// PATCH of the title without the prefix, where GitHub needs the
+// markPullRequestReadyForReview mutation.
+var wipPrefixes = []string{"WIP:", "[WIP]"}
+
+// splitWIP cuts the draft prefix (and the space after it) off title.
+func splitWIP(title string) (rest string, draft bool) {
+	for _, prefix := range wipPrefixes {
+		if len(title) >= len(prefix) && strings.EqualFold(title[:len(prefix)], prefix) {
+			return strings.TrimLeft(title[len(prefix):], " "), true
+		}
+	}
+	return title, false
+}
+
+// giteaPull is the part of the pull request resource afk reads.
+type giteaPull struct {
+	Number int    `json:"number"`
+	URL    string `json:"html_url"`
+	State  string `json:"state"`
+	Title  string `json:"title"`
+	Draft  bool   `json:"draft"`
+	Head   struct {
+		Ref  string `json:"ref"`
+		Repo *struct {
+			FullName string `json:"full_name"`
+		} `json:"repo"`
+	} `json:"head"`
+}
+
+func (p giteaPull) pull() (pull PullRequest) {
+	return PullRequest{Number: p.Number, URL: p.URL, State: p.State, Draft: p.Draft}
+}
+
+// CreatePull opens a pull request of branch head into base; a draft is a
+// pull request whose title starts with the WIP prefix.
 func (g *Gitea) CreatePull(ctx context.Context, head, base, title, body string, draft bool) (pull PullRequest, err error) {
-	err = notSupported("opening a pull request")
+	if draft {
+		title = wipPrefixes[0] + " " + title
+	}
+	in := map[string]string{"head": head, "base": base, "title": title, "body": body}
+	var created giteaPull
+	if err = g.call(ctx, http.MethodPost, fmt.Sprintf("/repos/%s/pulls", g.Repo), in, &created); err != nil {
+		err = fmt.Errorf("opening pull request of %s: %w", head, err)
+		return
+	}
+	pull = created.pull()
 	return
 }
 
-// FindPull is not supported yet.
+// FindPull returns the latest pull request, open or not, whose head is branch
+// of Repo. Gitea cannot filter the list by head, so it reads all of it.
 func (g *Gitea) FindPull(ctx context.Context, branch string) (pull PullRequest, found bool, err error) {
-	err = notSupported("looking for a pull request")
+	pulls, err := giteaList(ctx, g, "/repos/"+g.Repo+"/pulls?state=all&", func(p giteaPull) int { return p.Number })
+	if err != nil {
+		err = fmt.Errorf("looking for the pull request of %s: %w", branch, err)
+		return
+	}
+	var latest giteaPull
+	for _, p := range pulls {
+		// A pull request from a fork may have a branch of the same name.
+		if p.Head.Ref == branch && p.Head.Repo != nil && p.Head.Repo.FullName == g.Repo && p.Number > latest.Number {
+			latest, found = p, true
+		}
+	}
+	pull = latest.pull()
 	return
 }
 
-// UpdatePullBody is not supported yet.
+// UpdatePullBody replaces the description of pull request n.
 func (g *Gitea) UpdatePullBody(ctx context.Context, n int, body string) (err error) {
-	err = notSupported("updating a pull request")
+	in := map[string]string{"body": body}
+	if err = g.call(ctx, http.MethodPatch, fmt.Sprintf("/repos/%s/pulls/%d", g.Repo, n), in, nil); err != nil {
+		err = fmt.Errorf("updating pull request #%d: %w", n, err)
+	}
 	return
 }
 
-// ReadyPull is not supported yet.
+// ReadyPull marks a draft pull request ready for review: it takes the WIP
+// prefix off the title read fresh, so a title edited since is kept.
 func (g *Gitea) ReadyPull(ctx context.Context, pull PullRequest) (err error) {
-	err = notSupported("marking a pull request ready")
+	path := fmt.Sprintf("/repos/%s/pulls/%d", g.Repo, pull.Number)
+	var current giteaPull
+	if err = g.call(ctx, http.MethodGet, path, nil, &current); err == nil && current.Draft {
+		title, known := splitWIP(current.Title)
+		if !known {
+			err = fmt.Errorf("title %q starts with a WIP prefix of the instance that afk does not know", current.Title)
+		} else {
+			err = g.call(ctx, http.MethodPatch, path, map[string]string{"title": title}, nil)
+		}
+	}
+	if err != nil {
+		err = fmt.Errorf("marking pull request #%d ready for review: %w", pull.Number, err)
+	}
 	return
 }
 
-// CloseIssue is not supported yet.
+// CloseIssue closes issue n.
 func (g *Gitea) CloseIssue(ctx context.Context, n int) (err error) {
-	err = notSupported("closing an issue")
+	in := map[string]string{"state": "closed"}
+	if err = g.call(ctx, http.MethodPatch, fmt.Sprintf("/repos/%s/issues/%d", g.Repo, n), in, nil); err != nil {
+		err = fmt.Errorf("closing #%d: %w", n, err)
+	}
 	return
 }
 
-// Comment is not supported yet.
+// Comment adds a comment to issue or pull request n.
 func (g *Gitea) Comment(ctx context.Context, n int, body string) (err error) {
-	err = notSupported("commenting")
+	in := map[string]string{"body": body}
+	if err = g.call(ctx, http.MethodPost, fmt.Sprintf("/repos/%s/issues/%d/comments", g.Repo, n), in, nil); err != nil {
+		err = fmt.Errorf("commenting on #%d: %w", n, err)
+	}
 	return
 }
 
-// AddLabel is not supported yet.
+// AddLabel adds label to issue or pull request n. The label must exist in the
+// repository: it is sent by id, so an unknown one is an error here.
 func (g *Gitea) AddLabel(ctx context.Context, n int, label string) (err error) {
-	err = notSupported("adding a label")
+	id, found, err := g.labelID(ctx, label)
+	if err == nil && !found {
+		err = errors.New("no such label in the repository")
+	}
+	if err == nil {
+		in := map[string][]int64{"labels": {id}}
+		err = g.call(ctx, http.MethodPost, fmt.Sprintf("/repos/%s/issues/%d/labels", g.Repo, n), in, nil)
+	}
+	if err != nil {
+		err = fmt.Errorf("adding label %q to #%d: %w", label, n, err)
+	}
 	return
 }
 
-// RemoveLabel is not supported yet.
+// RemoveLabel removes label from issue or pull request n; a label it
+// doesn't have (Gitea answers 204), or the repository doesn't, is no error.
 func (g *Gitea) RemoveLabel(ctx context.Context, n int, label string) (err error) {
-	err = notSupported("removing a label")
+	id, found, err := g.labelID(ctx, label)
+	if err == nil && found {
+		err = g.call(ctx, http.MethodDelete, fmt.Sprintf("/repos/%s/issues/%d/labels/%d", g.Repo, n, id), nil, nil)
+	}
+	if err != nil {
+		err = fmt.Errorf("removing label %q from #%d: %w", label, n, err)
+	}
 	return
 }
 
-// CheckWrites refuses a Project whose Forge cannot be written to yet: the
-// Factory would run its VMs and stop at the first write.
-func CheckWrites(cfg config.Forge) (err error) {
-	if cfg.Kind == "gitea" {
-		err = errors.New("Gitea: writes (push, pull requests, comments) are not supported yet")
+// labelID resolves the name of a repository label (ignoring case, as Gitea does) to its id.
+func (g *Gitea) labelID(ctx context.Context, name string) (id int64, found bool, err error) {
+	labels, err := g.repoLabels(ctx)
+	if err != nil {
+		return
+	}
+	for _, label := range labels {
+		if strings.EqualFold(label.Name, name) {
+			id, found = label.ID, true
+			return
+		}
+	}
+	return
+}
+
+// giteaLabel is the part of the label resource afk reads.
+type giteaLabel struct {
+	ID   int64  `json:"id"`
+	Name string `json:"name"`
+}
+
+func (g *Gitea) repoLabels(ctx context.Context) (labels []giteaLabel, err error) {
+	labels, err = giteaList(ctx, g, "/repos/"+g.Repo+"/labels?", func(l giteaLabel) string { return l.Name })
+	if err != nil {
+		err = fmt.Errorf("listing labels: %w", err)
 	}
 	return
 }
 
 // --- http ---
 
-// get decodes the JSON resource at path (relative to APIURL) into v. A
-// redirect is an error: forge.url must be the final address.
+// get decodes the JSON resource at path (relative to APIURL) into v.
 func (g *Gitea) get(ctx context.Context, path string, v any) (err error) {
+	err = g.call(ctx, http.MethodGet, path, nil, v)
+	return
+}
+
+// call sends a method request to path (relative to APIURL) with in as JSON
+// body (none when nil) and decodes a 2xx response into out (unless nil). A
+// redirect is an error: forge.url must be the final address.
+func (g *Gitea) call(ctx context.Context, method, path string, in, out any) (err error) {
 	header := http.Header{
 		"Accept":        {"application/json"},
 		"Authorization": {"token " + g.Token},
 	}
-	err = doJSON(ctx, g.Client, g.APIURL, http.MethodGet, path, header, nil, v)
+	err = doJSON(ctx, g.Client, g.APIURL, method, path, header, in, out)
 	if apiErr, ok := errors.AsType[*apiError](err); ok && apiErr.Status >= 300 && apiErr.Status < 400 {
 		err = fmt.Errorf("%w (redirects are not followed, so the token goes only to forge.url: set forge.url to the final https address of the instance)", err)
 	}

@@ -2,7 +2,6 @@ package forge
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"net/http"
@@ -279,26 +278,9 @@ func (g *GitHub) Blocked(ctx context.Context, ticket Ticket) (blocked bool, err 
 
 // --- git ---
 
-// Remote is GitURL with Token in an Authorization header scoped to GitURL,
-// given to git through GIT_CONFIG_* variables: never on argv, never in a
-// config file. The user's global and system git config is ignored, so no
-// url.insteadOf can send the push elsewhere (another host, ssh with the
-// user's key); redirects, credential helpers and prompts are off.
+// Remote is GitURL with Token in an Authorization header (see tokenRemote).
 func (g *GitHub) Remote() (remote Remote) {
-	auth := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + g.Token))
-	return Remote{Repo: g.Repo, URL: g.GitURL, Env: []string{
-		"GIT_CONFIG_GLOBAL=" + os.DevNull,
-		"GIT_CONFIG_NOSYSTEM=1",
-		"GIT_TERMINAL_PROMPT=0",
-		"GIT_TRACE_REDACT=1",
-		"GIT_CONFIG_COUNT=3",
-		"GIT_CONFIG_KEY_0=http." + g.GitURL + ".extraHeader",
-		"GIT_CONFIG_VALUE_0=Authorization: Basic " + auth,
-		"GIT_CONFIG_KEY_1=credential.helper",
-		"GIT_CONFIG_VALUE_1=",
-		"GIT_CONFIG_KEY_2=http.followRedirects",
-		"GIT_CONFIG_VALUE_2=false",
-	}}
+	return tokenRemote(g.Repo, g.GitURL, "x-access-token", g.Token)
 }
 
 // --- writes ---
