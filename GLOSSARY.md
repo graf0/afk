@@ -12,6 +12,10 @@ _Avoid_: repo (gdy chodzi o całość z konfiguracją)
 Interaktywna rozmowa człowieka z Agentem we własnej, długo żyjącej Sandbox VM, do planowania i eksperymentów, z dostępem do całego internetu. Tickety tworzy przez `afk`, ale nigdy nie czyni ich gotowymi dla Factory — to robi człowiek.
 _Avoid_: sesja, interactive session
 
+**Export**:
+Przeniesienie commitów Chat na branch `chat-<nazwa>` w Forge na żądanie człowieka, przez Quarantine repo i tę samą walidację co wynik Run; można je powtarzać, bez PR.
+_Avoid_: sync, publish
+
 **Factory**:
 Nienadzorowana pętla, która bierze Tickety pasujące do selektora (`*` — kolejne gotowe, albo lista numerów) i każdy realizuje jako osobny Run.
 _Avoid_: sesja, worker, ralph

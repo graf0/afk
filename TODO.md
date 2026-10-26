@@ -8,7 +8,7 @@ Cel: Project opisuje swoje maszyny i Toole (Postgres, Playwright w Sandbox VM); 
 
 Domknięcie M1:
 
-- [ ] `.afk.toml` dla dfmx na `main`: `[network].allow` dla Go (`proxy.golang.org`, `sum.golang.org`), `[machine.sandbox].build` z toolchainem, `[gate].cmd`. Warunek zastąpienia `ralph.sh`.
+- [x] `.afk.toml` dla dfmx na `main`: `[network].allow` dla Go (`proxy.golang.org`, `sum.golang.org`), `[machine.sandbox].build` z toolchainem, `[gate].cmd`. Warunek zastąpienia `ralph.sh`.
 - [x] Odmowy Egress proxy (host, port, powód) do `<log>-egress.txt`, podsumowanie na koniec Run; ścieżka logu wypisywana na starcie Run.
 - [x] `disk_size = "64G"` w Template Debian (partycja w gościu dziś 10G).
 - [x] `afk vm shell` dla VM po porażce: Egress proxy z tą samą polityką co Run.
@@ -32,19 +32,37 @@ Forge:
 
 - [x] Label `[labels].spec` definiuje Spec (GitHub i Gitea); usunięcie heurystyki `## User Stories`; ticket z sub-issues bez labela pomijany z ostrzeżeniem (podany jawnie: błąd).
 - [x] Preflight: wszystkie labele z `[labels]` istnieją w repo.
-- [ ] Gitea (REST) za interfejsem `Forge`: dzieci Spec z listy zadań `- [ ] #M`, blokery = natywne zależności + `Blocked by:`, token `GITEA_TOKEN` / `~/.local/state/afk/gitea-token`, push i PR. Zrobione na fałszywej Gitei; zostaje sprawdzenie na żywej instancji (kroki w PR #36).
+- [x] Gitea (REST) za interfejsem `Forge`: dzieci Spec z listy zadań `- [ ] #M`, blokery = natywne zależności + `Blocked by:`, token `GITEA_TOKEN` / `~/.local/state/afk/gitea-token`, push i PR.
 
 ## M3 — Chat, TUI, `afk-forge`
 
-Cel: interaktywna praca z Agentem w VM i Factory z jednego okna (ADR-0008, `docs/workflow.md`).
+Cel: interaktywna praca z Agentem w VM i Factory z jednego okna. Decyzje: ADR-0008, ADR-0012, `docs/workflow.md` (Chat, TUI). Trzy Specy po kolei: A → B → C, potem dokumentacja.
 
-- [ ] Chat: długo żyjąca Sandbox VM, kod jako snapshot gałęzi bazowej, Claude Code interaktywnie na pty (`--dangerously-skip-permissions`, `--append-system-prompt`), pełny internet przez Egress proxy (ADR-0003).
-- [ ] Powrót Chat po restarcie hosta / crashu `afk`: VM z tego samego overlayu, `claude --continue`.
-- [ ] Eksport Chat: commity przez Quarantine repo (ta sama walidacja co Run) na branch `chat-<nazwa>`, bez PR.
-- [ ] `afk-forge` w VM (`issue create|view|list|comment`) przez kanał ssh do `afk`; `ready-for-agent` z Chat → `needs-triage`. Najpierw rozstrzygnąć protokół (open-questions).
-- [ ] TUI: serwer `tmux -L afk` z wbudowaną konfiguracją, sidebar w bubbletea (Chaty i Factory per Project z metadanych libvirt), skróty `M-↑/↓`, `M-n`, `M-f`, `M-x`, `M-e`, `M-s`.
-- [ ] Widok Factory: strumień Run tylko do odczytu, nagłówek z ticketem, wiekiem Run i czasem od ostatniego zdarzenia.
-- [ ] Limit równoczesnych VM / pamięci (open-questions).
+Spec A — Chat bez TUI:
+
+- [ ] `afk chat new|attach|export|rm|list`; nazwa wymagana (`[a-z0-9-]{1,32}`), odmowa przy kolizji z Chat lub branchem `chat-<nazwa>` na remote.
+- [ ] VM Chat: snapshot gałęzi bazowej, `setup`/`env` Tooli, Egress proxy z pełnym internetem (odmowy do `chat-<nazwa>-egress.txt`), `claude` interaktywnie na pty z `--append-system-prompt`.
+- [ ] `attach`: `flock`, `claude --continue` przy kolejnym, start wyłączonej VM; koniec `claude` = koniec procesu, VM zostaje.
+- [ ] Eksport: commity od snapshotu przez Quarantine repo, walidacja jak w Run (całość albo nic), push z lease na ostatni eksport, bez PR.
+- [ ] `rm`: odmowa bez `--force` przy niezacommitowanej albo nieeksportowanej pracy.
+- [ ] Limit pamięci przy każdej nowej VM: `MemAvailable` ≥ `memory` + 2 GiB.
+
+Spec B — `afk-forge`:
+
+- [ ] Kanał gość → `afk`: odwrotny unix socket na ssh, HTTP+JSON, tylko przy `attach`; binarka `afk` kopiowana jako `afk-forge` (ADR-0012).
+- [ ] `issue view|list|create|comment|edit`: format `TICKET.md`, stopka `— z Chat <nazwa>`, `ready-for-agent` → `needs-triage`, treść tylko issue tego Chat, log `chat-<nazwa>-forge.txt`.
+- [ ] `docs/agents/*` i skille Projectu: `afk-forge` zamiast `gh`.
+
+Spec C — TUI:
+
+- [ ] `afk tui`: serwer `tmux -L afk` z wbudowaną konfiguracją, sprawdzenie tmux ≥ 3.3.
+- [ ] Sidebar (bubbletea): Chaty i porzucone Runy z metadanych libvirt (z polem `repo`), Factory z opcji okien tmux; grupowanie po Project.
+- [ ] Skróty `M-↑/↓`, `M-n`, `M-F`, `M-x`, `M-e`, `M-s`; sprawdzenie, czy Alt dochodzi do tmux w popularnych terminalach.
+- [ ] Widok Factory: nagłówek przez OSC 2 (ticket, wiek Run, czas od ostatniego zdarzenia), `remain-on-exit`.
+
+Dokumentacja:
+
+- [ ] Zwięzły `README.md`: Getting Started (wymagania hosta, token, pierwsze `.afk.toml`, `afk image build`, `afk factory`, `afk chat`, `afk tui`), komendy, tabela skrótów TUI.
 
 ## M4 — Windows, Tool VM, sterowanie ekranem
 

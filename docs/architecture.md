@@ -15,9 +15,8 @@ Bez `internal/`:
 | `egress/` | Egress proxy |
 | `run/` | Orkiestracja Run |
 | `factory/` | Pętla Factory: selektor, rezerwacje (`flock`), kolejne Run |
-| `chat/` | Chat: VM, interaktywny Agent na pty, eksport brancha, obsługa `afk-forge` |
+| `chat/` | Chat: VM, interaktywny Agent na pty, eksport, serwer kanału `afk-forge` (ADR-0012) |
 | `tui/` | Sidebar (bubbletea v2) i sterowanie serwerem `tmux -L afk` (ADR-0008) |
-| `cmd/afk-forge` | CLI w VM: operacje na ticketach przez kanał ssh do `afk` |
 
 Interfejs tylko tam, gdzie są co najmniej dwie implementacje: `Forge` (GitHub, Gitea). `machine.Machine` to struktura; interfejs dopiero, gdy druga implementacja (Windows, Tool VM) go wymusi.
 
@@ -34,7 +33,7 @@ Packer nie jest zależnością Go — to binarka pobierana w czasie działania (
 
 ## Kanał do VM
 
-ssh wszędzie, także Windows (sshd + klucz `afk` w obrazie). vsock odrzucony (brak na Windows, kanał inicjowany z gościa). Sterowanie ekranem: CLI `afk-screen` w VM przez tunel ssh, zrzuty PNG. Tak samo `afk-forge` w Chat.
+ssh wszędzie, także Windows (sshd + klucz `afk` w obrazie). vsock odrzucony (brak na Windows, kanał inicjowany z gościa). Sterowanie ekranem: CLI `afk-screen` w VM przez tunel ssh, zrzuty PNG. Kanał gość → `afk` (`afk-forge`, w M4 Tool VM): odwrotny unix socket na ssh, HTTP+JSON; klient to binarka `afk` skopiowana do VM jako `afk-forge`, tryb po `argv[0]` (ADR-0012).
 
 ## Ścieżki
 
@@ -43,6 +42,7 @@ ssh wszędzie, także Windows (sshd + klucz `afk` w obrazie). vsock odrzucony (b
 | `/var/lib/afk/base/<project>/<maszyna>/<wersja>/` | Base image maszyny z `[machine.<maszyna>]` (`*.qcow2`, dla UEFI `efivars.fd`, hash konfiguracji obrazu), grupa `kvm`; wersja = znacznik czasu UTC `20261024T153000Z`, nowsza budowa = nowy katalog (stare znikają po kolejnej budowie, gdy nie używa ich żaden overlay) |
 | `/var/lib/afk/runs/<run>/` | Overlay i NVRAM jednego Run, katalog `2775` |
 | `/var/lib/afk/chats/<chat>/` | Overlay i NVRAM jednego Chat, jak wyżej |
+| `~/.local/state/afk/<project>/chats/<nazwa>/` | Stan Chat: `lock` (`flock` procesu `attach`), `issues` (numery utworzone przez Chat), ostatnio eksportowany sha |
 | `~/.local/state/afk/claims/<project>/<n>` | Rezerwacje ticketów (`flock`) |
 | `~/.local/state/afk/<project>/logs/` | Logi Run (stream-json, `-setup.txt`, `-egress.txt`, `-gate-N.txt`) i budów obrazu (`image-<maszyna>-<wersja>.log`); poza repo — logi to niezaufana treść, nie dla narzędzi człowieka w drzewie roboczym |
 | `~/.local/state/afk/gitea-token` | Token Gitei, `0600`, gdy brak `GITEA_TOKEN` |
