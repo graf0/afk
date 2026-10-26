@@ -131,7 +131,7 @@ func TestIntegrationExecute(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, want := range []string{"fake agent working", "→ Bash git commit", "status: done — Fake.", "result valid: 1 commit(s)", "pull request #42"} {
+		for _, want := range []string{"fake agent working", "→ Bash git commit", "status: done — Fake.", "result valid, ticket-1", "pull request #42"} {
 			if !strings.Contains(out, want) {
 				t.Errorf("output lacks %q", want)
 			}
@@ -143,7 +143,8 @@ func TestIntegrationExecute(t *testing.T) {
 		if got := sh(t, root, "git --git-dir=origin.git log -1 --format=%s%n%b ticket-1"); got != "Fake (#1)\nFake work." {
 			t.Errorf("pushed commit message = %q", got)
 		}
-		want := []string{"POST /repos/o/r/pulls", "POST /repos/o/r/issues/42/comments", "DELETE /repos/o/r/issues/1/labels/ready-for-agent"}
+		// The agent report, then the review report.
+		want := []string{"POST /repos/o/r/pulls", "POST /repos/o/r/issues/42/comments", "POST /repos/o/r/issues/42/comments", "DELETE /repos/o/r/issues/1/labels/ready-for-agent"}
 		if !slices.Equal(fake.requests, want) {
 			t.Errorf("Forge requests = %q, want %q", fake.requests, want)
 		}
