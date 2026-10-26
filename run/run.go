@@ -278,47 +278,16 @@ func (r run) prepared(prepare bool, work workFunc) (prepared workFunc) {
 // base as origin/<branch>, and writes the ticket next to it. Inside a Spec
 // the branch starts at its tip instead, and the Spec is written too.
 func (r run) prepareGuest(ctx context.Context, client *ssh.Client) (err error) {
-	temp, err := os.CreateTemp(r.stateDir, "base-*.bundle")
-	if err != nil {
-		err = fmt.Errorf("creating base bundle: %w", err)
-		return
-	}
-	_ = temp.Close()
-	defer func() { _ = os.Remove(temp.Name()) }()
-	// git replaces the file (lock file + rename): open it only afterwards.
-	if err = r.quarantine.Bundle(ctx, r.branch, temp.Name()); err != nil {
-		return
-	}
-	bundle, err := os.Open(temp.Name())
-	if err != nil {
-		err = fmt.Errorf("opening base bundle: %w", err)
-		return
-	}
-	defer func() { _ = bundle.Close() }()
-	q := agent.ShellQuote
-	origin := originPrefix + r.Base.Branch
-	fetch, start := q("+"+baseRef(r.branch)+":"+origin), origin
-	if r.start() != r.Base.Commit {
-		fetch, start = fetch+" "+q("+"+resultRef(r.branch)+":"+guestStart), guestStart
-	}
-	script := strings.Join([]string{
-		"set -eu",
-		`sudo install -d -o "$(id -u)" -g "$(id -g)" ` + guestWork,
-		"cat > " + guestBundle,
-		"git init -q -b " + q(r.branch) + " " + guestRepo,
-		"cd " + guestRepo,
-		"git config user.name " + q(guestGitName),
-		"git config user.email " + q(guestGitEmail),
-		"git fetch -q --no-tags " + guestBundle + " " + fetch,
-		"git checkout -q -B " + q(r.branch) + " " + q(start),
-		"rm " + guestBundle,
-	}, "\n")
-	if err = remote(ctx, client, script, bundle, nil); err != nil {
-		err = fmt.Errorf("cloning the base in the guest: %w", err)
+	if err = r.guestBranch().Clone(ctx, client, r.Base.Branch, r.start() != r.Base.Commit); err != nil {
 		return
 	}
 	err = r.writeTicketFiles(ctx, client)
 	return
+}
+
+// guestBranch is the Run's branch in the Quarantine repo.
+func (r run) guestBranch() (b GuestBranch) {
+	return GuestBranch{Quarantine: r.quarantine, Name: r.branch, TempDir: r.stateDir}
 }
 
 // writeTicketFiles writes the ticket, and the Spec when there is one, next to the clone.
@@ -371,8 +340,11 @@ func (r run) closeLogs() {
 }
 
 // say prints a line of afk itself, prefixed "= " like ralph.sh.
-func (r run) say(format string, args ...any) {
-	_, _ = fmt.Fprintf(r.Out, "= "+format+"\n", args...)
+func (r run) say(format string, args ...any) { say(r.Out, format, args...) }
+
+// say prints a line of afk itself to w.
+func say(w io.Writer, format string, args ...any) {
+	_, _ = fmt.Fprintf(w, "= "+format+"\n", args...)
 }
 
 // remote runs command in the guest; its stderr (sanitized, truncated) goes

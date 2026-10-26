@@ -3,11 +3,13 @@ package run
 import (
 	"context"
 	"fmt"
+	"io"
 	"maps"
 	"slices"
 	"strings"
 
 	"github.com/graf0/afk/agent"
+	"github.com/graf0/afk/config"
 )
 
 // withSetup is work preceded by the Tools' setup, which runs in a guest whose
@@ -15,7 +17,7 @@ import (
 // had it already: its work is not wrapped.
 func (r run) withSetup(work workFunc) (wrapped workFunc) {
 	return func(ctx context.Context, g guest) (res result, err error) {
-		if err = r.toolSetup(ctx, g); err != nil {
+		if err = SetupTools(ctx, g.Exec, r.Base.Config, r.log.path, r.Out); err != nil {
 			return
 		}
 		res, err = work(ctx, g)
@@ -23,45 +25,37 @@ func (r run) withSetup(work workFunc) (wrapped workFunc) {
 	}
 }
 
-// toolSetup runs the setup commands of the Tools in the clone, Tools in name
-// order, with their env (the guest's Exec sets it). The output of all of them
-// goes to a file next to the Run's log, bounded like the log; the first
-// failing command fails the Run, with the path of the file.
-func (r run) toolSetup(ctx context.Context, g guest) (err error) {
-	cfg := r.Base.Config
-	var out *rotatingLog
+// SetupTools runs the setup commands of the Tools in the clone, Tools in name
+// order, with their env (exec sets it). The output of all of them goes to
+// <logPath minus .jsonl>-setup.txt, bounded like the log; the first failing
+// command fails it, with the path of the file. Progress lines go to out.
+func SetupTools(ctx context.Context, exec ExecFunc, cfg config.Config, logPath string, out io.Writer) (err error) {
+	var setupLog *rotatingLog
 	for _, name := range slices.Sorted(maps.Keys(cfg.Tool)) {
 		for _, command := range cfg.Tool[name].Setup {
-			if out == nil {
-				if out, err = r.openSetupOutput(); err != nil {
+			if setupLog == nil {
+				setupLog, err = newRotatingLog(strings.TrimSuffix(logPath, ".jsonl") + "-setup.txt")
+				if err != nil {
+					err = fmt.Errorf("setup output file: %w", err)
 					return
 				}
-				defer func() { _ = out.Close() }()
+				defer func() { _ = setupLog.Close() }()
 			}
-			r.say("setup of tool %s: %s", name, agent.Sanitize(command))
-			_, _ = fmt.Fprintf(out, "$ %s\n", command)
-			execErr := g.Exec(ctx, bashCommand(command), out)
+			say(out, "setup of tool %s: %s", name, agent.Sanitize(command))
+			_, _ = fmt.Fprintf(setupLog, "$ %s\n", command)
+			execErr := exec(ctx, bashCommand(command), setupLog)
 			if err = ctx.Err(); err != nil {
 				return
 			}
 			if execErr != nil {
-				_, _ = fmt.Fprintf(out, "\n%s\n", agent.Sanitize(execErr.Error()))
-				err = fmt.Errorf("setup of tool %s failed: %s (output: %s)", name, agent.Sanitize(execErr.Error()), out.path)
+				_, _ = fmt.Fprintf(setupLog, "\n%s\n", agent.Sanitize(execErr.Error()))
+				err = fmt.Errorf("setup of tool %s failed: %s (output: %s)", name, agent.Sanitize(execErr.Error()), setupLog.path)
 				return
 			}
 		}
 	}
-	if out != nil {
-		r.say("setup done (output: %s)", out.path)
-	}
-	return
-}
-
-// openSetupOutput creates <log>-setup.txt.
-func (r run) openSetupOutput() (out *rotatingLog, err error) {
-	out, err = newRotatingLog(strings.TrimSuffix(r.log.path, ".jsonl") + "-setup.txt")
-	if err != nil {
-		err = fmt.Errorf("setup output file: %w", err)
+	if setupLog != nil {
+		say(out, "setup done (output: %s)", setupLog.path)
 	}
 	return
 }

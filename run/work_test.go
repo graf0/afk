@@ -363,3 +363,33 @@ func TestExecCommandSetsEnv(t *testing.T) {
 		t.Errorf("got %q, %v", out, err)
 	}
 }
+
+// TestGuestBranchFetch uses the exported API as Chat will: a GuestBranch and an
+// exec in the guest, not the Run (the fixture only sets them up).
+func TestGuestBranchFetch(t *testing.T) {
+	r, g, _ := workRun(t, &fakeGitHub{}, "true", 0)
+	b := GuestBranch{Quarantine: r.quarantine, Name: r.branch, TempDir: r.stateDir}
+	fetch := func() (head string, err error) {
+		return b.Fetch(t.Context(), g.Exec, r.Base.Commit, []string{"locked"}, &bytes.Buffer{})
+	}
+	if head, err := fetch(); err != nil || head != r.Base.Commit {
+		t.Fatalf("without commits = %q, %v, want the start", head, err)
+	}
+
+	g.commit("impl", agent.Report{})()
+	head, err := fetch()
+	if err != nil || head != sh(t, g.dir, "git rev-parse HEAD") {
+		t.Fatalf("Fetch = %q, %v", head, err)
+	}
+
+	sh(t, g.dir, "echo x > dirty")
+	if _, err = fetch(); err == nil || !strings.Contains(err.Error(), "uncommitted") {
+		t.Errorf("dirty tree: err = %v", err)
+	}
+	sh(t, g.dir, "rm dirty")
+
+	g.commit("locked", agent.Report{})()
+	if _, err = fetch(); err == nil || !strings.Contains(err.Error(), "rejected") {
+		t.Errorf("protected path: err = %v", err)
+	}
+}

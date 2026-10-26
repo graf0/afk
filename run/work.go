@@ -51,7 +51,7 @@ type result struct {
 }
 
 func (g sshGuest) Exec(ctx context.Context, command string, stdout io.Writer) (err error) {
-	err = remote(ctx, g.client, execCommand(g.env, command), nil, stdout)
+	err = NewExec(g.client, g.env)(ctx, command, stdout)
 	return
 }
 
@@ -230,15 +230,87 @@ func (r run) squash(ctx context.Context, parent, head, message string) (squashed
 	return
 }
 
-// --- fetch ---
+// --- guest branch ---
 
-// fetchResult brings HEAD of the guest's clone into the Quarantine repo as a
-// bundle, without running anything of the clone on the host (ADR-0002), and
-// validates it against the start of the Run. It returns the commit; without
-// new commits that is the start itself.
+// fetchResult brings HEAD of the guest's clone into the Quarantine repo; see
+// GuestBranch.Fetch.
 func (r run) fetchResult(ctx context.Context, g guest) (head string, err error) {
+	return r.guestBranch().Fetch(ctx, g.Exec, r.start(), r.Base.Config.Protect.Paths, r.Out)
+}
+
+// ExecFunc runs command in the guest's clone, its stdout going to stdout.
+type ExecFunc func(ctx context.Context, command string, stdout io.Writer) (err error)
+
+// NewExec is the ExecFunc over client, with env (of the Tools) set for every command.
+func NewExec(client *ssh.Client, env map[string]string) (exec ExecFunc) {
+	return func(ctx context.Context, command string, stdout io.Writer) (err error) {
+		err = remote(ctx, client, execCommand(env, command), nil, stdout)
+		return
+	}
+}
+
+// GuestBranch is a branch of the Quarantine repo that a guest works on: its
+// base goes into the guest, its result comes back.
+type GuestBranch struct {
+	Quarantine Quarantine
+	Name       string // the branch, also in the guest's clone
+	TempDir    string // holds bundles on the host while they are sent
+}
+
+// Clone clones the branch's base from the Quarantine repo (FetchBase must
+// have stored it) into guestRepo over client, on the branch, with the base as
+// origin/<baseBranch>. With fromTip the branch starts at its result ref (the
+// tip of a Spec's branch) instead.
+func (b GuestBranch) Clone(ctx context.Context, client *ssh.Client, baseBranch string, fromTip bool) (err error) {
+	temp, err := os.CreateTemp(b.TempDir, "base-*.bundle")
+	if err != nil {
+		err = fmt.Errorf("creating base bundle: %w", err)
+		return
+	}
+	_ = temp.Close()
+	defer func() { _ = os.Remove(temp.Name()) }()
+	// git replaces the file (lock file + rename): open it only afterwards.
+	if err = b.Quarantine.Bundle(ctx, b.Name, temp.Name()); err != nil {
+		return
+	}
+	bundle, err := os.Open(temp.Name())
+	if err != nil {
+		err = fmt.Errorf("opening base bundle: %w", err)
+		return
+	}
+	defer func() { _ = bundle.Close() }()
+	q := agent.ShellQuote
+	origin := originPrefix + baseBranch
+	fetch, start := q("+"+baseRef(b.Name)+":"+origin), origin
+	if fromTip {
+		fetch, start = fetch+" "+q("+"+resultRef(b.Name)+":"+guestStart), guestStart
+	}
+	script := strings.Join([]string{
+		"set -eu",
+		`sudo install -d -o "$(id -u)" -g "$(id -g)" ` + guestWork,
+		"cat > " + guestBundle,
+		"git init -q -b " + q(b.Name) + " " + guestRepo,
+		"cd " + guestRepo,
+		"git config user.name " + q(guestGitName),
+		"git config user.email " + q(guestGitEmail),
+		"git fetch -q --no-tags " + guestBundle + " " + fetch,
+		"git checkout -q -B " + q(b.Name) + " " + q(start),
+		"rm " + guestBundle,
+	}, "\n")
+	if err = remote(ctx, client, script, bundle, nil); err != nil {
+		err = fmt.Errorf("cloning the base in the guest: %w", err)
+		return
+	}
+	return
+}
+
+// Fetch brings HEAD of the guest's clone into the Quarantine repo as a
+// bundle, without running anything of the clone on the host (ADR-0002), and
+// validates it against start and protected. It returns the commit; without
+// new commits that is start itself, unvalidated. A dirty clone is an error.
+func (b GuestBranch) Fetch(ctx context.Context, exec ExecFunc, start string, protected []string, out io.Writer) (head string, err error) {
 	var status tailBuffer
-	if err = g.Exec(ctx, "git status --porcelain", &status); err != nil {
+	if err = exec(ctx, "git status --porcelain", &status); err != nil {
 		err = fmt.Errorf("checking the guest's working tree: %w", err)
 		return
 	}
@@ -247,21 +319,21 @@ func (r run) fetchResult(ctx context.Context, g guest) (head string, err error) 
 		return
 	}
 	var tip tailBuffer
-	if err = g.Exec(ctx, "git rev-parse HEAD", &tip); err != nil {
+	if err = exec(ctx, "git rev-parse HEAD", &tip); err != nil {
 		err = fmt.Errorf("reading HEAD in the guest: %w", err)
 		return
 	}
-	if strings.TrimSpace(tip.String()) == r.start() {
-		head = r.start()
+	if strings.TrimSpace(tip.String()) == start {
+		head = start
 		return
 	}
-	file, err := os.CreateTemp(r.stateDir, "result-*.bundle")
+	file, err := os.CreateTemp(b.TempDir, "result-*.bundle")
 	if err != nil {
 		err = fmt.Errorf("creating result bundle: %w", err)
 		return
 	}
 	defer func() { _ = os.Remove(file.Name()) }()
-	err = g.Exec(ctx, "git bundle create -q - "+agent.ShellQuote(r.start()+"..HEAD"), &limitWriter{w: file, left: maxResultSize})
+	err = exec(ctx, "git bundle create -q - "+agent.ShellQuote(start+"..HEAD"), &limitWriter{w: file, left: maxResultSize})
 	if closeErr := file.Close(); err == nil && closeErr != nil {
 		err = closeErr
 	}
@@ -269,15 +341,15 @@ func (r run) fetchResult(ctx context.Context, g guest) (head string, err error) 
 		err = fmt.Errorf("bundling the result in the guest: %w", err)
 		return
 	}
-	if head, err = r.quarantine.Import(ctx, file.Name(), r.branch); err != nil {
+	if head, err = b.Quarantine.Import(ctx, file.Name(), b.Name); err != nil {
 		return
 	}
-	commits, err := r.quarantine.Validate(ctx, r.start(), head, r.Base.Config.Protect.Paths)
+	commits, err := b.Quarantine.Validate(ctx, start, head, protected)
 	if err != nil {
 		err = fmt.Errorf("result %s rejected: %w", head, err)
 		return
 	}
-	r.say("result %s: %d commit(s) on %s", head[:12], commits, r.start()[:12])
+	say(out, "result %s: %d commit(s) on %s", head[:12], commits, start[:12])
 	return
 }
 
