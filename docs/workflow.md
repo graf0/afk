@@ -99,7 +99,7 @@ Na żądanie człowieka, wielokrotnie, bez `attach` (własne ssh; wyłączona VM
 
 ### Pamięć
 
-Przed utworzeniem każdej VM (Chat, Run, preflight, dziecko i review Spec) `afk` sprawdza `MemAvailable` hosta: mniej niż `memory` maszyny + 2 GiB → odmowa z czytelnym błędem; Factory kończy się wtedy jak przy porażce preflightu. Bez balloona i kolejkowania.
+Przed utworzeniem każdej VM (Chat, Run, preflight, dziecko i review Spec) `afk` sprawdza `MemAvailable` hosta: mniej niż `memory` maszyny + 2 GiB → odmowa z czytelnym błędem; Factory kończy się wtedy jak przy porażce preflightu (bez VM do inspekcji). Bez balloona i kolejkowania: to odczyt w chwili startu, więc dwie VM tworzone naraz mogą przejść oba. Budowa Base image (Packer, poza libvirt) nie jest sprawdzana.
 
 ## Pluginy
 

@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/digitalocean/go-libvirt"
@@ -31,11 +32,20 @@ const (
 	diskName   = "disk.qcow2"
 	diskSize   = "64G"
 
+	// defaultMeminfo is where the host's MemAvailable is read.
+	defaultMeminfo = "/proc/meminfo"
+
+	// memoryReserveMiB is left to the host on top of the VM's memory.
+	memoryReserveMiB = 2048
+
 	// defineAttempts bounds retries when a concurrent `up` takes the subnet.
 	defineAttempts = 5
 )
 
 var idPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,39}$`)
+
+// ErrNoMemory is Up's refusal for lack of host memory: no machine was created.
+var ErrNoMemory = errors.New("not enough host memory")
 
 // --- naming ---
 
@@ -97,8 +107,9 @@ type Machine struct {
 
 // Conn is a connection to libvirt (qemu:///system).
 type Conn struct {
-	Root string // machine directories, DefaultRoot unless set
-	lv   *libvirt.Libvirt
+	Root    string // machine directories, DefaultRoot unless set
+	lv      *libvirt.Libvirt
+	meminfo string // host memory reading, defaultMeminfo unless set (tests)
 }
 
 // Connect connects to the system libvirt daemon.
@@ -164,6 +175,10 @@ func (c *Conn) Up(ctx context.Context, spec Spec) (m Machine, err error) {
 	}
 	if spec.MemoryMiB <= 0 || spec.CPUs <= 0 {
 		err = fmt.Errorf("machine %s: memory and cpus must be positive, got %d MiB and %d", name, spec.MemoryMiB, spec.CPUs)
+		return
+	}
+	// Before anything is created: a refusal leaves nothing to clean up.
+	if err = c.checkMemory(name, spec.MemoryMiB); err != nil {
 		return
 	}
 	dir := c.dir(spec.Kind, spec.ID)
@@ -358,6 +373,37 @@ func (c *Conn) kill(name, dir string) (err error) {
 }
 
 // --- helpers ---
+
+// checkMemory fails with ErrNoMemory when the host's MemAvailable is below
+// memoryMiB plus memoryReserveMiB.
+func (c *Conn) checkMemory(name string, memoryMiB int) (err error) {
+	path := cmp.Or(c.meminfo, defaultMeminfo)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		err = fmt.Errorf("reading host memory: %w", err)
+		return
+	}
+	haveKiB := -1
+	for line := range strings.Lines(string(data)) {
+		// "MemAvailable:    6291456 kB"
+		if fields := strings.Fields(line); len(fields) >= 2 && fields[0] == "MemAvailable:" {
+			if kib, convErr := strconv.Atoi(fields[1]); convErr == nil && kib >= 0 {
+				haveKiB = kib
+			}
+			break
+		}
+	}
+	if haveKiB < 0 {
+		err = fmt.Errorf("reading host memory: no valid MemAvailable in %s", path)
+		return
+	}
+	haveMiB, needMiB := haveKiB/1024, memoryMiB+memoryReserveMiB
+	if haveMiB < needMiB {
+		err = fmt.Errorf("machine %s: %w: %d MiB available, need %d MiB (%d MiB for the VM + %d MiB reserve)",
+			name, ErrNoMemory, haveMiB, needMiB, memoryMiB, memoryReserveMiB)
+	}
+	return
+}
 
 // checkFree fails when a domain, network or nwfilter called name exists.
 func (c *Conn) checkFree(name string) (err error) {
