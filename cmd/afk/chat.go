@@ -15,7 +15,7 @@ import (
 	"github.com/graf0/afk/run"
 )
 
-const chatUsage = "usage: afk chat new <name> [--model <model>] [--effort <low|medium|high|xhigh|max>] | afk chat attach <name> | afk chat export <name> | afk chat list"
+const chatUsage = "usage: afk chat new <name> [--model <model>] [--effort <low|medium|high|xhigh|max>] | afk chat attach <name> | afk chat export <name> | afk chat rm [--force] <name> | afk chat list"
 
 // runChat executes `afk chat <subcommand>`.
 func runChat(ctx context.Context, args []string, dir string, stdout io.Writer) (err error) {
@@ -38,6 +38,8 @@ func runChat(ctx context.Context, args []string, dir string, stdout io.Writer) (
 			return
 		}
 		err = chatExport(ctx, args[1], dir, stdout)
+	case "rm":
+		err = chatRm(ctx, args[1:], dir, stdout)
 	case "list":
 		if len(args) != 1 {
 			err = errors.New(chatUsage)
@@ -118,6 +120,42 @@ func chatExport(ctx context.Context, name string, dir string, stdout io.Writer) 
 		return
 	}
 	err = chat.Export(ctx, chat.Options{Base: base, Name: name, Paths: paths, Forge: gitForge, Out: stdout})
+	return
+}
+
+// chatRm destroys the Chat and its VM.
+func chatRm(ctx context.Context, args []string, dir string, stdout io.Writer) (err error) {
+	name, force, err := parseChatRm(args)
+	if err != nil {
+		return
+	}
+	paths, err := image.DefaultPaths()
+	if err != nil {
+		return
+	}
+	base, err := run.ReadBase(ctx, dir)
+	if err != nil {
+		return
+	}
+	err = chat.Remove(ctx, chat.Options{Base: base, Name: name, Paths: paths, Out: stdout}, force)
+	return
+}
+
+// parseChatRm reads `[--force] <name>`, the flag before or after the name.
+func parseChatRm(args []string) (name string, force bool, err error) {
+	fs := flag.NewFlagSet("chat rm", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	fs.BoolVar(&force, "force", false, "")
+	if err = fs.Parse(args); err != nil || fs.NArg() == 0 {
+		err = errors.New(chatUsage)
+		return
+	}
+	name = fs.Arg(0)
+	if err = fs.Parse(fs.Args()[1:]); err != nil || fs.NArg() != 0 {
+		err = errors.New(chatUsage)
+		return
+	}
+	err = chat.ValidateName(name)
 	return
 }
 

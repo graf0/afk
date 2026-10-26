@@ -212,6 +212,92 @@ git rev-parse HEAD`
 	if !strings.Contains(output.String(), "starting VM") {
 		t.Errorf("Attach did not report starting the VM:\n%s", &output)
 	}
+
+	// --- rm ---
+	stateDir := filepath.Join(paths.StateDir, m.Project)
+	quarantine, err := run.OpenQuarantine(t.Context(), filepath.Join(stateDir, run.QuarantineName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	overlayDir := filepath.Join(machine.DefaultRoot, "chats", "itest")
+	remove := func(force bool) error {
+		output.Reset()
+		err := Remove(t.Context(), opts, force)
+		t.Logf("rm (force %v): %v\n%s", force, err, &output)
+		return err
+	}
+	attachWith := func(script string) {
+		t.Helper()
+		opts.Command = []string{"bash", "-c", "set -eu; " + script}
+		if err := Attach(t.Context(), opts); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The Chat in use refuses, force or not; the VM stays.
+	unlock, err = lockChat("itest", chatDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = remove(true); err == nil || !strings.Contains(err.Error(), "PID "+strconv.Itoa(os.Getpid())) {
+		t.Errorf("Remove of a Chat in use: err = %v", err)
+	}
+	unlock()
+	// The files the first session left are uncommitted work.
+	if err = remove(false); err == nil || !strings.Contains(err.Error(), "uncommitted path(s)") {
+		t.Errorf("Remove of a dirty Chat: err = %v", err)
+	}
+	// A commit that was not exported.
+	attachWith("git clean -fdxq && echo more > more.txt && git add more.txt && git commit -qm unexported")
+	if err = remove(false); err == nil || !strings.Contains(err.Error(), "1 commit(s) after the last export") {
+		t.Errorf("Remove with an unexported commit: err = %v", err)
+	}
+	if _, err = conn.Get("afk-chat-itest"); err != nil {
+		t.Errorf("a refused Remove must keep the VM: %v", err)
+	}
+	// Exported and clean: removed without force, everything but the branch.
+	if err = Export(t.Context(), opts); err != nil {
+		t.Fatal(err)
+	}
+	wantTip := tip()
+	if err = remove(false); err != nil {
+		t.Fatalf("Remove of a clean, exported Chat: %v", err)
+	}
+	gone := func(chat, branch, overlay string) {
+		t.Helper()
+		if _, getErr := conn.Get("afk-chat-" + chat); getErr == nil {
+			t.Errorf("VM of %s still exists", chat)
+		}
+		for _, dir := range []string{filepath.Join(stateDir, stateName, chat), overlay} {
+			if _, statErr := os.Stat(dir); statErr == nil {
+				t.Errorf("%s still exists", dir)
+			}
+		}
+		if base, baseErr := quarantine.Base(t.Context(), branch); baseErr == nil {
+			t.Errorf("Quarantine base of %s still exists: %s", branch, base)
+		}
+	}
+	gone("itest", "chat-itest", overlayDir)
+	if tip() != wantTip || wantTip == "" {
+		t.Errorf("remote chat-itest = %q, want it untouched at %q", tip(), wantTip)
+	}
+	if err = remove(false); err == nil || !strings.Contains(err.Error(), "does not exist") {
+		t.Errorf("second Remove: err = %v", err)
+	}
+
+	// A Chat with an unexported commit goes with --force, VM never started.
+	opts.Name = "itest2"
+	opts.Command = []string{"bash", "-c", "git commit -q --allow-empty -m unexported"}
+	t.Cleanup(func() { _ = conn.Kill("afk-chat-itest2") })
+	if err = New(t.Context(), opts); err != nil {
+		t.Fatal(err)
+	}
+	if err = remove(false); err == nil || !strings.Contains(err.Error(), "1 commit(s) after the base") {
+		t.Errorf("Remove of a Chat with an unexported commit: err = %v", err)
+	}
+	if err = remove(true); err != nil {
+		t.Fatal(err)
+	}
+	gone("itest2", "chat-itest2", filepath.Join(machine.DefaultRoot, "chats", "itest2"))
 }
 
 // remoteOnly is a Forge of which Chat uses only the remote.

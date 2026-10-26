@@ -36,31 +36,20 @@ func Export(ctx context.Context, opts Options) (err error) {
 	if err != nil {
 		return
 	}
-	signer, err := image.SSHSigner(opts.Paths)
-	if err != nil {
-		return
-	}
 	conn, err := machine.Connect()
 	if err != nil {
 		return
 	}
 	defer func() { _ = conn.Close() }()
-	m, err := startVM(conn, project, opts.Name, opts.Out)
+	exec, closeExec, err := guestExec(ctx, conn, opts, project)
 	if err != nil {
 		return
 	}
-	// No Egress proxy: git bundle over ssh is all the export needs.
-	sshCtx, cancel := context.WithTimeout(ctx, machine.SSHTimeout)
-	defer cancel()
-	client, err := m.SSH(sshCtx, signer)
-	if err != nil {
-		return
-	}
-	defer func() { _ = client.Close() }()
+	defer closeExec()
 	err = exporter{
 		Quarantine: quarantine, Remote: opts.Forge.Remote(), Name: opts.Name,
 		ChatDir: chatDir, TempDir: stateDir, Out: opts.Out,
-	}.export(ctx, run.NewExec(client, nil))
+	}.export(ctx, exec)
 	return
 }
 
@@ -136,5 +125,27 @@ func (e exporter) export(ctx context.Context, exec run.ExecFunc) (err error) {
 		return
 	}
 	say(e.Out, "exported %s at %s", branch, head[:12])
+	return
+}
+
+// guestExec runs commands in the clone of the Chat's VM, started when shut
+// off, over ssh without the Egress proxy: git over ssh is all Export and
+// Remove need. closeExec closes the connection.
+func guestExec(ctx context.Context, conn *machine.Conn, opts Options, project string) (exec run.ExecFunc, closeExec func(), err error) {
+	signer, err := image.SSHSigner(opts.Paths)
+	if err != nil {
+		return
+	}
+	m, err := startVM(conn, project, opts.Name, opts.Out)
+	if err != nil {
+		return
+	}
+	sshCtx, cancel := context.WithTimeout(ctx, machine.SSHTimeout)
+	defer cancel()
+	client, err := m.SSH(sshCtx, signer)
+	if err != nil {
+		return
+	}
+	exec, closeExec = run.NewExec(client, nil), func() { _ = client.Close() }
 	return
 }

@@ -95,7 +95,11 @@ Na żądanie człowieka, wielokrotnie, bez `attach` (własne ssh; wyłączona VM
 
 ### Zamknięcie
 
-`rm` niszczy VM i stan Chat. Odmawia bez `--force`, gdy w VM są niezacommitowane zmiany albo `HEAD` różni się od ostatniego eksportu (bez eksportu: od snapshotu). TUI przy `M-x` pyta: eksportuj / usuń / anuluj.
+`afk chat rm [--force] <nazwa>` niszczy VM (domena, sieć, filtr, overlay), refy Quarantine `chat-<nazwa>` i stan Chat (`snapshot.json`, blokada). Logi i branch `chat-<nazwa>` na remote zostają. Bierze blokadę Chat: trzymana przez `attach` → odmowa z PID właściciela, także z `--force`.
+
+Bez `--force` odmawia, gdy w VM są niezacommitowane zmiany (także pliki nieśledzone) albo `HEAD` ma commity nieosiągalne z ostatniego eksportu (`snapshot.json`), a bez eksportu z bazy snapshotu (ref bazy w Quarantine repo); komunikat podaje liczbę ścieżek z niezacommitowanymi zmianami i liczbę oraz krótkie sha (do 5) takich commitów. `HEAD` poza historią eksportu (przepisana historia) też jest odmową; `HEAD` cofnięty za eksport nie (wszystko w nim wyeksportowano). Pliki ignorowane przez git i historia rozmowy `claude` w VM giną bez ostrzeżenia. Wyłączona VM jest startowana do sprawdzenia (ssh jak w `export`, bez Egress proxy) i po odmowie zostaje uruchomiona. `--force` nie sprawdza niczego i nie startuje VM.
+
+Kolejność: VM, refy Quarantine, na końcu katalog stanu — przerwane `rm` zostawia Chat, który `rm` nadal usunie. Resztki: katalog stanu bez VM (nic do utracenia) jest usuwany razem z refami bez `--force`; VM bez katalogu stanu (nie wiadomo, co wyeksportowano) wymaga `--force` (usuwa VM i refy); nieznana nazwa → błąd. Katalog stanu bez czytelnego `snapshot.json` albo bez refu bazy, przy istniejącej VM, też wymaga `--force`. TUI przy `M-x` pyta: eksportuj / usuń / anuluj.
 
 ### Pamięć
 
