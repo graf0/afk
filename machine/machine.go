@@ -283,6 +283,65 @@ func (c *Conn) Up(ctx context.Context, spec Spec) (m Machine, err error) {
 	return
 }
 
+// Start starts the machine called name when it is shut off (after a host
+// restart, say), together with its network, which is persistent but not
+// autostarted, after the same host memory check as Up. A paused machine is
+// resumed, a running one returned as is. It does not wait for the guest to
+// boot; SSH does. The nwfilter is persistent and needs nothing.
+func (c *Conn) Start(name string) (m Machine, err error) {
+	if m, err = c.Get(name); err != nil || m.Running {
+		return
+	}
+	dom, err := c.lv.DomainLookupByName(name)
+	if err != nil {
+		err = fmt.Errorf("looking up machine %s: %w", name, err)
+		return
+	}
+	state, maxMemKiB, _, _, _, err := c.lv.DomainGetInfo(dom)
+	if err != nil {
+		err = fmt.Errorf("reading state of machine %s: %w", name, err)
+		return
+	}
+	switch libvirt.DomainState(state) {
+	case libvirt.DomainPaused:
+		if err = c.lv.DomainResume(dom); err != nil {
+			err = fmt.Errorf("resuming machine %s: %w", name, err)
+			return
+		}
+		m.Running = true
+		return
+	case libvirt.DomainShutoff, libvirt.DomainCrashed:
+	default:
+		err = fmt.Errorf("machine %s is in state %d: neither shut off nor paused", name, state)
+		return
+	}
+	if err = c.checkMemory(name, int(maxMemKiB/1024)); err != nil {
+		return
+	}
+	network, err := c.lv.NetworkLookupByName(name)
+	if err != nil {
+		err = fmt.Errorf("looking up network %s: %w", name, err)
+		return
+	}
+	active, err := c.lv.NetworkIsActive(network)
+	if err != nil {
+		err = fmt.Errorf("reading state of network %s: %w", name, err)
+		return
+	}
+	if active == 0 {
+		if err = c.lv.NetworkCreate(network); err != nil {
+			err = fmt.Errorf("starting network %s: %w", name, err)
+			return
+		}
+	}
+	if err = c.lv.DomainCreate(dom); err != nil {
+		err = fmt.Errorf("starting domain %s: %w", name, err)
+		return
+	}
+	m.Running = true
+	return
+}
+
 // Get returns the machine called name, from its domain metadata.
 func (c *Conn) Get(name string) (m Machine, err error) {
 	if _, _, err = parseName(name); err != nil {

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -45,6 +46,21 @@ git rev-parse -q --verify origin/main >/dev/null || fail "no origin/main"
 [ "$TOOL_VAR" = tool-value ] || fail "env of the Tool missing"
 [ "$CLAUDE_CODE_OAUTH_TOKEN" = fake-42 ] || fail "token not in the environment"
 ! grep -rqsF "$CLAUDE_CODE_OAUTH_TOKEN" /work /home/agent /tmp || fail "token on disk"
+public=$(curl -s -m 20 -o /dev/null -w '%{http_code}' https://example.com/ || true)
+private=$(curl -s -m 20 -o /dev/null -w '%{http_connect}' https://10.99.0.1/ || true)
+[ "$public" != 000 ] || fail "public host unreachable"
+[ "$private" = 403 ] || fail "private address not denied: $private"
+echo first > session-marker
+sync # the VM is destroyed (power off) later
+`
+
+// fakeContinue runs in the guest on Attach: the same clone, the same env.
+const fakeContinue = `set -eu
+fail() { echo "FAKE: $*" >&2; exit 1; }
+[ "$PWD" = /work/repo ] || fail "not in the clone: $PWD"
+[ "$(cat session-marker)" = first ] || fail "not the clone of the first session"
+[ "$TOOL_VAR" = tool-value ] || fail "env of the Tool missing"
+[ "$CLAUDE_CODE_OAUTH_TOKEN" = fake-42 ] || fail "token not in the environment"
 public=$(curl -s -m 20 -o /dev/null -w '%{http_code}' https://example.com/ || true)
 private=$(curl -s -m 20 -o /dev/null -w '%{http_connect}' https://10.99.0.1/ || true)
 [ "$public" != 000 ] || fail "public host unreachable"
@@ -136,6 +152,38 @@ git rev-parse HEAD`
 	output.Reset()
 	if err = New(t.Context(), opts); err == nil || !strings.Contains(err.Error(), "already exists") {
 		t.Errorf("second New: err = %v, want a refusal", err)
+	}
+
+	// A second process holding the Chat's lock: Attach is refused with its PID.
+	chatDir := filepath.Join(paths.StateDir, m.Project, stateName, "itest")
+	unlock, err := lockChat("itest", chatDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = Attach(t.Context(), opts); err == nil || !strings.Contains(err.Error(), "PID "+strconv.Itoa(os.Getpid())) {
+		t.Errorf("Attach of a Chat in use: err = %v, want a refusal naming the PID", err)
+	}
+	unlock()
+
+	// The host restarts: the VM is shut off. Attach starts it and returns to the same clone.
+	if out, virshErr := exec.Command("virsh", "-c", "qemu:///system", "destroy", "afk-chat-itest").CombinedOutput(); virshErr != nil {
+		t.Fatalf("virsh destroy: %v\n%s", virshErr, out)
+	}
+	if m, err = conn.Get("afk-chat-itest"); err != nil || m.Running {
+		t.Fatalf("after destroy: %+v, %v", m, err)
+	}
+	output.Reset()
+	opts.Command = []string{"bash", "-c", fakeContinue}
+	err = Attach(t.Context(), opts)
+	t.Logf("attach output:\n%s", &output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m, err = conn.Get("afk-chat-itest"); err != nil || !m.Running {
+		t.Errorf("the VM must run after Attach: %+v, %v", m, err)
+	}
+	if !strings.Contains(output.String(), "starting VM") {
+		t.Errorf("Attach did not report starting the VM:\n%s", &output)
 	}
 }
 

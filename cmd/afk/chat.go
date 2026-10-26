@@ -15,7 +15,7 @@ import (
 	"github.com/graf0/afk/run"
 )
 
-const chatUsage = "usage: afk chat new <name> [--model <model>] [--effort <low|medium|high|xhigh|max>] | afk chat list"
+const chatUsage = "usage: afk chat new <name> [--model <model>] [--effort <low|medium|high|xhigh|max>] | afk chat attach <name> | afk chat list"
 
 // runChat executes `afk chat <subcommand>`.
 func runChat(ctx context.Context, args []string, dir string, stdout io.Writer) (err error) {
@@ -26,6 +26,12 @@ func runChat(ctx context.Context, args []string, dir string, stdout io.Writer) (
 	switch args[0] {
 	case "new":
 		err = chatNew(ctx, args[1:], dir, stdout)
+	case "attach":
+		if len(args) != 2 {
+			err = errors.New(chatUsage)
+			return
+		}
+		err = chatAttach(ctx, args[1], dir, stdout)
 	case "list":
 		if len(args) != 1 {
 			err = errors.New(chatUsage)
@@ -64,6 +70,27 @@ func chatNew(ctx context.Context, args []string, dir string, stdout io.Writer) (
 		Base: base, Name: name, Model: model, Effort: effort,
 		ClaudeToken: claudeToken, Paths: paths, Forge: gitForge, Out: stdout,
 	})
+	return
+}
+
+// chatAttach returns to the existing Chat name.
+func chatAttach(ctx context.Context, name string, dir string, stdout io.Writer) (err error) {
+	if err = chat.ValidateName(name); err != nil {
+		return
+	}
+	paths, err := image.DefaultPaths()
+	if err != nil {
+		return
+	}
+	claudeToken, err := agent.OAuthToken(paths.StateDir)
+	if err != nil {
+		return
+	}
+	base, err := run.ReadBase(ctx, dir)
+	if err != nil {
+		return
+	}
+	err = chat.Attach(ctx, chat.Options{Base: base, Name: name, ClaudeToken: claudeToken, Paths: paths, Out: stdout})
 	return
 }
 

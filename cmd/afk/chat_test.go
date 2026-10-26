@@ -39,7 +39,7 @@ func TestParseChatNew(t *testing.T) {
 }
 
 func TestRunChatUsage(t *testing.T) {
-	for _, args := range [][]string{nil, {"attach", "x"}, {"list", "x"}, {"new"}} {
+	for _, args := range [][]string{nil, {"attach"}, {"attach", "x", "y"}, {"list", "x"}, {"new"}} {
 		err := runChat(t.Context(), args, ".", &bytes.Buffer{})
 		if err == nil || !strings.Contains(err.Error(), "afk chat new") {
 			t.Errorf("runChat(%q): err = %v, want usage", args, err)

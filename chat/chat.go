@@ -5,9 +5,11 @@ package chat
 import (
 	"cmp"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -135,6 +137,11 @@ func New(ctx context.Context, opts Options) (err error) {
 		return
 	}
 	defer unlock()
+	snap := snapshot{BaseBranch: opts.Base.Branch, Env: cfg.ToolEnv()}
+	if err = snap.write(chatDir); err != nil {
+		_ = os.RemoveAll(chatDir)
+		return
+	}
 	var vm string // the machine, once it is up
 	entered := false
 	defer func() {
@@ -153,19 +160,11 @@ func New(ctx context.Context, opts Options) (err error) {
 		_ = os.RemoveAll(chatDir)
 	}()
 
-	logs := filepath.Join(stateDir, "logs")
-	if err = os.MkdirAll(logs, 0o700); err != nil {
-		err = fmt.Errorf("creating %s: %w", logs, err)
+	logs, logBase, closeLogs, denials, err := openLogs(stateDir, branch, opts.Out)
+	if err != nil {
 		return
 	}
-	// One set of logs per process, like a Run's: <logs>/chat-<name>-<time>-{setup,egress}.txt.
-	logBase := filepath.Join(logs, fmt.Sprintf("%s-%s", branch, time.Now().UTC().Format("20060102T150405Z")))
-	denials := run.NewDenialLog(logBase + "-egress.txt")
-	defer func() {
-		if denied, _ := denials.Close(); denied > 0 {
-			say(opts.Out, "egress: %d denied, see %s", denied, denials.Path())
-		}
-	}()
+	defer closeLogs()
 
 	if err = quarantine.FetchBase(ctx, opts.Base.Repo, opts.Base.Commit, branch); err != nil {
 		return
@@ -183,18 +182,11 @@ func New(ctx context.Context, opts Options) (err error) {
 	vm = m.Name
 	say(opts.Out, "Chat %s: VM %s started, base origin/%s %s", opts.Name, m.Name, opts.Base.Branch, opts.Base.Commit[:12])
 
-	sshCtx, cancel := context.WithTimeout(ctx, machine.SSHTimeout)
-	defer cancel()
-	client, err := m.SSH(sshCtx, signer)
+	client, closeLink, err := link(ctx, m, signer, denials)
 	if err != nil {
 		return
 	}
-	defer func() { _ = client.Close() }()
-	stop, err := machine.ServeEgress(ctx, client, egress.AllowAll(), denials)
-	if err != nil {
-		return
-	}
-	defer stop()
+	defer closeLink()
 
 	guest := run.GuestBranch{Quarantine: quarantine, Name: branch, TempDir: stateDir}
 	if err = guest.Clone(ctx, client, opts.Base.Branch, false); err != nil {
@@ -214,6 +206,162 @@ func New(ctx context.Context, opts Options) (err error) {
 	})
 	if err != nil {
 		err = fmt.Errorf("chat %s (VM %s): %w", opts.Name, vm, err)
+	}
+	return
+}
+
+// Attach returns to the existing Chat opts.Name: starts its VM when shut off,
+// then Claude Code with --continue on the terminal until it ends. The VM
+// stays. Model and effort are the Chat's own, kept in its VM's metadata; the
+// Tools' env comes from opts.Base.Config. Like New, it holds the lock of the
+// Chat for its whole life. Only opts.Base, Name, ClaudeToken, Paths, Out and
+// Command are used.
+func Attach(ctx context.Context, opts Options) (err error) {
+	if err = ValidateName(opts.Name); err != nil {
+		return
+	}
+	if opts.ClaudeToken == "" {
+		err = errors.New("no Claude token")
+		return
+	}
+	project, err := image.ProjectName(opts.Base.Config.Forge.Repo)
+	if err != nil {
+		return
+	}
+	stateDir := filepath.Join(opts.Paths.StateDir, project)
+	chatDir := filepath.Join(stateDir, stateName, opts.Name)
+	if _, err = os.Stat(chatDir); errors.Is(err, fs.ErrNotExist) {
+		err = fmt.Errorf("chat %s does not exist (see `afk chat list`)", opts.Name)
+		return
+	} else if err != nil {
+		err = fmt.Errorf("reading the state of Chat %s: %w", opts.Name, err)
+		return
+	}
+	unlock, err := lockChat(opts.Name, chatDir)
+	if err != nil {
+		return
+	}
+	defer unlock()
+	snap, err := readSnapshot(chatDir)
+	if err != nil {
+		return
+	}
+	signer, err := image.SSHSigner(opts.Paths)
+	if err != nil {
+		return
+	}
+	conn, err := machine.Connect()
+	if err != nil {
+		return
+	}
+	defer func() { _ = conn.Close() }()
+	machines, err := conn.List(project)
+	if err != nil {
+		return
+	}
+	i := slices.IndexFunc(machines, func(m machine.Machine) bool { return m.Kind == machine.KindChat && m.ID == opts.Name })
+	if i < 0 {
+		err = fmt.Errorf("chat %s does not exist (see `afk chat list`): no VM", opts.Name)
+		return
+	}
+	m := machines[i]
+	if !m.Running {
+		say(opts.Out, "Chat %s: starting VM %s", opts.Name, m.Name)
+		if m, err = conn.Start(m.Name); err != nil {
+			return
+		}
+	}
+	logs, _, closeLogs, denials, err := openLogs(stateDir, BranchPrefix+opts.Name, opts.Out)
+	if err != nil {
+		return
+	}
+	defer closeLogs()
+	client, closeLink, err := link(ctx, m, signer, denials)
+	if err != nil {
+		return
+	}
+	defer closeLink()
+	say(opts.Out, "entering Chat %s (logs in %s)", opts.Name, logs)
+	err = enter(ctx, client, session{
+		Token: opts.ClaudeToken, Env: snap.Env, Model: m.Model, Effort: m.Effort, Continue: true,
+		Prompt: systemPrompt(opts.Name, snap.BaseBranch), Command: opts.Command,
+	})
+	if err != nil {
+		err = fmt.Errorf("chat %s (VM %s): %w", opts.Name, m.Name, err)
+	}
+	return
+}
+
+// --- shared by New and Attach ---
+
+// snapshotName is the file of a Chat's snapshot in its state directory.
+const snapshotName = "snapshot.json"
+
+// snapshot is what a Chat keeps of its base from New: the code in the VM is
+// that base, so the Tools' env and the prompt stay with it, whatever the base
+// branch says later.
+type snapshot struct {
+	BaseBranch string            `json:"base_branch"`
+	Env        map[string]string `json:"env"` // [tool.<name>].env
+}
+
+func (s snapshot) write(chatDir string) (err error) {
+	data, err := json.Marshal(s)
+	if err == nil {
+		err = os.WriteFile(filepath.Join(chatDir, snapshotName), data, 0o600)
+	}
+	if err != nil {
+		err = fmt.Errorf("writing the snapshot of the Chat: %w", err)
+	}
+	return
+}
+
+func readSnapshot(chatDir string) (s snapshot, err error) {
+	data, err := os.ReadFile(filepath.Join(chatDir, snapshotName))
+	if err == nil {
+		err = json.Unmarshal(data, &s)
+	}
+	if err != nil {
+		err = fmt.Errorf("reading the snapshot of the Chat: %w", err)
+	}
+	return
+}
+
+// openLogs creates the logs directory of the Project and one set of logs for
+// this process, like a Run's: <logs>/<branch>-<time>-{setup,egress}.txt.
+// closeLogs closes the denials log and reports its denials to out.
+func openLogs(stateDir, branch string, out io.Writer) (logs, logBase string, closeLogs func(), denials *run.DenialLog, err error) {
+	logs = filepath.Join(stateDir, "logs")
+	if err = os.MkdirAll(logs, 0o700); err != nil {
+		err = fmt.Errorf("creating %s: %w", logs, err)
+		return
+	}
+	logBase = filepath.Join(logs, fmt.Sprintf("%s-%s", branch, time.Now().UTC().Format("20060102T150405Z")))
+	denials = run.NewDenialLog(logBase + "-egress.txt")
+	closeLogs = func() {
+		if denied, _ := denials.Close(); denied > 0 {
+			say(out, "egress: %d denied, see %s", denied, denials.Path())
+		}
+	}
+	return
+}
+
+// link connects to m over ssh (waiting for the guest's sshd) and serves the
+// Egress proxy, AllowAll, over the connection. closeLink undoes both.
+func link(ctx context.Context, m machine.Machine, signer ssh.Signer, denials io.Writer) (client *ssh.Client, closeLink func(), err error) {
+	sshCtx, cancel := context.WithTimeout(ctx, machine.SSHTimeout)
+	defer cancel()
+	if client, err = m.SSH(sshCtx, signer); err != nil {
+		return
+	}
+	stop, err := machine.ServeEgress(ctx, client, egress.AllowAll(), denials)
+	if err != nil {
+		_ = client.Close()
+		return
+	}
+	closeLink = func() {
+		stop()
+		_ = client.Close()
 	}
 	return
 }
@@ -253,12 +401,13 @@ func checkNew(ctx context.Context, name string, machines []machine.Machine, chat
 
 // session is one interactive Claude Code session of a Chat.
 type session struct {
-	Token   string
-	Env     map[string]string // [tool.<name>].env
-	Model   string            // empty: Claude Code's default
-	Effort  string            // empty: Claude Code's default
-	Prompt  string            // --append-system-prompt
-	Command []string          // replaces `claude …` (tests)
+	Token    string
+	Env      map[string]string // [tool.<name>].env
+	Model    string            // empty: Claude Code's default
+	Effort   string            // empty: Claude Code's default
+	Continue bool              // --continue: resume the last conversation of the clone
+	Prompt   string            // --append-system-prompt
+	Command  []string          // replaces `claude …` (tests)
 }
 
 // enter runs s on the terminal over client until it ends. The token reaches
@@ -295,12 +444,19 @@ func (s session) command() (command string) {
 	for i, arg := range args {
 		quoted[i] = agent.ShellQuote(arg)
 	}
+	resume := ""
+	if s.Continue && s.Command == nil {
+		// --continue fails without a conversation (the first session ended before
+		// one): only when Claude Code keeps one for the clone (cwd /work/repo).
+		resume = " && { resume=; ! ls \"$HOME\"/.claude/projects/-work-repo/*.jsonl >/dev/null 2>&1 || resume=--continue; }"
+		quoted = slices.Insert(quoted, 2, "$resume")
+	}
 	proxy := agent.ShellQuote("http://" + machine.ProxyAddr)
 	return agent.ExportEnv(s.Env) +
 		"export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 http_proxy=" + proxy + " https_proxy=" + proxy +
 		" HTTP_PROXY=" + proxy + " HTTPS_PROXY=" + proxy +
 		" && IFS= read -r " + agent.TokenEnv + " && { stty echo 2>/dev/null; export " + agent.TokenEnv + "; }" +
-		" && cd " + agent.ShellQuote(run.GuestRepo) +
+		" && cd " + agent.ShellQuote(run.GuestRepo) + resume +
 		" && exec " + strings.Join(quoted, " ")
 }
 

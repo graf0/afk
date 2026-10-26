@@ -4,10 +4,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/graf0/afk/config"
 	"github.com/graf0/afk/forge"
+	"github.com/graf0/afk/image"
 	"github.com/graf0/afk/machine"
 	"github.com/graf0/afk/run"
 )
@@ -55,9 +58,38 @@ func TestSessionCommand(t *testing.T) {
 	if !strings.HasSuffix(got, "&& exec 'claude' '--version'") || strings.Contains(got, "--effort") {
 		t.Errorf("command = %s", got)
 	}
+	got = session{Continue: true, Model: "opus"}.command()
+	if !strings.Contains(got, "'--dangerously-skip-permissions' $resume '--model' 'opus'") ||
+		!strings.Contains(got, "/.claude/projects/-work-repo/*.jsonl") || !strings.Contains(got, "resume=--continue") {
+		t.Errorf("no --continue only with a conversation: %s", got)
+	}
 	got = session{Prompt: "p"}.command()
 	if strings.Contains(got, "--model") || strings.Contains(got, "--effort") {
 		t.Errorf("default command passes model or effort: %s", got)
+	}
+}
+
+func TestAttachRefusals(t *testing.T) {
+	cfg, err := config.ParseNamed("test", []byte("[forge]\nkind = \"github\"\nrepo = \"o/n\"\n[gate]\ncmd = \"true\"\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := Options{Base: run.Base{Config: cfg}, Name: "x", ClaudeToken: "t", Paths: image.Paths{StateDir: t.TempDir()}}
+	if err = Attach(t.Context(), opts); err == nil || !strings.Contains(err.Error(), "does not exist") {
+		t.Errorf("unknown Chat: err = %v", err)
+	}
+	// A Chat in use is refused with the PID of the holder, before libvirt.
+	chatDir := filepath.Join(opts.Paths.StateDir, "o-n", stateName, "x")
+	if err = os.MkdirAll(chatDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	unlock, err := lockChat("x", chatDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+	if err = Attach(t.Context(), opts); err == nil || !strings.Contains(err.Error(), "PID "+strconv.Itoa(os.Getpid())) {
+		t.Errorf("Chat in use: err = %v", err)
 	}
 }
 
