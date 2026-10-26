@@ -1,15 +1,11 @@
 package forge
 
 import (
-	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"os/exec"
-	"path/filepath"
-	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -19,196 +15,287 @@ import (
 	"github.com/graf0/afk/config"
 )
 
-// fakeGitHub serves issue 7 of o/r with 150 comments (two pages) and a few
-// refused issues.
-func fakeGitHub(t *testing.T) (g *GitHub) {
+// fakeGitHub is a stateful fake GitHub API of o/r, token "secret": the
+// GitHub half of the contract.
+type fakeGitHub struct {
+	mu     sync.Mutex
+	issues map[int]*seedIssue
+	labels []string
+	pulls  []*seedPull
+}
+
+// newFakeGitHub is the newFake of GitHub.
+func newFakeGitHub(t *testing.T, issues []seedIssue, labels []string) (f Forge, state func() fakeState) {
 	t.Helper()
-	mux := http.NewServeMux()
-	issue := func(w http.ResponseWriter, body string) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprint(w, body)
+	fake := &fakeGitHub{issues: map[int]*seedIssue{}, labels: labels}
+	for _, issue := range issues {
+		fake.issues[issue.Number] = &issue
 	}
-	mux.HandleFunc("GET /repos/o/r/issues/{n}", func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer secret" || r.Header.Get("X-GitHub-Api-Version") == "" {
-			w.WriteHeader(http.StatusUnauthorized)
-			_, _ = fmt.Fprint(w, `{"message":"Bad credentials"}`)
-			return
-		}
-		switch r.PathValue("n") {
-		case "7":
-			issue(w, `{"number":7,"title":"Do it","body":"Body text","state":"open","labels":[{"name":"bug"},{"name":"ready-for-agent"}],"sub_issues_summary":{"total":0}}`)
-		case "12":
-			issue(w, `{"number":12,"title":"Not ready","state":"open","labels":[{"name":"needs-triage"}]}`)
-		case "8":
-			issue(w, `{"number":8,"title":"PR","state":"open","pull_request":{"url":"x"}}`)
-		case "9":
-			issue(w, `{"number":9,"title":"Closed","state":"closed"}`)
-		case "10":
-			issue(w, `{"number":10,"title":"Spec","state":"open","sub_issues_summary":{"total":2}}`)
-		case "14":
-			issue(w, `{"number":14,"title":"Child","state":"open","parent_issue_url":"https://api.github.com/repos/o/r/issues/10"}`)
-		case "20":
-			issue(w, `{"number":20,"title":"Done blocker","state":"closed"}`)
-		case "21":
-			issue(w, `{"number":21,"title":"Open blocker","state":"open"}`)
-		default:
-			w.WriteHeader(http.StatusNotFound)
-			_, _ = fmt.Fprint(w, `{"message":"Not Found"}`)
-		}
-	})
-	mux.HandleFunc("GET /repos/o/r/issues", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("labels") != "ready-for-agent" || r.URL.Query().Get("state") != "open" {
-			w.WriteHeader(http.StatusBadRequest)
-			return
-		}
-		// Descending, with a pull request: ListLabeled sorts and filters.
-		issue(w, `[{"number":14,"state":"open"},{"number":8,"state":"open","pull_request":{"url":"x"}},{"number":7,"state":"open"}]`)
-	})
-	mux.HandleFunc("GET /repos/o/r/issues/10/sub_issues", func(w http.ResponseWriter, r *http.Request) {
-		issue(w, `[{"number":13,"state":"closed","labels":[]},{"number":11,"state":"open","labels":[{"name":"ready-for-agent"}]}]`)
-	})
-	mux.HandleFunc("GET /repos/o/r/issues/10/comments", func(w http.ResponseWriter, r *http.Request) { issue(w, `[]`) })
-	mux.HandleFunc("GET /repos/o/r/issues/{n}/dependencies/blocked_by", func(w http.ResponseWriter, r *http.Request) {
-		switch r.PathValue("n") {
-		case "11":
-			issue(w, `[{"number":20,"state":"closed"}]`)
-		case "12":
-			issue(w, `[{"number":20,"state":"closed"},{"number":21,"state":"open"}]`)
-		default:
-			issue(w, `[]`)
-		}
-	})
-	mux.HandleFunc("GET /repos/o/r/issues/7/comments", func(w http.ResponseWriter, r *http.Request) {
-		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
-		perPage, _ := strconv.Atoi(r.URL.Query().Get("per_page"))
-		first, last := (page-1)*perPage, min(page*perPage, 150)
-		var items []string
-		for i := first; i < last; i++ {
-			items = append(items, fmt.Sprintf(`{"body":"comment %d"}`, i))
-		}
-		_, _ = fmt.Fprint(w, "["+strings.Join(items, ",")+"]")
-	})
-	server := httptest.NewServer(mux)
+	server := httptest.NewServer(fake.mux())
 	t.Cleanup(server.Close)
 	g, err := NewGitHub(config.Forge{Kind: "github", Repo: "o/r"}, "secret")
 	if err != nil {
 		t.Fatal(err)
 	}
 	g.APIURL = server.URL
+	return g, fake.snapshot
+}
+
+func (fake *fakeGitHub) snapshot() (state fakeState) {
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	state.Issues = map[int]seedIssue{}
+	for n, issue := range fake.issues {
+		state.Issues[n] = *issue
+	}
+	for _, pull := range fake.pulls {
+		state.Pulls = append(state.Pulls, *pull)
+	}
 	return
 }
 
-func TestGitHubTicket(t *testing.T) {
-	g := fakeGitHub(t)
-	ticket, err := g.Ticket(t.Context(), 7)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if ticket.Number != 7 || ticket.Title != "Do it" || ticket.Body != "Body text" {
-		t.Errorf("ticket = %+v", ticket)
-	}
-	if len(ticket.Comments) != 150 || ticket.Comments[0] != "comment 0" || ticket.Comments[149] != "comment 149" {
-		t.Errorf("got %d comments, want 150 in order", len(ticket.Comments))
-	}
-}
-
-func TestGitHubReadyTicket(t *testing.T) {
-	g := fakeGitHub(t)
-	ticket, err := g.ReadyTicket(t.Context(), 7, "ready-for-agent")
-	if err != nil || ticket.Number != 7 || !slices.Equal(ticket.Labels, []string{"bug", "ready-for-agent"}) {
-		t.Errorf("ReadyTicket(7) = %+v, %v", ticket, err)
-	}
-	if _, err = g.ReadyTicket(t.Context(), 12, "ready-for-agent"); err == nil || !strings.Contains(err.Error(), `"ready-for-agent"`) {
-		t.Errorf("ReadyTicket(12): err = %v, want refusal naming the label", err)
-	}
-	if _, err = g.ReadyTicket(t.Context(), 7, ""); err == nil {
-		t.Error("empty label: want error")
-	}
-	if _, err = g.ReadyTicket(t.Context(), 7, "go"); err == nil || !strings.Contains(err.Error(), `"go"`) {
-		t.Errorf("custom label: err = %v", err)
-	}
-}
-
-func TestGitHubPeek(t *testing.T) {
-	g := fakeGitHub(t)
-	ticket, open, err := g.Peek(t.Context(), 14)
-	if err != nil || !open || ticket.Parent != 10 || ticket.Comments != nil {
-		t.Errorf("Peek(14) = %+v, %v, %v; want an open child of #10 without comments", ticket, open, err)
-	}
-	ticket, open, err = g.Peek(t.Context(), 9)
-	if err != nil || open || ticket.Number != 9 {
-		t.Errorf("Peek(9) = %+v, %v, %v; want closed #9", ticket, open, err)
-	}
-	if ticket, _, err = g.Peek(t.Context(), 7); err != nil || ticket.Parent != 0 || !slices.Contains(ticket.Labels, "ready-for-agent") {
-		t.Errorf("Peek(7) = %+v, %v", ticket, err)
-	}
-	if _, _, err = g.Peek(t.Context(), 8); err == nil || !strings.Contains(err.Error(), "pull request") {
-		t.Errorf("Peek(8): err = %v", err)
-	}
-}
-
-func TestGitHubListLabeled(t *testing.T) {
-	g := fakeGitHub(t)
-	numbers, err := g.ListLabeled(t.Context(), "ready-for-agent")
-	if err != nil || !slices.Equal(numbers, []int{7, 14}) {
-		t.Errorf("ListLabeled = %v, %v; want [7 14]", numbers, err)
-	}
-}
-
-func TestGitHubTicketRefused(t *testing.T) {
-	g := fakeGitHub(t)
-	for n, want := range map[int]string{8: "pull request", 9: "closed", 11: "Not Found"} {
-		if _, err := g.Ticket(t.Context(), n); err == nil || !strings.Contains(err.Error(), want) {
-			t.Errorf("Ticket(%d): err = %v, want %q", n, err, want)
+func (fake *fakeGitHub) children(n int) (children []*seedIssue) {
+	for _, issue := range fake.issues {
+		if issue.Parent == n {
+			children = append(children, issue)
 		}
 	}
-	g.Token = "wrong"
-	if _, err := g.Ticket(t.Context(), 7); err == nil || !strings.Contains(err.Error(), "Bad credentials") {
-		t.Errorf("wrong token: err = %v", err)
+	slices.SortFunc(children, func(a, b *seedIssue) int { return a.Number - b.Number })
+	return
+}
+
+// issueJSON is the issue resource as GitHub serves it.
+func (fake *fakeGitHub) issueJSON(issue *seedIssue) (resource map[string]any) {
+	labels := []map[string]string{}
+	for _, label := range issue.Labels {
+		labels = append(labels, map[string]string{"name": label})
+	}
+	resource = map[string]any{
+		"number": issue.Number, "title": issue.Title, "body": issue.Body,
+		"state": "closed", "labels": labels,
+		"sub_issues_summary": map[string]int{"total": len(fake.children(issue.Number))},
+	}
+	if issue.Open {
+		resource["state"] = "open"
+	}
+	if issue.IsPull {
+		resource["pull_request"] = map[string]string{"url": "x"}
+	}
+	if issue.Parent != 0 {
+		resource["parent_issue_url"] = fmt.Sprintf("https://api.github.com/repos/o/r/issues/%d", issue.Parent)
+	}
+	return
+}
+
+func pullJSON(pull *seedPull) (resource map[string]any) {
+	return map[string]any{
+		"number": pull.Number, "html_url": fmt.Sprintf("https://github.com/o/r/pull/%d", pull.Number),
+		"state": "open", "draft": pull.Draft, "node_id": fmt.Sprintf("PR_%d", pull.Number),
 	}
 }
 
-func TestGitHubSpec(t *testing.T) {
-	g := fakeGitHub(t)
-	spec, err := g.Ticket(t.Context(), 10)
-	if err != nil || spec.SubIssues != 2 {
-		t.Errorf("Ticket(10) = %+v, %v; want a Spec of 2 sub-issues", spec, err)
+// page returns the page of items asked by the query, as a JSON array.
+func page[T any](r *http.Request, items []T) (out []T) {
+	n, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	size, _ := strconv.Atoi(r.URL.Query().Get("per_page"))
+	if n < 1 || size < 1 {
+		return items
 	}
-	subs, err := g.SubIssues(t.Context(), 10)
-	want := []SubIssue{{Number: 13}, {Number: 11, Open: true, Labels: []string{"ready-for-agent"}}}
-	if err != nil || !reflect.DeepEqual(subs, want) {
-		t.Errorf("SubIssues(10) = %+v, %v; want %+v", subs, err, want)
+	first := min((n-1)*size, len(items))
+	return items[first:min(first+size, len(items))]
+}
+
+// field is in[key] as T, the zero T when it is missing or of another type.
+func field[T any](in map[string]any, key string) (value T) {
+	value, _ = in[key].(T)
+	return
+}
+
+func (fake *fakeGitHub) mux() (handler http.Handler) {
+	mux := http.NewServeMux()
+	reply := func(w http.ResponseWriter, status int, v any) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_ = json.NewEncoder(w).Encode(v)
 	}
-	for name, tc := range map[string]struct {
-		ticket  Ticket
-		blocked bool
-	}{
-		"none":                  {Ticket{Number: 7}, false},
-		"native, closed":        {Ticket{Number: 11}, false},
-		"native, open":          {Ticket{Number: 12}, true},
-		"body, closed":          {Ticket{Number: 7, Body: "Intro\nBlocked by: #20\n"}, false},
-		"body, one open":        {Ticket{Number: 7, Body: "blocked by: #20, #21"}, true},
-		"not at the line start": {Ticket{Number: 7, Body: "Not blocked by: #21"}, false},
-	} {
-		if blocked, err := g.Blocked(t.Context(), tc.ticket); err != nil || blocked != tc.blocked {
-			t.Errorf("%s: Blocked = %v, %v; want %v", name, blocked, err, tc.blocked)
+	notFound := func(w http.ResponseWriter) { reply(w, http.StatusNotFound, map[string]string{"message": "Not Found"}) }
+	// issue serves the handlers that work on issue {n}, under the lock.
+	issue := func(pattern string, serve func(w http.ResponseWriter, r *http.Request, issue *seedIssue)) {
+		mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
+			fake.mu.Lock()
+			defer fake.mu.Unlock()
+			n, _ := strconv.Atoi(r.PathValue("n"))
+			found, ok := fake.issues[n]
+			if !ok {
+				notFound(w)
+				return
+			}
+			serve(w, r, found)
+		})
+	}
+	body := func(r *http.Request) (in map[string]any) {
+		data, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(data, &in)
+		return
+	}
+
+	issue("GET /repos/o/r/issues/{n}", func(w http.ResponseWriter, r *http.Request, issue *seedIssue) {
+		reply(w, http.StatusOK, fake.issueJSON(issue))
+	})
+	issue("PATCH /repos/o/r/issues/{n}", func(w http.ResponseWriter, r *http.Request, issue *seedIssue) {
+		issue.Open = body(r)["state"] != "closed"
+		reply(w, http.StatusOK, fake.issueJSON(issue))
+	})
+	issue("GET /repos/o/r/issues/{n}/comments", func(w http.ResponseWriter, r *http.Request, issue *seedIssue) {
+		comments := []map[string]string{}
+		for _, comment := range page(r, issue.Comments) {
+			comments = append(comments, map[string]string{"body": comment})
 		}
+		reply(w, http.StatusOK, comments)
+	})
+	issue("POST /repos/o/r/issues/{n}/comments", func(w http.ResponseWriter, r *http.Request, issue *seedIssue) {
+		issue.Comments = append(issue.Comments, field[string](body(r), "body"))
+		reply(w, http.StatusCreated, map[string]string{})
+	})
+	issue("POST /repos/o/r/issues/{n}/labels", func(w http.ResponseWriter, r *http.Request, issue *seedIssue) {
+		for _, label := range field[[]any](body(r), "labels") {
+			issue.Labels = append(issue.Labels, fmt.Sprint(label))
+		}
+		reply(w, http.StatusOK, []string{})
+	})
+	issue("DELETE /repos/o/r/issues/{n}/labels/{label}", func(w http.ResponseWriter, r *http.Request, issue *seedIssue) {
+		i := slices.Index(issue.Labels, r.PathValue("label"))
+		if i < 0 {
+			reply(w, http.StatusNotFound, map[string]string{"message": "Label does not exist"})
+			return
+		}
+		issue.Labels = slices.Delete(issue.Labels, i, i+1)
+		reply(w, http.StatusOK, []string{})
+	})
+	issue("GET /repos/o/r/issues/{n}/sub_issues", func(w http.ResponseWriter, r *http.Request, issue *seedIssue) {
+		subs := []map[string]any{}
+		for _, child := range page(r, fake.children(issue.Number)) {
+			subs = append(subs, fake.issueJSON(child))
+		}
+		reply(w, http.StatusOK, subs)
+	})
+	issue("GET /repos/o/r/issues/{n}/dependencies/blocked_by", func(w http.ResponseWriter, r *http.Request, issue *seedIssue) {
+		blockers := []map[string]any{}
+		for _, n := range page(r, issue.BlockedBy) {
+			blockers = append(blockers, fake.issueJSON(fake.issues[n]))
+		}
+		reply(w, http.StatusOK, blockers)
+	})
+	mux.HandleFunc("GET /repos/o/r/labels", func(w http.ResponseWriter, r *http.Request) {
+		fake.mu.Lock()
+		defer fake.mu.Unlock()
+		list := []map[string]string{}
+		for _, name := range page(r, fake.labels) {
+			list = append(list, map[string]string{"name": name})
+		}
+		reply(w, http.StatusOK, list)
+	})
+	mux.HandleFunc("GET /repos/o/r/issues", func(w http.ResponseWriter, r *http.Request) {
+		fake.mu.Lock()
+		defer fake.mu.Unlock()
+		if r.URL.Query().Get("state") != "open" {
+			reply(w, http.StatusBadRequest, map[string]string{"message": "state"})
+			return
+		}
+		// Descending, pull requests included: ListLabeled sorts and filters.
+		var matching []*seedIssue
+		for _, issue := range fake.issues {
+			if issue.Open && slices.Contains(issue.Labels, r.URL.Query().Get("labels")) {
+				matching = append(matching, issue)
+			}
+		}
+		slices.SortFunc(matching, func(a, b *seedIssue) int { return b.Number - a.Number })
+		list := []map[string]any{}
+		for _, issue := range page(r, matching) {
+			list = append(list, fake.issueJSON(issue))
+		}
+		reply(w, http.StatusOK, list)
+	})
+
+	mux.HandleFunc("POST /repos/o/r/pulls", func(w http.ResponseWriter, r *http.Request) {
+		fake.mu.Lock()
+		defer fake.mu.Unlock()
+		in := body(r)
+		pull := &seedPull{Number: 1, Head: field[string](in, "head"), Base: field[string](in, "base"), Title: field[string](in, "title"), Body: field[string](in, "body")}
+		for n := range fake.issues {
+			pull.Number = max(pull.Number, n+1)
+		}
+		pull.Draft, _ = in["draft"].(bool)
+		fake.pulls = append(fake.pulls, pull)
+		fake.issues[pull.Number] = &seedIssue{Number: pull.Number, Title: pull.Title, Body: pull.Body, Open: true, IsPull: true}
+		reply(w, http.StatusCreated, pullJSON(pull))
+	})
+	mux.HandleFunc("GET /repos/o/r/pulls", func(w http.ResponseWriter, r *http.Request) {
+		fake.mu.Lock()
+		defer fake.mu.Unlock()
+		pulls := []map[string]any{}
+		for _, pull := range slices.Backward(fake.pulls) { // latest first
+			if "o:"+pull.Head == r.URL.Query().Get("head") {
+				pulls = append(pulls, pullJSON(pull))
+			}
+		}
+		reply(w, http.StatusOK, page(r, pulls))
+	})
+	mux.HandleFunc("PATCH /repos/o/r/pulls/{n}", func(w http.ResponseWriter, r *http.Request) {
+		fake.mu.Lock()
+		defer fake.mu.Unlock()
+		n, _ := strconv.Atoi(r.PathValue("n"))
+		for _, pull := range fake.pulls {
+			if pull.Number == n {
+				pull.Body = field[string](body(r), "body")
+				reply(w, http.StatusOK, pullJSON(pull))
+				return
+			}
+		}
+		notFound(w)
+	})
+	mux.HandleFunc("POST /graphql", func(w http.ResponseWriter, r *http.Request) {
+		fake.mu.Lock()
+		defer fake.mu.Unlock()
+		id := field[map[string]any](body(r), "variables")["id"]
+		for _, pull := range fake.pulls {
+			if fmt.Sprintf("PR_%d", pull.Number) == id {
+				pull.Draft = false
+				reply(w, http.StatusOK, map[string]any{"data": map[string]any{}})
+				return
+			}
+		}
+		reply(w, http.StatusOK, map[string]any{"errors": []map[string]string{{"message": "Could not resolve to a node"}}})
+	})
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer secret" || r.Header.Get("X-GitHub-Api-Version") == "" {
+			reply(w, http.StatusUnauthorized, map[string]string{"message": "Bad credentials"})
+			return
+		}
+		mux.ServeHTTP(w, r)
+	})
+}
+
+func TestGitHubContract(t *testing.T) {
+	testContract(t, newFakeGitHub)
+}
+
+func TestGitHubNotFound(t *testing.T) {
+	f, _ := newFakeGitHub(t, contractIssues(), contractLabels())
+	if _, err := f.Ticket(t.Context(), 99); err == nil || !strings.Contains(err.Error(), "Not Found") {
+		t.Errorf("Ticket(99): err = %v", err)
 	}
-	if _, err = g.Blocked(t.Context(), Ticket{Number: 7, Body: "Blocked by: #99"}); err == nil || !strings.Contains(err.Error(), "Not Found") {
+	if _, err := f.Blocked(t.Context(), Ticket{Number: 7, Body: "Blocked by: #99"}); err == nil || !strings.Contains(err.Error(), "Not Found") {
 		t.Errorf("unknown blocker: err = %v", err)
 	}
 }
 
-func TestNewGitHub(t *testing.T) {
-	for _, forge := range []config.Forge{
-		{Kind: "gitea", Repo: "o/r"},
-		{Kind: "github", Repo: "o/r", URL: "https://ghe.example"},
-		{Kind: "github", Repo: "o"},
-		{Kind: "github", Repo: "o/r/x"},
-	} {
-		if _, err := NewGitHub(forge, "t"); err == nil {
-			t.Errorf("NewGitHub(%+v): want error", forge)
-		}
+func TestGitHubBadToken(t *testing.T) {
+	f, _ := newFakeGitHub(t, contractIssues(), contractLabels())
+	f.(*GitHub).Token = "wrong"
+	if _, err := f.Ticket(t.Context(), 7); err == nil || !strings.Contains(err.Error(), "Bad credentials") {
+		t.Errorf("wrong token: err = %v", err)
 	}
 }
 
@@ -324,7 +411,7 @@ func TestGitHubPulls(t *testing.T) {
 		t.Errorf("CreatePull draft = %+v, %v", draft, err)
 	}
 	pull, found, err := g.FindPull(t.Context(), "ticket-7")
-	if err != nil || !found || pull.Number != 42 || pull.State != "open" || !pull.Draft || pull.NodeID != "PR_x" {
+	if err != nil || !found || pull.Number != 42 || pull.State != "open" || !pull.Draft || pull.ID != "PR_x" {
 		t.Errorf("FindPull = %+v, %v, %v", pull, found, err)
 	}
 	if err = g.ReadyPull(t.Context(), pull); err == nil || !strings.Contains(err.Error(), "Not a draft") {
@@ -351,64 +438,7 @@ func TestGitHubPulls(t *testing.T) {
 	}
 }
 
-// TestGitHubRemote checks that git sends the token in a header to GitURL
-// only, that it appears neither on argv nor in git's error, and that the
-// user's global config (url.insteadOf) and redirects can't send it elsewhere.
 func TestGitHubRemote(t *testing.T) {
-	var (
-		mu   sync.Mutex
-		auth []string
-	)
-	record := func(request string) {
-		mu.Lock()
-		defer mu.Unlock()
-		auth = append(auth, request)
-	}
-	requests := func() (got []string) {
-		mu.Lock()
-		defer mu.Unlock()
-		got, auth = auth, nil
-		return
-	}
-	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		record("other " + r.URL.Path + " " + r.Header.Get("Authorization"))
-		w.WriteHeader(http.StatusNotFound)
-	}))
-	t.Cleanup(other.Close)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		record(r.URL.Path + " " + r.Header.Get("Authorization"))
-		if strings.HasPrefix(r.URL.Path, "/moved/") {
-			http.Redirect(w, r, other.URL+r.URL.Path, http.StatusFound)
-			return
-		}
-		w.WriteHeader(http.StatusNotFound)
-	}))
-	t.Cleanup(server.Close)
-
-	// The user's global config sends everything for server to other.
-	home := t.TempDir()
-	rule := fmt.Sprintf("[url %q]\n\tinsteadOf = %s/\n\tpushInsteadOf = %s/\n", other.URL+"/", server.URL, server.URL)
-	if err := os.WriteFile(filepath.Join(home, ".gitconfig"), []byte(rule), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_CONFIG_HOME", home)
-	t.Setenv("GIT_CONFIG_GLOBAL", "")
-	_ = os.Unsetenv("GIT_CONFIG_GLOBAL")
-	lsRemote := func(url string, env []string) (out string, args []string) {
-		cmd := exec.Command("git", "ls-remote", url)
-		cmd.Env = append(os.Environ(), env...)
-		data, err := cmd.CombinedOutput()
-		if err == nil {
-			t.Fatalf("ls-remote %s: want error", url)
-		}
-		return string(data), cmd.Args
-	}
-	lsRemote(server.URL+"/o/r.git", nil)
-	if got := requests(); len(got) != 1 || !strings.HasPrefix(got[0], "other ") {
-		t.Fatalf("without Remote's env the rule applies, got requests %q", got)
-	}
-
 	g, err := NewGitHub(config.Forge{Kind: "github", Repo: "o/r"}, "secret")
 	if err != nil {
 		t.Fatal(err)
@@ -416,20 +446,8 @@ func TestGitHubRemote(t *testing.T) {
 	if g.GitURL != "https://github.com/o/r.git" {
 		t.Errorf("GitURL = %q", g.GitURL)
 	}
-	for _, url := range []string{server.URL + "/o/r.git", server.URL + "/x/r.git", server.URL + "/moved/r.git"} {
-		g.GitURL = server.URL + "/o/r.git"
-		if strings.HasPrefix(url, server.URL+"/moved/") {
-			g.GitURL = url
-		}
-		remote := g.Remote()
-		out, args := lsRemote(url, remote.Env)
-		if strings.Contains(out, "secret") || strings.Contains(strings.Join(args, " "), "secret") {
-			t.Errorf("token leaked: %s %s", args, out)
-		}
-	}
-	basic := "Basic " + base64.StdEncoding.EncodeToString([]byte("x-access-token:secret"))
-	want := []string{"/o/r.git/info/refs " + basic, "/x/r.git/info/refs ", "/moved/r.git/info/refs " + basic}
-	if got := requests(); !slices.Equal(got, want) {
-		t.Errorf("requests with Authorization = %q, want %q", got, want)
-	}
+	testRemote(t, "x-access-token", func(gitURL string) Remote {
+		g.GitURL = gitURL
+		return g.Remote()
+	})
 }

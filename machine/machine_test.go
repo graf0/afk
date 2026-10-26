@@ -3,7 +3,10 @@ package machine
 import (
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/digitalocean/go-libvirt"
@@ -51,5 +54,26 @@ func TestIsCode(t *testing.T) {
 	err := fmt.Errorf("wrapped: %w", libvirt.Error{Code: uint32(libvirt.ErrNoNetwork)})
 	if !isCode(err, libvirt.ErrNoNetwork) || isCode(err, libvirt.ErrNoDomain) || isCode(errors.New("x"), libvirt.ErrNoNetwork) {
 		t.Error("isCode misclassifies errors")
+	}
+}
+
+func TestOverlays(t *testing.T) {
+	root := t.TempDir()
+	var want []string
+	for _, rel := range []string{"runs/r1/disk.qcow2", "chats/c1/disk.qcow2", "runs/r2/other", "base/x/disk.qcow2"} {
+		path := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if strings.HasSuffix(rel, "disk.qcow2") && !strings.HasPrefix(rel, "base") {
+			want = append(want, path)
+		}
+	}
+	got, err := Overlays(root)
+	if err != nil || !slices.Equal(got, want) {
+		t.Errorf("Overlays = %v, %v; want %v", got, err, want)
 	}
 }

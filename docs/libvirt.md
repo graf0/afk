@@ -4,7 +4,7 @@ Połączenie `qemu:///system` przez `digitalocean/go-libvirt` (przypięty commit
 
 ## Sandbox VM (pakiet `machine`)
 
-Diagnostyka: `afk vm up` (start + ssh, wypisuje nazwę i czas), `afk vm shell <vm>` (shell z tunelem Egress proxy), `afk vm kill <vm>`.
+Diagnostyka: `afk vm up` (start + ssh, wypisuje nazwę i czas), `afk vm shell <vm>` (shell z tunelem Egress proxy), `afk vm kill <vm>`. Konfigurację (`.afk.toml`, `.claude/settings.json`) `up`, `list` i `shell` biorą z gałęzi bazowej (ADR-0010); `kill` jej nie potrzebuje.
 
 - Nazwa `afk-<run|chat>-<id>` — wspólna dla domeny, sieci i nwfiltra; katalog `/var/lib/afk/{runs,chats}/<id>/`.
 - `<metadata>` domeny (`xmlns:afk='https://github.com/graf0/afk/machine'`): Project, rodzaj, identyfikator, adres gościa, klucz hosta. To jedyny stan — `afk vm shell` czyta z niego, dokąd i z jakim kluczem się łączyć.

@@ -23,9 +23,6 @@ func preflight(ctx context.Context, opts Options, claims Claims) (err error) {
 	if err != nil {
 		return
 	}
-	if opts.Base.Config.Gate.Cmd == "" {
-		return
-	}
 	r.branch = preflightBranch
 	random := make([]byte, 4)
 	_, _ = rand.Read(random)
@@ -49,18 +46,24 @@ func preflight(ctx context.Context, opts Options, claims Claims) (err error) {
 	if _, err = r.openLog(r.branch); err != nil {
 		return
 	}
-	defer func() { _ = r.log.Close() }()
+	defer r.closeLogs()
 	r.say("preflight: the gate on a clean origin/%s %s", opts.Base.Branch, opts.Base.Commit[:12])
 	var failed string
 	_, err = r.session(ctx, setup, func(ctx context.Context, g guest) (res result, err error) {
 		var path string
 		var ok bool
-		if _, path, ok, err = r.gateAttempt(ctx, g, &res); err == nil && !ok {
+		if _, path, ok, err = r.gateAttempt(ctx, g, &res); err != nil {
+			return
+		}
+		if !ok {
 			failed = path
 		}
 		return
 	})
-	if err == nil && failed != "" {
+	if err != nil {
+		return
+	}
+	if failed != "" {
 		err = fmt.Errorf("preflight: the gate fails on a clean origin/%s, not the Agent's fault: fix the base or [gate].cmd (output: %s)", opts.Base.Branch, failed)
 	}
 	return

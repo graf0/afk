@@ -25,13 +25,16 @@ const (
 	sharedDirMode = os.ModeSetgid | 0o775
 )
 
+// ErrNoImage means the machine has no Base image yet.
+var ErrNoImage = errors.New("no Base image")
+
 var versionPattern = regexp.MustCompile(`^\d{8}T\d{6}Z$`)
 
 // Paths are the directories afk uses for building images.
 type Paths struct {
 	CacheDir string // ~/.cache/afk: Packer binary, plugins, config
 	StateDir string // ~/.local/state/afk: ssh key
-	BaseDir  string // /var/lib/afk/base: finished Base images
+	BaseDir  string // /var/lib/afk/base: finished Base images, <project>/<machine>/<version>
 }
 
 // DefaultPaths returns the standard locations (docs/architecture.md).
@@ -49,14 +52,14 @@ func DefaultPaths() (paths Paths, err error) {
 	return
 }
 
-// Latest returns the directory of the newest Base image of project. Each
+// Latest returns the directory of the newest Base image of machine of project. Each
 // version directory appears atomically after a successful build, so every one
 // is complete; in-progress builds (.build-*) are ignored.
-func Latest(paths Paths, project string) (dir string, err error) {
-	projectDir := paths.projectDir(project)
-	entries, err := os.ReadDir(projectDir)
+func Latest(paths Paths, project, machine string) (dir string, err error) {
+	machineDir := paths.machineDir(project, machine)
+	entries, err := os.ReadDir(machineDir)
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		err = fmt.Errorf("reading %s: %w", projectDir, err)
+		err = fmt.Errorf("reading %s: %w", machineDir, err)
 		return
 	}
 	var versions []string
@@ -66,16 +69,17 @@ func Latest(paths Paths, project string) (dir string, err error) {
 		}
 	}
 	if len(versions) == 0 {
-		err = fmt.Errorf("no Base image for project %q in %s: run `afk image build`", project, projectDir)
+		err = fmt.Errorf("%w of machine %q for project %q in %s", ErrNoImage, machine, project, machineDir)
 		return
 	}
-	dir = filepath.Join(projectDir, slices.Max(versions))
+	dir = filepath.Join(machineDir, slices.Max(versions))
 	return
 }
 
-// LatestDisk returns the disk (*.qcow2) of the newest Base image of project.
-func LatestDisk(paths Paths, project string) (disk string, err error) {
-	dir, err := Latest(paths, project)
+// LatestDisk returns the disk (*.qcow2) of the newest Base image of machine
+// of project.
+func LatestDisk(paths Paths, project, machine string) (disk string, err error) {
+	dir, err := Latest(paths, project, machine)
 	if err != nil {
 		return
 	}
@@ -114,8 +118,13 @@ func (p Paths) packerConfigDir() (dir string) { return filepath.Join(p.CacheDir,
 // sshDir holds the `afk` ssh key pair.
 func (p Paths) sshDir() (dir string) { return filepath.Join(p.StateDir, "ssh") }
 
-// projectDir holds the versions of project's Base image.
+// projectDir holds the machines' Base images of project.
 func (p Paths) projectDir(project string) (dir string) { return filepath.Join(p.BaseDir, project) }
+
+// machineDir holds the versions of machine's Base image.
+func (p Paths) machineDir(project, machine string) (dir string) {
+	return filepath.Join(p.projectDir(project), machine)
+}
 
 // EnsureSharedDir creates dir if needed and makes it group gid's, mode
 // setgid 2775, so images stay readable by libvirt-qemu. The result is checked,

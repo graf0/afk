@@ -4,7 +4,11 @@ import (
 	"bytes"
 	_ "embed"
 	"fmt"
+	"maps"
+	"slices"
 	"text/template"
+
+	"github.com/graf0/afk/config"
 )
 
 // guestProxy is where the build tunnel appears inside the guest.
@@ -19,7 +23,7 @@ var userDataTemplate string
 //go:embed template/meta-data
 var metaData string
 
-// templates are the supported [image].template values.
+// templates are the supported [machine.<name>].template values.
 var templates = map[string]imageTemplate{
 	"debian13": {
 		Name:        "debian13",
@@ -31,7 +35,7 @@ var templates = map[string]imageTemplate{
 }
 
 // initialSteps always run first: what afk needs in every image (sshd, git, Claude Code),
-// independent of the project's provision steps. The guest reaches the internet
+// independent of the machine's build steps. The guest reaches the internet
 // only through the Egress proxy tunnel.
 var initialSteps = []string{
 	`printf 'Acquire::http::Proxy "` + guestProxy + `";\nAcquire::https::Proxy "` + guestProxy + `";\n' | sudo tee /etc/apt/apt.conf.d/90afk-proxy >/dev/null`,
@@ -42,7 +46,7 @@ var initialSteps = []string{
 }
 
 // finalSteps run in their own, last provisioner (docs/images.md), so nothing in
-// [image].provision (`exit`, `exec`) can skip them: without them clones get no
+// [machine.<name>].build (`exit`, `exec`) can skip them: without them clones get no
 // address or the same machine-id (and so the same DHCP client-id).
 var finalSteps = []string{
 	`sudo rm -f /etc/apt/apt.conf.d/90afk-proxy /etc/netplan/50-cloud-init.yaml`,
@@ -66,13 +70,19 @@ type imageTemplate struct {
 func (t imageTemplate) hclFile() (name string) { return t.Name + ".pkr.hcl" }
 
 // provisionSteps splits the guest script in two provisioners: afk's steps,
-// the Project's Claude Code plugins (pluginSteps), then the Project's own
-// ([image].provision), and the mandatory final steps.
-func provisionSteps(pluginSteps, project []string) (provision, final []string) {
-	provision = make([]string, 0, len(initialSteps)+len(pluginSteps)+len(project))
+// the Project's Claude Code plugins (pluginSteps), the machine's own
+// ([machine.<name>].build), the build of its Tools (alphabetically by name),
+// and the mandatory final steps. A Tool's services are started by whatever
+// its build installs (systemd units of apt packages start at boot); afk adds
+// no service manager.
+func provisionSteps(pluginSteps, machineBuild []string, tools map[string]config.Tool) (provision, final []string) {
+	provision = make([]string, 0, len(initialSteps)+len(pluginSteps)+len(machineBuild))
 	provision = append(provision, initialSteps...)
 	provision = append(provision, pluginSteps...)
-	provision = append(provision, project...)
+	provision = append(provision, machineBuild...)
+	for _, name := range slices.Sorted(maps.Keys(tools)) {
+		provision = append(provision, tools[name].Build...)
+	}
 	final = append([]string(nil), finalSteps...)
 	return
 }

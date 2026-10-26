@@ -22,7 +22,7 @@ source "qemu" "debian" {
   output_directory     = var.output_dir
   vm_name              = var.disk_name
   format               = "qcow2"
-  disk_size            = "10G"
+  disk_size            = "64G"
   accelerator          = "kvm"
   machine_type         = "q35"
   cpu_model            = "host"

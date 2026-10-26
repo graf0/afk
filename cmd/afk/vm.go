@@ -8,27 +8,33 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"slices"
 	"time"
 
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/term"
 
-	"github.com/graf0/afk/agent"
 	"github.com/graf0/afk/config"
 	"github.com/graf0/afk/egress"
 	"github.com/graf0/afk/image"
 	"github.com/graf0/afk/machine"
+	"github.com/graf0/afk/run"
 )
 
 const vmUsage = "usage: afk vm up | afk vm list | afk vm shell <vm> | afk vm kill <vm>"
 
 // runVM executes the diagnostic `afk vm <subcommand>`.
-func runVM(ctx context.Context, args []string, cfg config.Config, stdout io.Writer) (err error) {
+func runVM(ctx context.Context, args []string, dir string, stdout io.Writer) (err error) {
 	argCount := map[string]int{"up": 1, "list": 1, "shell": 2, "kill": 2} // including the subcommand
 	if len(args) == 0 || argCount[args[0]] != len(args) {
 		err = errors.New(vmUsage)
 		return
+	}
+	// kill cleans up and needs no config (and must work without origin).
+	var base run.Base
+	if args[0] != "kill" {
+		if base, err = run.ReadBase(ctx, dir); err != nil {
+			return
+		}
 	}
 	conn, err := machine.Connect()
 	if err != nil {
@@ -37,11 +43,15 @@ func runVM(ctx context.Context, args []string, cfg config.Config, stdout io.Writ
 	defer func() { _ = conn.Close() }()
 	switch args[0] {
 	case "up":
-		err = vmUp(ctx, conn, cfg, stdout)
+		err = vmUp(ctx, conn, base.Config, stdout)
 	case "list":
-		err = vmList(conn, cfg, stdout)
+		err = vmList(conn, base.Config, stdout)
 	case "shell":
-		err = vmShell(ctx, conn, cfg, args[1])
+		var policy egress.Policy
+		if policy, err = run.EgressPolicy(base.Config); err != nil {
+			return
+		}
+		err = vmShell(ctx, conn, policy, args[1])
 	case "kill":
 		err = conn.Kill(args[1])
 	}
@@ -59,7 +69,10 @@ func vmUp(ctx context.Context, conn *machine.Conn, cfg config.Config, stdout io.
 	if err != nil {
 		return
 	}
-	disk, err := image.LatestDisk(paths, project)
+	disk, err := image.LatestDisk(paths, project, config.SandboxMachine)
+	if errors.Is(err, image.ErrNoImage) {
+		err = fmt.Errorf("%w: run `afk image build` (or `afk factory`, which builds it)", err)
+	}
 	if err != nil {
 		return
 	}
@@ -67,11 +80,14 @@ func vmUp(ctx context.Context, conn *machine.Conn, cfg config.Config, stdout io.
 	if err != nil {
 		return
 	}
+	sandbox := cfg.Machine.Sandbox
 	id := make([]byte, 4)
 	_, _ = rand.Read(id)
 
 	start := time.Now()
-	m, err := conn.Up(ctx, machine.Spec{Project: project, Kind: machine.KindRun, ID: hex.EncodeToString(id), BaseDisk: disk})
+	m, err := conn.Up(ctx, machine.Spec{Project: project, Kind: machine.KindRun, ID: hex.EncodeToString(id), BaseDisk: disk,
+		MemoryMiB: sandbox.MemoryMiB, CPUs: sandbox.CPUs,
+	})
 	if err != nil {
 		return
 	}
@@ -108,12 +124,8 @@ func vmList(conn *machine.Conn, cfg config.Config, stdout io.Writer) (err error)
 }
 
 // vmShell opens an interactive shell in machine name, with the Egress proxy
-// (allowlist [network].allow + agent.Domains) tunneled in for its duration.
-func vmShell(ctx context.Context, conn *machine.Conn, cfg config.Config, name string) (err error) {
-	policy, err := egress.Allowlist(slices.Concat(cfg.Network.Allow, agent.Domains))
-	if err != nil {
-		return
-	}
+// of policy tunneled in for the session: stopped when the shell ends or fails.
+func vmShell(ctx context.Context, conn *machine.Conn, policy egress.Policy, name string) (err error) {
 	paths, err := image.DefaultPaths()
 	if err != nil {
 		return
@@ -133,7 +145,7 @@ func vmShell(ctx context.Context, conn *machine.Conn, cfg config.Config, name st
 		return
 	}
 	defer func() { _ = client.Close() }()
-	stop, err := machine.ServeEgress(ctx, client, policy)
+	stop, err := machine.ServeEgress(ctx, client, policy, nil)
 	if err != nil {
 		return
 	}

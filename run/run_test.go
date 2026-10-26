@@ -2,9 +2,9 @@ package run
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 
@@ -72,26 +72,64 @@ func TestRunPrompt(t *testing.T) {
 }
 
 func TestExecuteRefusesSpec(t *testing.T) {
-	err := Execute(t.Context(), Options{Ticket: forge.Ticket{Number: 9, SubIssues: 2}})
+	err := Execute(t.Context(), Options{
+		Base:   Base{Config: config.Config{Labels: config.Labels{Spec: "spec"}}},
+		Ticket: forge.Ticket{Number: 9, Labels: []string{"spec"}},
+	})
 	if err == nil || !strings.Contains(err.Error(), "is a Spec") {
 		t.Errorf("err = %v", err)
 	}
 }
 
-func TestTaskSpec(t *testing.T) {
-	r := run{branch: "ticket-9"}
-	if got := r.task().SpecPath; got != "" {
-		t.Errorf("SpecPath without a Spec = %q", got)
+func TestDenialLogIsCreatedByTheFirstDenial(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ticket-1-egress.txt")
+	l := &denialLog{path: path}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("file exists without a denial: %v", err)
 	}
-	r.spec = &forge.Ticket{Number: 9}
-	if got := r.task().SpecPath; got != guestSpec {
-		t.Errorf("SpecPath = %q, want %q", got, guestSpec)
+	for _, line := range []string{"denied a\n", "denied b\n"} {
+		if _, err := l.Write([]byte(line)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	denied, err := l.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(path); string(got) != "denied a\ndenied b\n" || denied != 2 {
+		t.Errorf("file = %q, denied = %d", got, denied)
 	}
 }
 
-func TestTaskPlugins(t *testing.T) {
-	r := run{Options: Options{Base: Base{Plugins: []string{"b@y", "mattpocock-skills@claude-plugins-official"}}}}
-	if got := r.task().Plugins; !slices.Equal(got, []string{"b", "mattpocock-skills"}) {
-		t.Errorf("task plugins = %q", got)
+func TestCloseLogsSummarizesDenials(t *testing.T) {
+	dir := t.TempDir()
+	for name, denials := range map[string][]string{"none": nil, "two": {"denied a\n", "denied b\n"}} {
+		t.Run(name, func(t *testing.T) {
+			var out strings.Builder
+			path := filepath.Join(dir, name+".jsonl")
+			file, err := os.Create(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			r := run{
+				Options: Options{Out: &out},
+				log:     &rotatingLog{path: path, file: file},
+				denials: &denialLog{path: filepath.Join(dir, name+"-egress.txt")},
+			}
+			for _, line := range denials {
+				_, _ = r.denials.Write([]byte(line))
+			}
+			r.closeLogs()
+			want := ""
+			if denials != nil {
+				want = "= egress: 2 denied, see " + r.denials.path + "\n"
+			}
+			if out.String() != want {
+				t.Errorf("out = %q, want %q", out.String(), want)
+			}
+			if _, err := os.Stat(r.denials.path); (err == nil) != (denials != nil) {
+				t.Errorf("denials file stat: %v", err)
+			}
+		})
 	}
 }

@@ -1,6 +1,7 @@
 package image
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -22,7 +23,7 @@ func TestNewVersionSortsInTimeOrder(t *testing.T) {
 
 func TestLatest(t *testing.T) {
 	paths := Paths{BaseDir: t.TempDir()}
-	project := paths.projectDir("graf0-dfmx")
+	project := paths.machineDir("graf0-dfmx", "sandbox")
 	for _, name := range []string{"20261024T080500Z", "20261024T153000Z", "20251231T235959Z", ".build-123", "stray", "20261025"} {
 		if err := os.MkdirAll(filepath.Join(project, name), 0o755); err != nil {
 			t.Fatal(err)
@@ -32,7 +33,7 @@ func TestLatest(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := Latest(paths, "graf0-dfmx")
+	got, err := Latest(paths, "graf0-dfmx", "sandbox")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,26 +42,43 @@ func TestLatest(t *testing.T) {
 	}
 }
 
+func TestLatestIsPerMachine(t *testing.T) {
+	paths := Paths{BaseDir: t.TempDir()}
+	for _, dir := range []string{
+		filepath.Join(paths.projectDir("p"), "20261024T153000Z"), // old layout: ignored
+		filepath.Join(paths.machineDir("p", "db"), "20261025T000000Z"),
+		filepath.Join(paths.machineDir("p", "sandbox"), "20261023T000000Z"),
+	} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := Latest(paths, "p", "sandbox")
+	if want := filepath.Join(paths.BaseDir, "p", "sandbox", "20261023T000000Z"); err != nil || got != want {
+		t.Errorf("Latest = %q, %v; want %q", got, err, want)
+	}
+}
+
 func TestLatestWithoutImages(t *testing.T) {
 	paths := Paths{BaseDir: t.TempDir()}
-	if err := os.MkdirAll(filepath.Join(paths.projectDir("building"), ".build-1"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(paths.machineDir("building", "sandbox"), ".build-1"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	for _, project := range []string{"missing", "building"} {
-		_, err := Latest(paths, project)
-		if err == nil || !strings.Contains(err.Error(), "afk image build") {
-			t.Errorf("%s: err = %v, want a hint to build", project, err)
+		_, err := Latest(paths, project, "sandbox")
+		if !errors.Is(err, ErrNoImage) || strings.Contains(err.Error(), "afk image build") {
+			t.Errorf("%s: err = %v, want ErrNoImage without a hint to build", project, err)
 		}
 	}
 }
 
 func TestLatestDisk(t *testing.T) {
 	paths := Paths{BaseDir: t.TempDir()}
-	version := filepath.Join(paths.projectDir("p"), "20261024T153000Z")
+	version := filepath.Join(paths.machineDir("p", "sandbox"), "20261024T153000Z")
 	if err := os.MkdirAll(version, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := LatestDisk(paths, "p"); err == nil {
+	if _, err := LatestDisk(paths, "p", "sandbox"); err == nil {
 		t.Error("LatestDisk without a disk succeeded")
 	}
 	for _, name := range []string{"debian13.qcow2", "efivars.fd"} {
@@ -68,7 +86,7 @@ func TestLatestDisk(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	got, err := LatestDisk(paths, "p")
+	got, err := LatestDisk(paths, "p", "sandbox")
 	if want := filepath.Join(version, "debian13.qcow2"); err != nil || got != want {
 		t.Errorf("LatestDisk = %q, %v; want %q", got, err, want)
 	}

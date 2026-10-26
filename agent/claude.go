@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
+	"slices"
 	"strings"
 
 	"golang.org/x/crypto/ssh"
@@ -26,10 +28,11 @@ var Domains = []string{"api.anthropic.com"}
 type Session struct {
 	Token  string // Claude Code OAuth token
 	Prompt string
-	Dir    string // working directory in the guest
-	Model  string // empty: Claude Code's default
-	Proxy  string // Egress proxy URL in the guest
-	Binary string // "claude" unless set (tests)
+	Dir    string            // working directory in the guest
+	Model  string            // empty: Claude Code's default
+	Proxy  string            // Egress proxy URL in the guest
+	Binary string            // "claude" unless set (tests)
+	Env    map[string]string // [tool.<name>].env, set before afk's own variables
 }
 
 // Run runs the session on client. The token reaches the guest only on the
@@ -98,10 +101,20 @@ func (s Session) command() (command string) {
 	for i, arg := range args {
 		quoted[i] = ShellQuote(arg)
 	}
-	return "export " + strings.Join(env, " ") +
+	return ExportEnv(s.Env) + "export " + strings.Join(env, " ") +
 		" && IFS= read -r " + TokenEnv + " && export " + TokenEnv +
 		" && cd " + ShellQuote(s.Dir) +
 		" && exec " + strings.Join(quoted, " ")
+}
+
+// ExportEnv is a shell prefix exporting env in name order, or empty without
+// any. The names must be valid shell names (config checks that); the values
+// are quoted.
+func ExportEnv(env map[string]string) (prefix string) {
+	for _, name := range slices.Sorted(maps.Keys(env)) {
+		prefix += "export " + name + "=" + ShellQuote(env[name]) + " && "
+	}
+	return
 }
 
 // ShellQuote quotes s for a POSIX shell.

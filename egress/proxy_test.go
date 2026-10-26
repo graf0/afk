@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -84,10 +85,29 @@ func (d *fakeDialer) dialed() (addrs []string) {
 	return slices.Clone(d.addrs)
 }
 
+// lockedBuffer is a strings.Builder safe for the proxy to write while a test reads.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf strings.Builder
+}
+
+func (b *lockedBuffer) Write(p []byte) (n int, err error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() (s string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
 // --- fixture and helpers ---
 
 type fixture struct {
 	proxy    *Proxy
+	denials  *lockedBuffer
 	resolver *fakeResolver
 	dialer   *fakeDialer
 	addr     string
@@ -98,8 +118,10 @@ func newFixture(t *testing.T, policy Policy, table map[string][]string, target s
 	f = &fixture{
 		resolver: &fakeResolver{table: table},
 		dialer:   &fakeDialer{target: target},
+		denials:  &lockedBuffer{},
 	}
 	f.proxy = New(policy)
+	f.proxy.Denials = f.denials
 	f.proxy.Resolver = f.resolver
 	f.proxy.Dialer = f.dialer
 	f.proxy.HostAddrs = hostAddrs
@@ -205,6 +227,54 @@ func TestDeniedNameNeverReachesResolver(t *testing.T) {
 	}
 	if got := f.dialer.dialed(); len(got) != 0 {
 		t.Errorf("dialed %v", got)
+	}
+}
+
+func TestDenialsAreWrittenOneLinePerTarget(t *testing.T) {
+	f := newFixture(t, mustAllowlist(t, "allowed.example"), map[string][]string{
+		"allowed.example": {publicV4},
+	}, startEcho(t))
+
+	send(t, f.addr, connectRequest("evil.example:443"))
+	send(t, f.addr, connectRequest("allowed.example:25"))
+	send(t, f.addr, getRequest("evil.example"))
+	send(t, f.addr, connectRequest("allowed.example:443")) // allowed: no line
+
+	lines := strings.Split(strings.TrimSpace(f.denials.String()), "\n")
+	slices.Sort(lines)
+	want := []string{
+		`evil.example:443: egress denied: host "evil.example" not allowed`,
+		`evil.example:80: egress denied: host "evil.example" not allowed`,
+		`allowed.example:25: egress denied: port 25 not allowed`,
+	}
+	slices.Sort(want)
+	if !slices.Equal(lines, want) {
+		t.Errorf("denials = %q, want %q", lines, want)
+	}
+}
+
+func TestDenialOfResolvedAddressIsWritten(t *testing.T) {
+	f := newFixture(t, mustAllowlist(t, "app.example"), map[string][]string{"app.example": {"10.0.0.5"}}, "")
+	send(t, f.addr, connectRequest("app.example:443"))
+	want := `app.example:443: egress denied: "app.example" resolves to 10.0.0.5` + "\n"
+	if got := f.denials.String(); got != want {
+		t.Errorf("denials = %q, want %q", got, want)
+	}
+}
+
+func TestDenialLineHasNoControlCharacters(t *testing.T) {
+	var denials strings.Builder
+	p := &Proxy{Denials: &denials}
+	p.logDenial("evil\x1b[2J\rhost", 443, ErrDenied)
+	if got, want := denials.String(), "evil?[2J?host:443: egress denied\n"; got != want {
+		t.Errorf("denial line = %q, want %q", got, want)
+	}
+}
+
+func TestDenialsNeedNoWriter(t *testing.T) {
+	p := &Proxy{Policy: mustAllowlist(t, "allowed.example")}
+	if _, err := p.dial(t.Context(), "tcp", "evil.example:443"); !errors.Is(err, ErrDenied) {
+		t.Errorf("err = %v, want ErrDenied", err)
 	}
 }
 

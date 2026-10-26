@@ -11,7 +11,11 @@ import (
 	"github.com/graf0/afk/forge"
 )
 
-const testConfig = "[forge]\nkind = \"github\"\nrepo = \"o/r\"\n[protect]\npaths = [\"secrets/key\"]\n"
+// testConfigBase is a Project config without [gate]; testConfig adds a trivial one.
+const (
+	testConfigBase = "[forge]\nkind = \"github\"\nrepo = \"o/r\"\n[protect]\npaths = [\"secrets/key\"]\n"
+	testConfig     = testConfigBase + "[gate]\ncmd = \"true\"\n"
+)
 
 // isolateGit makes git ignore the user's and system config and sets an identity.
 func isolateGit(t *testing.T) {

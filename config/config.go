@@ -5,10 +5,10 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 
 	"github.com/pelletier/go-toml/v2"
 )
@@ -16,17 +16,35 @@ import (
 // FileName is the Project config file name, located at the repository root.
 const FileName = ".afk.toml"
 
-// defaultMaxFixes is the default number of fix attempts after a failed gate.
-const defaultMaxFixes = 3
+const (
+	// SandboxMachine is the name of the Sandbox VM in [machine.<name>].
+	SandboxMachine = "sandbox"
+
+	// ForgeGitHub and ForgeGitea are the values of forge.kind.
+	ForgeGitHub = "github"
+	ForgeGitea  = "gitea"
+
+	// defaultMaxFixes is the default number of fix attempts after a failed gate.
+	defaultMaxFixes = 3
+
+	// defaultTemplate is the default Template of the Sandbox VM's Base image.
+	defaultTemplate = "debian13"
+
+	// defaultMaxAge is the default Expiry of the Sandbox VM's Base image.
+	defaultMaxAge = "168h"
+
+	// defaultMemoryMiB is the default RAM of the Sandbox VM.
+	defaultMemoryMiB = 2048
+
+	// defaultCPUs is the default number of vCPUs of the Sandbox VM.
+	defaultCPUs = 2
+)
 
 var (
 	// requiredProtectPaths are always protected, regardless of the user's list.
 	// Claude Code picks up .claude/ and .mcp.json in any directory, so they
 	// are protected at any depth ("**/").
 	requiredProtectPaths = []string{FileName, ".github/", ".gitea/", "**/.claude/", "**/.mcp.json"}
-
-	forgeKinds = []string{"github", "gitea"}
-	toolKinds  = []string{"package", "host-port", "vm"}
 )
 
 // Config is the effective Project config, with defaults applied.
@@ -35,7 +53,7 @@ type Config struct {
 	Labels  Labels          `toml:"labels"`
 	Agent   Agent           `toml:"agent"`
 	Gate    Gate            `toml:"gate"`
-	Image   Image           `toml:"image"`
+	Machine Machines        `toml:"machine"`
 	Network Network         `toml:"network"`
 	Protect Protect         `toml:"protect"`
 	Tool    map[string]Tool `toml:"tool"`
@@ -55,6 +73,7 @@ type Labels struct {
 	ReadyForAgent string `toml:"ready_for_agent"`
 	ReadyForHuman string `toml:"ready_for_human"`
 	Wontfix       string `toml:"wontfix"`
+	Spec          string `toml:"spec"`
 }
 
 // Agent configures models and the Claude Code plugins installed in the
@@ -72,11 +91,20 @@ type Gate struct {
 	MaxFixes int    `toml:"max_fixes"`
 }
 
-// Image configures the Base image.
-type Image struct {
+// Machines are the machines of the Project. Only the Sandbox VM is supported
+// for now; any other [machine.<name>] is rejected.
+type Machines struct {
+	Sandbox Machine `toml:"sandbox"`
+}
+
+// Machine describes a machine and its Base image. Only SandboxMachine is
+// supported for now.
+type Machine struct {
 	Template  string   `toml:"template"`
-	MaxAge    string   `toml:"max_age"`
-	Provision []string `toml:"provision"`
+	Build     []string `toml:"build"`
+	MaxAge    string   `toml:"max_age"` // Expiry of the Base image; "0": none
+	MemoryMiB int      `toml:"memory"`
+	CPUs      int      `toml:"cpus"`
 }
 
 // Network is the Run's network allowlist.
@@ -90,9 +118,33 @@ type Protect struct {
 	Paths []string `toml:"paths"`
 }
 
-// Tool is a dependency available to a Run.
+// Tool is a tool the Agent can use (ADR-0011).
 type Tool struct {
-	Kind string `toml:"kind"` // package | host-port | vm
+	On     string            `toml:"on"`     // machine the Tool runs on; only SandboxMachine for now
+	Build  []string          `toml:"build"`  // shell commands in the machine's Base image, after the machine's build
+	Setup  []string          `toml:"setup"`  // shell commands in /work after the clone, before the first session
+	Env    map[string]string `toml:"env"`    // variables of setup, the Agent's sessions and the gate
+	Prompt string            `toml:"prompt"` // what the Agent is told about the Tool
+}
+
+// --- accessors ---
+
+// Names returns the names of all labels, in the order of the fields.
+func (l Labels) Names() (names []string) {
+	return []string{l.NeedsTriage, l.NeedsInfo, l.ReadyForAgent, l.ReadyForHuman, l.Wontfix, l.Spec}
+}
+
+// EnvNames are the names of the Tool's env variables, sorted.
+func (t Tool) EnvNames() (names []string) { return slices.Sorted(maps.Keys(t.Env)) }
+
+// ToolEnv is the env of all Tools together; validation guarantees that no
+// name is defined twice.
+func (c Config) ToolEnv() (env map[string]string) {
+	env = make(map[string]string)
+	for _, tool := range c.Tool {
+		maps.Copy(env, tool.Env)
+	}
+	return
 }
 
 // --- loading ---
@@ -110,28 +162,46 @@ func Load(dir string) (cfg Config, err error) {
 		err = fmt.Errorf("reading %s: %w", path, err)
 		return
 	}
-	cfg, err = Parse(data)
-	if err != nil {
-		err = fmt.Errorf("%s: %w", path, err)
-	}
+	cfg, err = ParseNamed(path, data)
 	return
 }
 
 // Parse decodes a Project config, applies defaults and validates it.
+// The error joins all problems, one per line, each starting with "line:col:"
+// when the offending key is in the file, then the key path.
 func Parse(data []byte) (cfg Config, err error) {
+	cfg, err = parse("", data)
+	return
+}
+
+// ParseNamed is Parse with name (a file path, say) prefixed to every error line.
+func ParseNamed(name string, data []byte) (cfg Config, err error) {
+	cfg, err = parse(name+": ", data)
+	return
+}
+
+func parse(prefix string, data []byte) (cfg Config, err error) {
 	cfg = defaults()
+	v := validator{data: data}
 	decoder := toml.NewDecoder(bytes.NewReader(data)).DisallowUnknownFields()
-	if err = decoder.Decode(&cfg); err != nil {
-		var strictErr *toml.StrictMissingError
-		if errors.As(err, &strictErr) {
-			err = unknownKeysError(strictErr)
-		} else {
-			err = fmt.Errorf("parsing config: %w", err)
+	if decodeErr := decoder.Decode(&cfg); decodeErr != nil {
+		strictErr, ok := errors.AsType[*toml.StrictMissingError](decodeErr)
+		if !ok {
+			// Any other decoding error (a wrong type) ends go-toml's decoding:
+			// it is the only issue reported.
+			v.reportDecodeError(decodeErr)
+			err = v.err(prefix)
+			return
 		}
+		// Unknown keys do not stop the decoding: the rest is validated too.
+		v.reportUnknownKeys(strictErr)
+	}
+	toolDefaults(&cfg)
+	cfg.validate(&v)
+	if err = v.err(prefix); err != nil {
 		return
 	}
 	cfg.Protect.Paths = mergeProtectPaths(cfg.Protect.Paths)
-	err = cfg.validate()
 	return
 }
 
@@ -152,11 +222,27 @@ func defaults() (cfg Config) {
 			ReadyForAgent: "ready-for-agent",
 			ReadyForHuman: "ready-for-human",
 			Wontfix:       "wontfix",
+			Spec:          "spec",
 		},
-		Gate:  Gate{MaxFixes: defaultMaxFixes},
-		Image: Image{Template: "debian13"},
+		Gate: Gate{MaxFixes: defaultMaxFixes},
+		Machine: Machines{Sandbox: Machine{
+			Template:  defaultTemplate,
+			MaxAge:    defaultMaxAge,
+			MemoryMiB: defaultMemoryMiB,
+			CPUs:      defaultCPUs,
+		}},
 	}
 	return
+}
+
+// toolDefaults sets the machine of Tools that name none.
+func toolDefaults(cfg *Config) {
+	for name, tool := range cfg.Tool {
+		if tool.On == "" {
+			tool.On = SandboxMachine
+			cfg.Tool[name] = tool
+		}
+	}
 }
 
 // FindRoot walks up from dir to the first directory containing .git
@@ -179,37 +265,12 @@ func FindRoot(dir string) (root string, err error) {
 	}
 }
 
-func unknownKeysError(strictErr *toml.StrictMissingError) (err error) {
-	errs := make([]error, 0, len(strictErr.Errors))
-	for _, detail := range strictErr.Errors {
-		errs = append(errs, fmt.Errorf("unknown config key %q", strings.Join(detail.Key(), ".")))
-	}
-	err = errors.Join(errs...)
-	return
-}
-
 // mergeProtectPaths puts the required paths first, then the user's, without duplicates.
 func mergeProtectPaths(user []string) (merged []string) {
 	merged = slices.Clone(requiredProtectPaths)
 	for _, path := range user {
 		if !slices.Contains(merged, path) {
 			merged = append(merged, path)
-		}
-	}
-	return
-}
-
-// --- validation ---
-
-func (c Config) validate() (err error) {
-	if !slices.Contains(forgeKinds, c.Forge.Kind) {
-		err = fmt.Errorf("invalid forge.kind %q: want one of %v", c.Forge.Kind, forgeKinds)
-		return
-	}
-	for name, tool := range c.Tool {
-		if !slices.Contains(toolKinds, tool.Kind) {
-			err = fmt.Errorf("invalid tool.%s.kind %q: want one of %v", name, tool.Kind, toolKinds)
-			return
 		}
 	}
 	return

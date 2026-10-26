@@ -66,7 +66,7 @@ func workRun(t *testing.T, fake *fakeGitHub, gateCmd string, maxFixes int) (r ru
 		t.Fatal(err)
 	}
 	sh(t, root, "git clone -q origin.git agent && cd agent && git checkout -q -b ticket-1")
-	cfg, err := config.Parse([]byte(testConfig + fmt.Sprintf("[agent]\nmodel = \"impl\"\nreview_model = \"rev\"\n[gate]\ncmd = '%s'\nmax_fixes = %d\n", gateCmd, maxFixes)))
+	cfg, err := config.Parse([]byte(testConfigBase + fmt.Sprintf("[agent]\nmodel = \"impl\"\nreview_model = \"rev\"\n[gate]\ncmd = '%s'\nmax_fixes = %d\n", gateCmd, maxFixes)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -317,5 +317,49 @@ func TestWorkResumedNote(t *testing.T) {
 	}
 	if len(g.prompts) != 2 || !strings.Contains(g.prompts[0], "Wznawiasz przerwaną pracę") || strings.Contains(g.prompts[1], "Wznawiasz") {
 		t.Errorf("prompts %q: want the note in the implementation's only", g.prompts)
+	}
+}
+
+func TestTaskSpec(t *testing.T) {
+	r := run{branch: "ticket-9"}
+	if got := r.task().SpecPath; got != "" {
+		t.Errorf("SpecPath without a Spec = %q", got)
+	}
+	r.spec = &forge.Ticket{Number: 9}
+	if got := r.task().SpecPath; got != guestSpec {
+		t.Errorf("SpecPath = %q, want %q", got, guestSpec)
+	}
+}
+
+func TestTaskPlugins(t *testing.T) {
+	r := run{Options: Options{Base: Base{Plugins: []string{"b@y", "mattpocock-skills@claude-plugins-official"}}}}
+	if got := r.task().Plugins; !slices.Equal(got, []string{"b", "mattpocock-skills"}) {
+		t.Errorf("task plugins = %q", got)
+	}
+}
+
+func TestTaskTools(t *testing.T) {
+	cfg := config.Config{Tool: map[string]config.Tool{
+		"postgres":   {Prompt: "  psql\n", Env: map[string]string{"PGHOST": "/run", "DATABASE_URL": "x"}},
+		"playwright": {Prompt: "shot"},
+		"silent":     {Build: []string{"x"}},
+		"blank":      {Prompt: " \n\t"},
+	}}
+	r := run{Options: Options{Base: Base{Config: cfg}}}
+	want := []agent.Tool{{Name: "blank"}, {Name: "playwright", Prompt: "shot"}, {Name: "postgres", Prompt: "psql", Env: []string{"DATABASE_URL", "PGHOST"}}, {Name: "silent"}}
+	if got := r.task().Tools; !slices.EqualFunc(got, want, func(a, b agent.Tool) bool {
+		return a.Name == b.Name && a.Prompt == b.Prompt && slices.Equal(a.Env, b.Env)
+	}) {
+		t.Errorf("task tools = %v, want %v", got, want)
+	}
+}
+
+// TestExecCommandSetsEnv runs the command Exec sends to the guest: the env of
+// the Tools is there for setup and the gate, which both go through Exec.
+func TestExecCommandSetsEnv(t *testing.T) {
+	cmd := exec.Command("bash", "-c", strings.ReplaceAll(execCommand(map[string]string{"DATABASE_URL": "pg:///it's"}, `printf %s "$DATABASE_URL"`), guestRepo, t.TempDir()))
+	out, err := cmd.Output()
+	if err != nil || string(out) != "pg:///it's" {
+		t.Errorf("got %q, %v", out, err)
 	}
 }

@@ -12,13 +12,14 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/crypto/ssh"
 
 	"github.com/graf0/afk/agent"
+	"github.com/graf0/afk/config"
 	"github.com/graf0/afk/egress"
 	"github.com/graf0/afk/forge"
 	"github.com/graf0/afk/image"
@@ -50,8 +51,8 @@ type Options struct {
 	ClaudeToken string
 	Paths       image.Paths
 	Out         io.Writer
-	Forge       *forge.GitHub // GitURL is where ticket-N is pushed
-	AgentBinary string        // "claude" unless set (tests)
+	Forge       forge.Forge // Remote is where ticket-N is pushed
+	AgentBinary string      // "claude" unless set (tests)
 	// Resume is the VM an earlier Factory left for this Ticket (or, in a
 	// Spec, for one of its children or its review); the Run continues in it
 	// instead of starting a fresh one (docs/workflow.md).
@@ -60,9 +61,10 @@ type Options struct {
 
 // vmSetup is what a Run needs to bring up a Sandbox VM.
 type vmSetup struct {
-	policy egress.Policy
-	disk   string
-	signer ssh.Signer
+	policy  egress.Policy
+	disk    string
+	sandbox config.Machine
+	signer  ssh.Signer
 }
 
 // run is the state of one Run.
@@ -73,8 +75,9 @@ type run struct {
 	branch     string // ticket-N, in the guest and the Quarantine repo
 	quarantine Quarantine
 	log        *rotatingLog
-	id         string // machine id of the VM, random when empty
-	resumed    bool   // the guest holds the Agent's earlier work: the next prompt says so
+	denials    *denialLog // Egress proxy denials of the session, next to log
+	id         string     // machine id of the VM, random when empty
+	resumed    bool       // the guest holds the Agent's earlier work: the next prompt says so
 
 	// tip is the end of the Spec's branch in the Quarantine repo: the commit
 	// the Run continues from and the one Accept moves the branch from. Empty
@@ -92,11 +95,11 @@ func newRun(ctx context.Context, opts Options) (r run, setup vmSetup, err error)
 		return
 	}
 	r.stateDir = filepath.Join(opts.Paths.StateDir, r.project)
-	if setup.policy, err = egress.Allowlist(slices.Concat(cfg.Network.Allow, agent.Domains)); err != nil {
-		err = fmt.Errorf("network.allow: %w", err)
+	if setup.policy, err = EgressPolicy(cfg); err != nil {
 		return
 	}
-	if setup.disk, err = image.LatestDisk(opts.Paths, r.project); err != nil {
+	setup.sandbox = cfg.Machine.Sandbox
+	if setup.disk, err = image.LatestDisk(opts.Paths, r.project, config.SandboxMachine); err != nil {
 		return
 	}
 	if setup.signer, err = image.SSHSigner(opts.Paths); err != nil {
@@ -118,7 +121,7 @@ func newRun(ctx context.Context, opts Options) (r run, setup vmSetup, err error)
 // is destroyed before the Forge is written; on any failure in the VM (and
 // Ctrl-C) it stays for `afk vm shell` / `afk vm kill`.
 func Execute(ctx context.Context, opts Options) (err error) {
-	if opts.Ticket.SubIssues > 0 {
+	if opts.Ticket.HasLabel(opts.Base.Config.Labels.Spec) {
 		err = fmt.Errorf("ticket #%d is a Spec: run it with ExecuteSpec", opts.Ticket.Number)
 		return
 	}
@@ -145,7 +148,7 @@ func Execute(ctx context.Context, opts Options) (err error) {
 	if err != nil {
 		return
 	}
-	defer func() { _ = r.log.Close() }()
+	defer r.closeLogs()
 	r.say("ticket #%d %s", opts.Ticket.Number, agent.Sanitize(opts.Ticket.Title))
 	r.say("base origin/%s %s, log %s", opts.Base.Branch, opts.Base.Commit, logPath)
 
@@ -182,10 +185,12 @@ func (r run) session(ctx context.Context, setup vmSetup, work workFunc) (res res
 		id = fmt.Sprintf("%d-%s", r.Ticket.Number, hex.EncodeToString(random))
 	}
 	m, err := conn.Up(ctx, machine.Spec{
-		Project:  r.project,
-		Kind:     machine.KindRun,
-		ID:       id,
-		BaseDisk: setup.disk,
+		Project:   r.project,
+		Kind:      machine.KindRun,
+		ID:        id,
+		BaseDisk:  setup.disk,
+		MemoryMiB: setup.sandbox.MemoryMiB,
+		CPUs:      setup.sandbox.CPUs,
 	})
 	if err != nil {
 		return
@@ -214,8 +219,9 @@ func (r run) resume(ctx context.Context, setup vmSetup, leftover Leftover, work 
 	return
 }
 
-// inVM runs work in the guest of m over ssh, after prepareGuest when
-// prepare is set. The VM is destroyed on success, kept on failure.
+// inVM runs work in the guest of m over ssh, after prepareGuest and the
+// Tools' setup when prepare is set. The VM is destroyed on success, kept on
+// failure.
 func (r run) inVM(ctx context.Context, conn *machine.Conn, m machine.Machine, setup vmSetup, prepare bool, work workFunc) (res result, err error) {
 	var client *ssh.Client
 	defer func() {
@@ -238,12 +244,13 @@ func (r run) inVM(ctx context.Context, conn *machine.Conn, m machine.Machine, se
 	defer func() { _ = client.Close() }()
 	// Ctrl-C ends every session at once; the VM then stays like on failure.
 	defer context.AfterFunc(ctx, func() { _ = client.Close() })()
-	stop, err := machine.ServeEgress(ctx, client, setup.policy)
+	stop, err := machine.ServeEgress(ctx, client, setup.policy, r.denials)
 	if err != nil {
 		return
 	}
 	defer stop()
 
+	work = r.prepared(prepare, work)
 	if prepare {
 		err = r.prepareGuest(ctx, client)
 	} else {
@@ -253,8 +260,18 @@ func (r run) inVM(ctx context.Context, conn *machine.Conn, m machine.Machine, se
 	if err != nil {
 		return
 	}
-	res, err = work(ctx, sshGuest{run: r, client: client})
+	res, err = work(ctx, sshGuest{run: r, client: client, env: r.Base.Config.ToolEnv()})
 	return
+}
+
+// prepared is work as the guest of inVM runs it: after the Tools' setup in a
+// fresh VM, which follows the clone; as it is in a resumed one, whose state
+// the Agent has worked on.
+func (r run) prepared(prepare bool, work workFunc) (prepared workFunc) {
+	if prepare {
+		return r.withSetup(work)
+	}
+	return work
 }
 
 // prepareGuest clones the base into guestRepo on the ticket branch, with the
@@ -337,10 +354,20 @@ func (r *run) openLog(name string) (path string, err error) {
 	}
 	path = filepath.Join(dir, fmt.Sprintf("%s-%s.jsonl", name, time.Now().UTC().Format("20060102T150405Z")))
 	r.log = &rotatingLog{path: path, max: logRotateSize}
+	r.denials = &denialLog{path: strings.TrimSuffix(path, ".jsonl") + "-egress.txt"}
 	if r.log.file, err = os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600); err != nil {
 		err = fmt.Errorf("creating log: %w", err)
 	}
 	return
+}
+
+// closeLogs closes the logs of the session and, when the Egress proxy denied
+// anything, says how many times and where the denials are.
+func (r run) closeLogs() {
+	_ = r.log.Close()
+	if denied, _ := r.denials.Close(); denied > 0 {
+		r.say("egress: %d denied, see %s", denied, r.denials.path)
+	}
 }
 
 // say prints a line of afk itself, prefixed "= " like ralph.sh.
@@ -398,6 +425,18 @@ type rotatingLog struct {
 	size int64
 }
 
+// newRotatingLog creates the file at path, which must not exist, as a log
+// bounded by logRotateSize.
+func newRotatingLog(path string) (l *rotatingLog, err error) {
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		err = fmt.Errorf("creating %s: %w", filepath.Base(path), err)
+		return
+	}
+	l = &rotatingLog{path: path, max: logRotateSize, file: file}
+	return
+}
+
 func (l *rotatingLog) Write(p []byte) (n int, err error) {
 	if l.size > 0 && l.size+int64(len(p)) > l.max {
 		if err = l.rotate(); err != nil {
@@ -441,5 +480,40 @@ func (l *limitWriter) Write(p []byte) (n int, err error) {
 	}
 	n, err = l.w.Write(p)
 	l.left -= int64(n)
+	return
+}
+
+// denialLog is the file of the Egress proxy's denials, one line per Write.
+// The file is created by the first denial: a Run without any leaves none.
+type denialLog struct {
+	path string
+
+	mu    sync.Mutex
+	out   *rotatingLog // bounded like the log: the guest decides how many it causes
+	count int
+}
+
+func (l *denialLog) Write(p []byte) (n int, err error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.out == nil {
+		if l.out, err = newRotatingLog(l.path); err != nil {
+			return
+		}
+	}
+	if n, err = l.out.Write(p); err == nil {
+		l.count++
+	}
+	return
+}
+
+// Close closes the file and returns the number of denials written.
+func (l *denialLog) Close() (denied int, err error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	denied = l.count
+	if l.out != nil {
+		err = l.out.Close()
+	}
 	return
 }

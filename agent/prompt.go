@@ -17,7 +17,15 @@ type Task struct {
 	SpecPath   string   // the Spec of the ticket as context, outside the clone; empty without a Spec
 	Protected  []string // [protect].paths
 	Plugins    []string // names of the plugins in the image, without marketplace
+	Tools      []Tool   // [tool.<name>] by name; Prompt already trimmed
 	Resumed    bool     // the clone holds the Agent's earlier work: the session continues it
+}
+
+// Tool is what the prompt tells the Agent about a Tool; Prompt may be empty.
+type Tool struct {
+	Name   string
+	Prompt string
+	Env    []string // names of its env variables, sorted; never the values
 }
 
 // skillsPlugin is the plugin whose implement and code-review skills the
@@ -50,6 +58,7 @@ func Prompt(task Task) (prompt string) {
 	writeCommitRules(&b, task)
 	b.WriteString("- Zwróć status `done`, gdy ticket jest zrobiony i zacommitowany: w `summary` 2-5 zdań co zrobiono, w `deviations` każde odstępstwo od ticketu z powodem (pusta lista, gdy nie było), w `doubts` rzeczy do sprawdzenia przez człowieka (opcjonalnie), w `reason` jedno zdanie. Zwykłe odstępstwo z dobrego powodu tylko zgłoś, nie zatrzymuj się.\n")
 	b.WriteString("- Zwróć `needs_info`, gdy ticket jest niejasny, sprzeczny albo za duży: powód w `reason`, konkretne pytania do autora ticketu w `questions`, `summary` puste, `deviations` pusta lista — wtedy bez commitów.\n")
+	writeTools(&b, task)
 	writeResumeNote(&b, task)
 	return b.String()
 }
@@ -64,6 +73,7 @@ func FixPrompt(task Task, gateCmd, output string) (prompt string) {
 	b.WriteString("Zasady:\n")
 	writeCommitRules(&b, task)
 	b.WriteString("- Zwróć status `done`, gdy bramka przechodzi i poprawka jest zacommitowana: w `summary` 1-3 zdania co poprawiono, w `deviations` pusta lista, w `reason` jedno zdanie.\n")
+	writeTools(&b, task)
 	return b.String()
 }
 
@@ -79,8 +89,29 @@ func ReviewPrompt(task Task) (prompt string) {
 	b.WriteString("Zasady:\n")
 	writeCommitRules(&b, task)
 	b.WriteString("- Zwróć status `done`: w `summary` krótki werdykt, w `findings_fixed` co poprawiłeś, w `findings_skipped` czego świadomie nie poprawiłeś i dlaczego, w `deviations` pusta lista, w `reason` jedno zdanie.\n")
+	writeTools(&b, task)
 	writeResumeNote(&b, task)
 	return b.String()
+}
+
+// writeTools appends the "Narzędzia" section: each Tool, with its prompt if
+// any (continuation lines indented) and the names of its env variables.
+// Without Tools there is no section.
+func writeTools(b *strings.Builder, task Task) {
+	if len(task.Tools) == 0 {
+		return
+	}
+	b.WriteString("\nNarzędzia dostępne w tej maszynie:\n")
+	for _, tool := range task.Tools {
+		fmt.Fprintf(b, "- `%s`", tool.Name)
+		if tool.Prompt != "" {
+			fmt.Fprintf(b, ": %s", strings.ReplaceAll(tool.Prompt, "\n", "\n  "))
+		}
+		if len(tool.Env) > 0 {
+			fmt.Fprintf(b, "\n  Zmienne środowiskowe: %s", quoteList(tool.Env))
+		}
+		b.WriteString("\n")
+	}
 }
 
 // writeResumeNote appends the note of a resumed session (resume_note in

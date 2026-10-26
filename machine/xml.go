@@ -41,8 +41,8 @@ var (
       <hostkey>{{x .Meta.HostKey}}</hostkey>
     </afk:machine>
   </metadata>
-  <memory unit='GiB'>2</memory>
-  <vcpu>2</vcpu>
+  <memory unit='MiB'>{{.MemoryMiB}}</memory>
+  <vcpu>{{.CPUs}}</vcpu>
   <sysinfo type='smbios'>
     <oemStrings>
       <entry>io.systemd.credential.binary:tmpfiles.extra={{x .Credential}}</entry>
@@ -126,6 +126,8 @@ type definition struct {
 	Name       string // domain, network and nwfilter name
 	Disk       string
 	Credential string // base64 systemd tmpfiles.extra credential
+	MemoryMiB  int
+	CPUs       int
 	Net        subnet
 	Meta       metadata
 }

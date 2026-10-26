@@ -11,8 +11,10 @@ import (
 	"net/netip"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
+	"unicode"
 )
 
 const dialTimeout = 10 * time.Second
@@ -58,6 +60,9 @@ type Proxy struct {
 	Resolver  Resolver
 	Dialer    Dialer
 	HostAddrs func() (addrs []net.Addr, err error) // addresses of the host's interfaces
+	// Denials gets one line per denied target, "host:port: error"; nil
+	// discards them. Connections write concurrently, so it must be safe for that.
+	Denials io.Writer
 }
 
 // New returns a Proxy enforcing policy, using the system resolver and dialer.
@@ -203,6 +208,7 @@ func (p *Proxy) dial(ctx context.Context, network, address string) (conn net.Con
 		err = fmt.Errorf("parsing target %q: %w", address, err)
 		return
 	}
+	defer func() { p.logDenial(host, port, err) }()
 	if !p.Policy.AllowsPort(port) {
 		err = fmt.Errorf("%w: port %d not allowed", ErrDenied, port)
 		return
@@ -228,6 +234,23 @@ func (p *Proxy) dial(ctx context.Context, network, address string) (conn net.Con
 	}
 	err = fmt.Errorf("dialing %q: %w", host, lastErr)
 	return
+}
+
+// logDenial writes a line to p.Denials when err is a denial. The host comes
+// from the guest: control characters become "?", so that it cannot forge
+// lines or drive the terminal of whoever reads the file.
+func (p *Proxy) logDenial(host string, port int, err error) {
+	if p.Denials == nil || !errors.Is(err, ErrDenied) {
+		return
+	}
+	line := fmt.Sprintf("%s: %v", net.JoinHostPort(host, strconv.Itoa(port)), err)
+	line = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return '?'
+		}
+		return r
+	}, line)
+	_, _ = fmt.Fprintln(p.Denials, line)
 }
 
 // resolve returns the addresses of host, IPv4 first. IP literals skip DNS.

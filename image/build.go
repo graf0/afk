@@ -6,14 +6,12 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"maps"
 	"net"
 	"net/http"
 	"os"
 	"os/user"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -24,6 +22,7 @@ import (
 
 const (
 	varFile    = "vars.json"
+	hashFile   = "config-hash" // in the version directory: ConfigHash of the build
 	imageGroup = "kvm"
 )
 
@@ -38,6 +37,9 @@ type Options struct {
 	// ProjectSettings is the Project's .claude/settings.json (nil: none);
 	// its plugins are installed into the image.
 	ProjectSettings []byte
+
+	// Version names the new version directory (empty: by the current time).
+	Version string
 
 	// Abort, once closed, kills Packer and everything it started right away
 	// instead of waiting for it to stop QEMU after ctx is cancelled (nil: never).
@@ -60,9 +62,12 @@ func ProjectName(repo string) (name string, err error) {
 // --- build ---
 
 // Build builds the Base image of the Project described by opts.Config and
-// installs it in a new version directory Paths.BaseDir/<project>/<version>
-// (older versions stay). It returns that directory. Cancelling ctx interrupts
-// Packer, which stops QEMU.
+// installs it in a new version directory
+// Paths.BaseDir/<project>/sandbox/<version> (older versions stay). It returns
+// that directory. Cancelling ctx interrupts Packer, which stops QEMU.
+//
+// Build does not lock: the caller holds the Project's build lock (use Ensure
+// or BuildExclusive).
 //
 // Internet access during the build goes only through an Egress proxy
 // (all public domains) on a random loopback port, tunneled into the guest.
@@ -71,9 +76,9 @@ func Build(ctx context.Context, opts Options) (imageDir string, err error) {
 	if opts.Out == nil {
 		opts.Out = io.Discard
 	}
-	tmpl, ok := templates[cfg.Image.Template]
-	if !ok {
-		err = fmt.Errorf("unsupported image.template %q: only %q are implemented", cfg.Image.Template, slices.Sorted(maps.Keys(templates)))
+	// The same steps go to Packer and into the hash (ConfigHash).
+	tmpl, provision, final, err := guestScript(cfg, opts.ProjectSettings)
+	if err != nil {
 		return
 	}
 	project, err := ProjectName(cfg.Forge.Repo)
@@ -102,7 +107,8 @@ func Build(ctx context.Context, opts Options) (imageDir string, err error) {
 		}
 	}
 	projectDir := paths.projectDir(project)
-	for _, dir := range []string{paths.BaseDir, projectDir} {
+	machineDir := paths.machineDir(project, config.SandboxMachine)
+	for _, dir := range []string{paths.BaseDir, projectDir, machineDir} {
 		if err = EnsureSharedDir(dir, gid); err != nil {
 			return
 		}
@@ -114,7 +120,7 @@ func Build(ctx context.Context, opts Options) (imageDir string, err error) {
 		return
 	}
 	defer cleanWork()
-	buildDir, cleanBuild, err := tempDir(projectDir, ".build-*")
+	buildDir, cleanBuild, err := tempDir(machineDir, ".build-*")
 	if err != nil {
 		return
 	}
@@ -135,11 +141,6 @@ func Build(ctx context.Context, opts Options) (imageDir string, err error) {
 		return
 	}
 	outputDir := filepath.Join(buildDir, "out")
-	pluginSteps, err := pluginInstallSteps(cfg.Agent, opts.ProjectSettings)
-	if err != nil {
-		return
-	}
-	provision, final := provisionSteps(pluginSteps, cfg.Image.Provision)
 	vars := packerVars{
 		BaseImage:      tmpl.ImageURL,
 		BaseChecksum:   tmpl.ChecksumURL,
@@ -173,7 +174,15 @@ func Build(ctx context.Context, opts Options) (imageDir string, err error) {
 		return
 	}
 
-	imageDir = filepath.Join(projectDir, newVersion(time.Now()))
+	hash := configHash(tmpl, provision, final)
+	if err = os.WriteFile(filepath.Join(outputDir, hashFile), []byte(hash+"\n"), 0o600); err != nil {
+		err = fmt.Errorf("writing %s: %w", hashFile, err)
+		return
+	}
+	if opts.Version == "" {
+		opts.Version = newVersion(time.Now())
+	}
+	imageDir = filepath.Join(machineDir, opts.Version)
 	if err = installArtifact(outputDir, imageDir, gid); err != nil {
 		imageDir = ""
 		return

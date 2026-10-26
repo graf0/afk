@@ -17,6 +17,7 @@ HTTP proxy: `CONNECT` (HTTPS) i zwykłe HTTP. Gość: `http_proxy`/`https_proxy=
 - Dodatkowe zakresy odmowy: CGNAT `100.64.0.0/10`, `0.0.0.0/8`, `240.0.0.0/4`, `192.0.0.0/24`, `198.18.0.0/15`, NAT64 `64:ff9b::/96` i `64:ff9b:1::/48`, 6to4 `2002::/16`, Teredo `2001::/32`, `::/96`, `fec0::/10`; IPv4-mapped (`::ffff:a.b.c.d`) jest odmapowywany i sprawdzany jako IPv4. NAT64 zostaje na liście, bo host ma IPv4; na hoście tylko z IPv6 i DNS64 proxy odrzuci wszystko.
 - Odmowa też, gdy nie da się wylistować adresów hosta (fail closed) albo adres ma zone (`fe80::1%eth0`) → 403.
 - Kody: 403 odmowa, 400 zły request (nie-proxy, `https://` w absolute-form, zły host:port), 502 błąd upstreamu (DNS, dial, `RoundTrip`).
+- Każda odmowa (403 z polityki lub kontroli adresów) trafia jako jedna linia `denied host="…" port=N reason=…` do `Proxy.Denials` (`io.Writer`, nil = odrzuć). Run kieruje je do `<log>-egress.txt` (plik powstaje przy pierwszej odmowie) i na koniec drukuje `= egress: N denied, see <plik>`.
 - Zwykłe HTTP: usuwane `Proxy-Connection`, `Proxy-Authorization` i userinfo z URL; celem jest wyłącznie host z URL (nagłówek `Host` ignorowany).
 - Łączymy się z rozwiązanym adresem, nie z nazwą (bez drugiego rozwiązania → bez DNS rebinding). IPv4 najpierw (IPv6 na hoście bywa bez trasy).
 

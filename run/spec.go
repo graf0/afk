@@ -9,7 +9,9 @@ import (
 	"strings"
 
 	"github.com/graf0/afk/agent"
+	"github.com/graf0/afk/config"
 	"github.com/graf0/afk/forge"
+	"github.com/graf0/afk/image"
 )
 
 // sessionFunc runs work in a fresh guest prepared for r: in production a
@@ -39,7 +41,8 @@ type specRun struct {
 
 // ExecuteSpec runs the Spec opts.Ticket like docs/reference/ralph.sh, do_spec:
 // its open sub-issues in ascending order, the first one without an open
-// blocker each time, every one as a Run in a fresh VM that starts from the
+// blocker each time, every one as a Run in a fresh VM (from a Base image
+// ensured right before it, as a Spec runs for hours) that starts from the
 // end of the branch ticket-<spec>; then a review of the whole branch.
 // After each child the branch is pushed, the first one opens a draft pull
 // request (Closes for the Spec and all children), and the report goes on the
@@ -57,15 +60,30 @@ func ExecuteSpec(ctx context.Context, opts Options) (err error) {
 		return
 	}
 	s := specRun{run: r, leftover: leftover, open: func(ctx context.Context, r run, work workFunc) (res result, err error) {
-		return r.enter(ctx, setup, work)
+		// A Spec runs for hours: every fresh VM starts from a current image.
+		if r.Resume == nil {
+			if err = ensureSandboxImage(ctx, r.Base, r.Paths, r.Out, image.Build); err != nil {
+				err = fmt.Errorf("ensuring the Base image: %w", err)
+				return
+			}
+			if setup.disk, err = image.LatestDisk(r.Paths, r.project, config.SandboxMachine); err != nil {
+				return
+			}
+		}
+		res, err = r.enter(ctx, setup, work)
+		return
 	}}
 	err = s.execute(ctx)
 	return
 }
 
 func (s *specRun) execute(ctx context.Context) (err error) {
+	if !s.Ticket.HasLabel(s.Base.Config.Labels.Spec) {
+		err = fmt.Errorf("ticket #%d lacks the label %q: it is not a Spec", s.Ticket.Number, s.Base.Config.Labels.Spec)
+		return
+	}
 	if s.Ticket.SubIssues == 0 {
-		err = fmt.Errorf("ticket #%d has no sub-issues: it is not a Spec", s.Ticket.Number)
+		err = fmt.Errorf("spec #%d has no sub-issues", s.Ticket.Number)
 		return
 	}
 	s.say("spec #%d %s", s.Ticket.Number, agent.Sanitize(s.Ticket.Title))
@@ -166,7 +184,7 @@ func (s *specRun) next(ctx context.Context) (child forge.Ticket, ok bool, err er
 	slices.SortFunc(subs, func(a, b forge.SubIssue) int { return cmp.Compare(a.Number, b.Number) })
 	label := s.Base.Config.Labels.ReadyForAgent
 	for _, sub := range subs {
-		if !slices.Contains(sub.Labels, label) {
+		if !sub.HasLabel(label) {
 			err = fmt.Errorf("spec #%d: open child #%d lacks the label %q: only tickets a human marked ready run in the Factory", s.Ticket.Number, sub.Number, label)
 			return
 		}
@@ -212,7 +230,7 @@ func (s *specRun) runChild(ctx context.Context, child forge.Ticket) (err error) 
 	if err != nil {
 		return
 	}
-	defer func() { _ = r.log.Close() }()
+	defer r.closeLogs()
 	s.say("start %s, log %s", r.start()[:12], logPath)
 	s.takeLeftover(&r)
 	res, err := s.open(ctx, r, r.workChild)
@@ -337,7 +355,7 @@ func (s *specRun) finish(ctx context.Context) (err error) {
 	if err != nil {
 		return
 	}
-	defer func() { _ = r.log.Close() }()
+	defer r.closeLogs()
 	s.say("start %s, log %s", r.tip[:12], logPath)
 	s.takeLeftover(&r)
 	res, err := s.open(ctx, r, r.workReview)

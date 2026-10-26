@@ -36,7 +36,7 @@ func TestProjectName(t *testing.T) {
 
 func TestBuildRejectsUnsupportedTemplateBeforeAnyWork(t *testing.T) {
 	paths := Paths{CacheDir: filepath.Join(t.TempDir(), "cache"), StateDir: t.TempDir(), BaseDir: t.TempDir()}
-	cfg := config.Config{Forge: config.Forge{Kind: "github", Repo: "a/b"}, Image: config.Image{Template: "ws2025"}}
+	cfg := config.Config{Forge: config.Forge{Kind: "github", Repo: "a/b"}, Machine: config.Machines{Sandbox: config.Machine{Template: "ws2025"}}}
 
 	_, err := Build(t.Context(), Options{Paths: paths, Config: cfg, Out: io.Discard})
 	if err == nil || !strings.Contains(err.Error(), "ws2025") {

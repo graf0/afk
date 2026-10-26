@@ -18,13 +18,14 @@ printf 'token=%s\n' "$CLAUDE_CODE_OAUTH_TOKEN"
 printf 'proxy=%s\n' "$https_proxy"
 printf 'traffic=%s\n' "$CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"
 printf 'pwd=%s\n' "$PWD"
+printf 'dburl=%s\n' "$DATABASE_URL"
 printf 'arg=%s\n' "$@"
 printf 'stdin=%s\n' "$(cat)"
 `
 	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	s := Session{Token: "tok'en", Prompt: "do it\nwell", Dir: dir, Model: "opus", Proxy: "http://127.0.0.1:3128", Binary: fake}
+	s := Session{Token: "tok'en", Prompt: "do it\nwell", Dir: dir, Model: "opus", Proxy: "http://127.0.0.1:3128", Binary: fake, Env: map[string]string{"DATABASE_URL": "postgres:///it's $x"}}
 
 	cmd := exec.Command("bash", "-c", s.command())
 	cmd.Stdin = strings.NewReader(s.Token + "\n" + s.Prompt)
@@ -37,6 +38,7 @@ printf 'stdin=%s\n' "$(cat)"
 		"token=tok'en\n",
 		"proxy=http://127.0.0.1:3128\n",
 		"traffic=1\n",
+		"dburl=postgres:///it's $x\n",
 		"pwd=" + dir + "\n",
 		"arg=-p\narg=--dangerously-skip-permissions\n",
 		"arg=--output-format\narg=stream-json\n",
@@ -51,6 +53,16 @@ printf 'stdin=%s\n' "$(cat)"
 	}
 	if strings.Contains(s.command(), "tok'en") {
 		t.Error("token on the command line")
+	}
+}
+
+func TestExportEnv(t *testing.T) {
+	if got := ExportEnv(nil); got != "" {
+		t.Errorf("ExportEnv(nil) = %q", got)
+	}
+	out, err := exec.Command("bash", "-c", ExportEnv(map[string]string{"B": "x y", "A": "it's"})+`printf '%s|%s' "$A" "$B"`).Output()
+	if err != nil || string(out) != "it's|x y" {
+		t.Errorf("got %q, %v", out, err)
 	}
 }
 

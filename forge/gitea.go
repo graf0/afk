@@ -1,0 +1,668 @@
+package forge
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io/fs"
+	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
+	"regexp"
+	"slices"
+	"strconv"
+	"strings"
+
+	"github.com/graf0/afk/config"
+)
+
+const (
+	giteaTokenEnv  = "GITEA_TOKEN"
+	giteaTokenFile = "gitea-token"
+	// giteaPageSize is Gitea's default maximum page size (MAX_RESPONSE_ITEMS).
+	giteaPageSize = 50
+)
+
+var (
+	// taskItem is an item of a task list in Markdown; the checkbox is
+	// ignored, the state of a child comes from its issue.
+	taskItem = regexp.MustCompile(`(?m)^[ \t]*[-*+][ \t]+\[[ xX]\][ \t]+(\S.*)$`)
+	// taskRef is an item that starts with a reference to an issue of this repository.
+	taskRef = regexp.MustCompile(`^#(\d+)(?:\W|$)`)
+	// taskForeign is an item that starts with a reference to another
+	// repository: owner/repo#M or a URL.
+	taskForeign = regexp.MustCompile(`^(?:https?://\S+|[\w.-]+/[\w.-]+#\d+)`)
+)
+
+var _ Forge = (*Gitea)(nil)
+
+// Gitea works on tickets and pull requests of Repo through the Gitea REST API
+// (1.27). It has no native sub-issues: the children of a Spec are the
+// `- [ ] #M` items of its body.
+type Gitea struct {
+	APIURL    string // <forge.url>/api/v1 (tests: the fake server)
+	GitURL    string // <forge.url>/<repo>.git
+	Repo      string // owner/name
+	Token     string
+	SpecLabel string       // [labels].spec: only a ticket with it has children
+	Client    *http.Client // http.DefaultClient unless set
+}
+
+// NewGitea returns a Gitea client for the Project's forge. specLabel is
+// [labels].spec. The client follows no redirects: forge.url is the address the
+// user vouched for, and the token goes nowhere else.
+func NewGitea(forge config.Forge, token, specLabel string) (g *Gitea, err error) {
+	base, err := url.Parse(forge.URL)
+	if err != nil || base.Scheme != "https" || base.Host == "" {
+		err = fmt.Errorf("invalid forge.url %q: want an https URL", forge.URL)
+		return
+	}
+	if owner, name, ok := strings.Cut(forge.Repo, "/"); !ok || owner == "" || name == "" || strings.Contains(name, "/") {
+		err = fmt.Errorf("invalid forge.repo %q: want owner/name", forge.Repo)
+		return
+	}
+	baseURL := strings.TrimSuffix(forge.URL, "/")
+	g = &Gitea{APIURL: baseURL + "/api/v1", GitURL: baseURL + "/" + forge.Repo + ".git", Repo: forge.Repo, Token: token, SpecLabel: specLabel, Client: noRedirects()}
+	return
+}
+
+// noRedirects is an HTTP client that returns a 3xx as it is.
+func noRedirects() (client *http.Client) {
+	return &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+}
+
+// giteaIssue is the part of the issue resource afk reads.
+type giteaIssue struct {
+	Number int    `json:"number"`
+	Title  string `json:"title"`
+	Body   string `json:"body"`
+	State  string `json:"state"`
+	Labels []struct {
+		Name string `json:"name"`
+	} `json:"labels"`
+	PullRequest *struct{} `json:"pull_request"`
+}
+
+// ticket is the ticket as read, without comments, sub-issues and parent.
+func (i giteaIssue) ticket() (ticket Ticket) {
+	ticket = Ticket{Number: i.Number, Title: i.Title, Body: i.Body}
+	for _, label := range i.Labels {
+		ticket.Labels = append(ticket.Labels, label.Name)
+	}
+	return
+}
+
+type giteaComment struct {
+	ID   int64  `json:"id"`
+	Body string `json:"body"`
+}
+
+// --- credentials ---
+
+// GiteaToken returns the host's Gitea token: GITEA_TOKEN, else the file
+// stateDir/gitea-token, which must not be readable by others.
+func GiteaToken(stateDir string) (token string, err error) {
+	if token = strings.TrimSpace(os.Getenv(giteaTokenEnv)); token != "" {
+		err = checkGiteaToken(token)
+		return
+	}
+	path := filepath.Join(stateDir, giteaTokenFile)
+	hint := fmt.Sprintf("set %s or save the token to %s (mode 0600)", giteaTokenEnv, path)
+	info, err := os.Stat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		err = fmt.Errorf("no Gitea token: %s", hint)
+		return
+	}
+	if err != nil {
+		err = fmt.Errorf("reading Gitea token: %w", err)
+		return
+	}
+	if !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 {
+		err = fmt.Errorf("refusing Gitea token file %s with mode %v: want a regular file with mode 0600", path, info.Mode())
+		return
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		err = fmt.Errorf("reading Gitea token: %w", err)
+		return
+	}
+	if token = strings.TrimSpace(string(data)); token == "" {
+		err = fmt.Errorf("token file %s is empty: %s", path, hint)
+		return
+	}
+	err = checkGiteaToken(token)
+	return
+}
+
+// checkGiteaToken refuses a token that would break the Authorization header.
+func checkGiteaToken(token string) (err error) {
+	if strings.ContainsAny(token, "\r\n") {
+		err = errors.New("the Gitea token contains a line break")
+	}
+	return
+}
+
+// --- tickets ---
+
+// ReadyTicket reads ticket n like Ticket and refuses it without label (the
+// Project's ready_for_agent): only a human makes a ticket ready (ADR-0003).
+func (g *Gitea) ReadyTicket(ctx context.Context, n int, label string) (ticket Ticket, err error) {
+	if label == "" {
+		err = errors.New("labels.ready_for_agent is empty")
+		return
+	}
+	ticket, err = g.ticket(ctx, n, label)
+	return
+}
+
+// Ticket reads ticket n with its comments. Pull requests and closed issues are
+// refused. A Spec is read too.
+func (g *Gitea) Ticket(ctx context.Context, n int) (ticket Ticket, err error) {
+	ticket, err = g.ticket(ctx, n, "")
+	return
+}
+
+// ticket reads ticket n, refusing it without label unless label is empty.
+func (g *Gitea) ticket(ctx context.Context, n int, label string) (ticket Ticket, err error) {
+	issue, err := g.issue(ctx, n)
+	if err != nil {
+		return
+	}
+	if err = notPull(issue); err != nil {
+		return
+	}
+	if issue.State != "open" {
+		err = fmt.Errorf("ticket #%d is %s", n, issue.State)
+		return
+	}
+	if ticket, err = g.ticketOf(ctx, issue); err != nil {
+		return
+	}
+	if label != "" && !ticket.HasLabel(label) {
+		err = fmt.Errorf("ticket #%d lacks the label %q: only tickets a human marked ready run in the Factory", n, label)
+		ticket = Ticket{}
+		return
+	}
+	comments, err := giteaList(ctx, g, fmt.Sprintf("/repos/%s/issues/%d/comments?", g.Repo, n), func(c giteaComment) int64 { return c.ID })
+	if err != nil {
+		err = fmt.Errorf("reading comments of ticket #%d: %w", n, err)
+		return
+	}
+	for _, comment := range comments {
+		ticket.Comments = append(ticket.Comments, comment.Body)
+	}
+	return
+}
+
+// Peek reads ticket n fresh, in any state and without comments: what the
+// Factory decides on (the list by label lags behind). Pull requests are refused.
+func (g *Gitea) Peek(ctx context.Context, n int) (ticket Ticket, open bool, err error) {
+	issue, err := g.issue(ctx, n)
+	if err != nil {
+		return
+	}
+	if err = notPull(issue); err != nil {
+		return
+	}
+	if ticket, err = g.ticketOf(ctx, issue); err != nil {
+		return
+	}
+	open = issue.State == "open"
+	return
+}
+
+// notPull refuses issue when it is a pull request: Gitea serves both as issues.
+func notPull(issue giteaIssue) (err error) {
+	if issue.PullRequest != nil {
+		err = fmt.Errorf("#%d is a pull request, not a ticket", issue.Number)
+	}
+	return
+}
+
+// issue reads issue (or pull request) n.
+func (g *Gitea) issue(ctx context.Context, n int) (issue giteaIssue, err error) {
+	if err = g.get(ctx, fmt.Sprintf("/repos/%s/issues/%d", g.Repo, n), &issue); err != nil {
+		err = fmt.Errorf("reading ticket #%d: %w", n, err)
+	}
+	return
+}
+
+// ticketOf is the ticket of issue with its sub-issue count (a Spec: the task
+// list) and its Spec.
+func (g *Gitea) ticketOf(ctx context.Context, issue giteaIssue) (ticket Ticket, err error) {
+	ticket = issue.ticket()
+	if ticket.HasLabel(g.SpecLabel) {
+		var children []int
+		if children, err = specChildren(ticket); err != nil {
+			return
+		}
+		ticket.SubIssues = len(children)
+	}
+	ticket.Parent, err = g.parentOf(ctx, ticket.Number)
+	return
+}
+
+// ListLabeled returns the numbers of the open issues with label, ascending.
+// The list lags behind labels changed a moment ago: Peek decides.
+func (g *Gitea) ListLabeled(ctx context.Context, label string) (numbers []int, err error) {
+	issues, err := g.listOpen(ctx, label)
+	if err != nil {
+		err = fmt.Errorf("listing tickets labeled %q: %w", label, err)
+		return
+	}
+	for _, issue := range issues {
+		numbers = append(numbers, issue.Number)
+	}
+	return
+}
+
+// listOpen returns the open issues (no pull requests) with label, ascending,
+// with their bodies. Gitea may drop a filter it does not know, and whether
+// names match regardless of case depends on its database: the label is
+// checked here as well.
+func (g *Gitea) listOpen(ctx context.Context, label string) (issues []giteaIssue, err error) {
+	listed, err := giteaList(ctx, g, "/repos/"+g.Repo+"/issues?state=open&type=issues&labels="+url.QueryEscape(label)+"&", func(i giteaIssue) int { return i.Number })
+	if err != nil {
+		return
+	}
+	for _, issue := range listed {
+		if issue.PullRequest == nil && ContainsLabel(issue.ticket().Labels, label) {
+			issues = append(issues, issue)
+		}
+	}
+	slices.SortFunc(issues, func(a, b giteaIssue) int { return a.Number - b.Number })
+	return
+}
+
+// Labels lists the names of the labels of the repository.
+func (g *Gitea) Labels(ctx context.Context) (names []string, err error) {
+	labels, err := g.repoLabels(ctx)
+	if err != nil {
+		return
+	}
+	for _, label := range labels {
+		names = append(names, label.Name)
+	}
+	return
+}
+
+// --- specs ---
+
+// specChildren returns the issues of the task list of a Spec, once each in
+// the order of the list. A reference to another repository, or to the Spec
+// itself, is an error.
+func specChildren(spec Ticket) (children []int, err error) {
+	var foreign []string
+	children, foreign = taskListRefs(spec.Body)
+	switch {
+	case len(foreign) > 0:
+		err = fmt.Errorf("spec #%d lists %q: only issues of this repository (#M) can be sub-issues", spec.Number, foreign[0])
+	case slices.Contains(children, spec.Number):
+		err = fmt.Errorf("spec #%d lists itself as a sub-issue", spec.Number)
+	}
+	return
+}
+
+// taskListRefs returns the issues (#M, once each) and the references to other
+// repositories found in the task list items of body. The checkbox is ignored.
+func taskListRefs(body string) (refs []int, foreign []string) {
+	for _, item := range taskItem.FindAllStringSubmatch(body, -1) {
+		text := strings.TrimSpace(item[1])
+		if m := taskRef.FindStringSubmatch(text); m != nil {
+			if n, err := strconv.Atoi(m[1]); err == nil && !slices.Contains(refs, n) {
+				refs = append(refs, n)
+			}
+		} else if other := taskForeign.FindString(text); other != "" {
+			foreign = append(foreign, other)
+		}
+	}
+	return
+}
+
+// SubIssues lists the sub-issues of Spec n, open and closed: the issues of the
+// task list of its body, each read for its state and labels. A ticket without
+// the spec label has none. A pull request in the list is an error.
+func (g *Gitea) SubIssues(ctx context.Context, n int) (subs []SubIssue, err error) {
+	spec, err := g.issue(ctx, n)
+	if err != nil {
+		return
+	}
+	if !ContainsLabel(spec.ticket().Labels, g.SpecLabel) {
+		return
+	}
+	children, err := specChildren(spec.ticket())
+	if err != nil {
+		return
+	}
+	for _, child := range children {
+		var issue giteaIssue
+		if issue, err = g.issue(ctx, child); err != nil {
+			err = fmt.Errorf("reading sub-issue of #%d: %w", n, err)
+			return
+		}
+		if issue.PullRequest != nil {
+			err = fmt.Errorf("spec #%d lists #%d, which is a pull request, not a ticket", n, child)
+			return
+		}
+		sub := SubIssue{Number: child, Open: issue.State == "open"}
+		sub.Labels = issue.ticket().Labels
+		subs = append(subs, sub)
+	}
+	return
+}
+
+// parentOf returns the Spec that lists ticket n in its task list, the lowest
+// one if several do, zero without one. Gitea has no parent link, so this
+// reads every open issue with the spec label (a page of 50 per request, bodies
+// included): one request for a repository with fewer than 50 open Specs. A
+// malformed task list of another Spec is not this ticket's problem.
+//
+// ponytail: every Peek and Ticket pays this list, so a Factory round costs
+// two requests per ready ticket. Not cached: a stale parent would run a
+// child on its own. Upgrade (cache per round) if the Specs outgrow a page.
+func (g *Gitea) parentOf(ctx context.Context, n int) (parent int, err error) {
+	if g.SpecLabel == "" {
+		return
+	}
+	specs, err := g.listOpen(ctx, g.SpecLabel)
+	if err != nil {
+		err = fmt.Errorf("looking for the Spec of #%d: %w", n, err)
+		return
+	}
+	for _, spec := range specs {
+		if refs, _ := taskListRefs(spec.Body); spec.Number != n && slices.Contains(refs, n) {
+			parent = spec.Number
+			return
+		}
+	}
+	return
+}
+
+// Blocked reports whether ticket has an open blocker: a native dependency
+// or an issue named in a "Blocked by: #a, #b" line of its body. With
+// dependencies disabled in the repository only the line counts.
+func (g *Gitea) Blocked(ctx context.Context, ticket Ticket) (blocked bool, err error) {
+	blockers, err := g.dependencies(ctx, ticket.Number)
+	if err != nil {
+		return
+	}
+	if slices.ContainsFunc(blockers, func(blocker giteaIssue) bool { return blocker.State == "open" }) {
+		blocked = true
+		return
+	}
+	for _, ref := range blockedByRefs(ticket.Body) {
+		var blocker giteaIssue
+		if blocker, err = g.issue(ctx, ref); err != nil {
+			err = fmt.Errorf("reading blocker of #%d: %w", ticket.Number, err)
+			return
+		}
+		if blocker.State == "open" {
+			blocked = true
+			return
+		}
+	}
+	return
+}
+
+// dependencies returns the native blockers of issue n; none when the
+// repository has dependencies disabled.
+func (g *Gitea) dependencies(ctx context.Context, n int) (blockers []giteaIssue, err error) {
+	blockers, err = giteaList(ctx, g, fmt.Sprintf("/repos/%s/issues/%d/dependencies?", g.Repo, n), func(i giteaIssue) int { return i.Number })
+	if apiErr, ok := errors.AsType[*apiError](err); ok && apiErr.Status == http.StatusNotFound {
+		// Gitea answers 404 when the repository has dependencies
+		// disabled, as when the issue does not exist: telling them
+		// apart takes reading the issue.
+		_, err = g.issue(ctx, n)
+		return
+	}
+	if err != nil {
+		err = fmt.Errorf("reading blockers of #%d: %w", n, err)
+	}
+	return
+}
+
+// --- git ---
+
+// Remote is GitURL with Token in an Authorization header scoped to GitURL,
+// with the same safeguards as GitHub's (see tokenRemote). Gitea takes an access
+// token as the password of Basic auth, whatever the user name.
+func (g *Gitea) Remote() (remote Remote) {
+	return tokenRemote(g.Repo, g.GitURL, "afk", g.Token)
+}
+
+// --- writes ---
+
+// wipPrefixes are Gitea's default WORK_IN_PROGRESS_PREFIXES; the first one is
+// what afk writes. Gitea has no GraphQL and cannot create a draft with a flag:
+// a pull request is a draft (the read-only `draft` of the API) exactly while
+// its title starts with one of the instance's prefixes, so ReadyPull is a
+// PATCH of the title without the prefix, where GitHub needs the
+// markPullRequestReadyForReview mutation.
+var wipPrefixes = []string{"WIP:", "[WIP]"}
+
+// splitWIP cuts the draft prefix (and the space after it) off title.
+func splitWIP(title string) (rest string, draft bool) {
+	for _, prefix := range wipPrefixes {
+		if len(title) >= len(prefix) && strings.EqualFold(title[:len(prefix)], prefix) {
+			return strings.TrimLeft(title[len(prefix):], " "), true
+		}
+	}
+	return title, false
+}
+
+// giteaPull is the part of the pull request resource afk reads.
+type giteaPull struct {
+	Number int    `json:"number"`
+	URL    string `json:"html_url"`
+	State  string `json:"state"`
+	Title  string `json:"title"`
+	Draft  bool   `json:"draft"`
+	Head   struct {
+		Ref  string `json:"ref"`
+		Repo *struct {
+			FullName string `json:"full_name"`
+		} `json:"repo"`
+	} `json:"head"`
+}
+
+func (p giteaPull) pull() (pull PullRequest) {
+	return PullRequest{Number: p.Number, URL: p.URL, State: p.State, Draft: p.Draft}
+}
+
+// CreatePull opens a pull request of branch head into base; a draft is a
+// pull request whose title starts with the WIP prefix.
+func (g *Gitea) CreatePull(ctx context.Context, head, base, title, body string, draft bool) (pull PullRequest, err error) {
+	if draft {
+		title = wipPrefixes[0] + " " + title
+	}
+	in := map[string]string{"head": head, "base": base, "title": title, "body": body}
+	var created giteaPull
+	if err = g.call(ctx, http.MethodPost, fmt.Sprintf("/repos/%s/pulls", g.Repo), in, &created); err != nil {
+		err = fmt.Errorf("opening pull request of %s: %w", head, err)
+		return
+	}
+	pull = created.pull()
+	return
+}
+
+// FindPull returns the latest pull request, open or not, whose head is branch
+// of Repo. Gitea cannot filter the list by head, so it reads all of it.
+func (g *Gitea) FindPull(ctx context.Context, branch string) (pull PullRequest, found bool, err error) {
+	pulls, err := giteaList(ctx, g, "/repos/"+g.Repo+"/pulls?state=all&", func(p giteaPull) int { return p.Number })
+	if err != nil {
+		err = fmt.Errorf("looking for the pull request of %s: %w", branch, err)
+		return
+	}
+	var latest giteaPull
+	for _, p := range pulls {
+		// A pull request from a fork may have a branch of the same name.
+		if p.Head.Ref == branch && p.Head.Repo != nil && p.Head.Repo.FullName == g.Repo && p.Number > latest.Number {
+			latest, found = p, true
+		}
+	}
+	pull = latest.pull()
+	return
+}
+
+// UpdatePullBody replaces the description of pull request n.
+func (g *Gitea) UpdatePullBody(ctx context.Context, n int, body string) (err error) {
+	in := map[string]string{"body": body}
+	if err = g.call(ctx, http.MethodPatch, fmt.Sprintf("/repos/%s/pulls/%d", g.Repo, n), in, nil); err != nil {
+		err = fmt.Errorf("updating pull request #%d: %w", n, err)
+	}
+	return
+}
+
+// ReadyPull marks a draft pull request ready for review: it takes the WIP
+// prefix off the title read fresh, so a title edited since is kept.
+func (g *Gitea) ReadyPull(ctx context.Context, pull PullRequest) (err error) {
+	path := fmt.Sprintf("/repos/%s/pulls/%d", g.Repo, pull.Number)
+	var current giteaPull
+	if err = g.call(ctx, http.MethodGet, path, nil, &current); err != nil {
+		err = fmt.Errorf("marking pull request #%d ready for review: %w", pull.Number, err)
+		return
+	}
+	if !current.Draft {
+		return
+	}
+	title, known := splitWIP(current.Title)
+	if !known {
+		err = fmt.Errorf("marking pull request #%d ready for review: title %q starts with a WIP prefix of the instance that afk does not know", pull.Number, current.Title)
+		return
+	}
+	if err = g.call(ctx, http.MethodPatch, path, map[string]string{"title": title}, nil); err != nil {
+		err = fmt.Errorf("marking pull request #%d ready for review: %w", pull.Number, err)
+	}
+	return
+}
+
+// CloseIssue closes issue n.
+func (g *Gitea) CloseIssue(ctx context.Context, n int) (err error) {
+	in := map[string]string{"state": "closed"}
+	if err = g.call(ctx, http.MethodPatch, fmt.Sprintf("/repos/%s/issues/%d", g.Repo, n), in, nil); err != nil {
+		err = fmt.Errorf("closing #%d: %w", n, err)
+	}
+	return
+}
+
+// Comment adds a comment to issue or pull request n.
+func (g *Gitea) Comment(ctx context.Context, n int, body string) (err error) {
+	in := map[string]string{"body": body}
+	if err = g.call(ctx, http.MethodPost, fmt.Sprintf("/repos/%s/issues/%d/comments", g.Repo, n), in, nil); err != nil {
+		err = fmt.Errorf("commenting on #%d: %w", n, err)
+	}
+	return
+}
+
+// AddLabel adds label to issue or pull request n. The label must exist in the
+// repository: it is sent by id, so an unknown one is an error here.
+func (g *Gitea) AddLabel(ctx context.Context, n int, label string) (err error) {
+	id, found, err := g.labelID(ctx, label)
+	if err != nil {
+		err = fmt.Errorf("adding label %q to #%d: %w", label, n, err)
+		return
+	}
+	if !found {
+		err = fmt.Errorf("adding label %q to #%d: no such label in the repository", label, n)
+		return
+	}
+	in := map[string][]int64{"labels": {id}}
+	if err = g.call(ctx, http.MethodPost, fmt.Sprintf("/repos/%s/issues/%d/labels", g.Repo, n), in, nil); err != nil {
+		err = fmt.Errorf("adding label %q to #%d: %w", label, n, err)
+	}
+	return
+}
+
+// RemoveLabel removes label from issue or pull request n; a label it
+// doesn't have (Gitea answers 204), or the repository doesn't, is no error.
+func (g *Gitea) RemoveLabel(ctx context.Context, n int, label string) (err error) {
+	id, found, err := g.labelID(ctx, label)
+	if err != nil {
+		err = fmt.Errorf("removing label %q from #%d: %w", label, n, err)
+		return
+	}
+	if !found {
+		return
+	}
+	if err = g.call(ctx, http.MethodDelete, fmt.Sprintf("/repos/%s/issues/%d/labels/%d", g.Repo, n, id), nil, nil); err != nil {
+		err = fmt.Errorf("removing label %q from #%d: %w", label, n, err)
+	}
+	return
+}
+
+// labelID resolves the name of a repository label (ignoring case, as Gitea does) to its id.
+func (g *Gitea) labelID(ctx context.Context, name string) (id int64, found bool, err error) {
+	labels, err := g.repoLabels(ctx)
+	if err != nil {
+		return
+	}
+	for _, label := range labels {
+		if strings.EqualFold(label.Name, name) {
+			id, found = label.ID, true
+			return
+		}
+	}
+	return
+}
+
+// giteaLabel is the part of the label resource afk reads.
+type giteaLabel struct {
+	ID   int64  `json:"id"`
+	Name string `json:"name"`
+}
+
+func (g *Gitea) repoLabels(ctx context.Context) (labels []giteaLabel, err error) {
+	labels, err = giteaList(ctx, g, "/repos/"+g.Repo+"/labels?", func(l giteaLabel) string { return l.Name })
+	if err != nil {
+		err = fmt.Errorf("listing labels: %w", err)
+	}
+	return
+}
+
+// --- http ---
+
+// get decodes the JSON resource at path (relative to APIURL) into v.
+func (g *Gitea) get(ctx context.Context, path string, v any) (err error) {
+	err = g.call(ctx, http.MethodGet, path, nil, v)
+	return
+}
+
+// call sends a method request to path (relative to APIURL) with in as JSON
+// body (none when nil) and decodes a 2xx response into out (unless nil). A
+// redirect is an error: forge.url must be the final address.
+func (g *Gitea) call(ctx context.Context, method, path string, in, out any) (err error) {
+	header := http.Header{
+		"Accept":        {"application/json"},
+		"Authorization": {"token " + g.Token},
+	}
+	err = doJSON(ctx, g.Client, g.APIURL, method, path, header, in, out)
+	if apiErr, ok := errors.AsType[*apiError](err); ok && apiErr.Status >= 300 && apiErr.Status < 400 {
+		err = fmt.Errorf("%w (redirects are not followed, so the token goes only to forge.url: set forge.url to the final https address of the instance)", err)
+	}
+	return
+}
+
+// giteaList reads every page of the list at path (ending in "?" or "&" for
+// the page query) until a page brings nothing new, by id: Gitea's page size
+// limit is configurable and some lists are not paged at all.
+func giteaList[T any, K comparable](ctx context.Context, g *Gitea, path string, id func(T) K) (items []T, err error) {
+	seen := map[K]bool{}
+	for page := 1; ; page++ {
+		var got []T
+		if err = g.get(ctx, fmt.Sprintf("%spage=%d&limit=%d", path, page, giteaPageSize), &got); err != nil {
+			return
+		}
+		fresh := 0
+		for _, item := range got {
+			if k := id(item); !seen[k] {
+				seen[k] = true
+				items = append(items, item)
+				fresh++
+			}
+		}
+		if fresh == 0 {
+			return
+		}
+	}
+}

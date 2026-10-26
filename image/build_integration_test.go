@@ -48,7 +48,7 @@ const integrationProject = "afk-integration-test"
 
 func integrationConfig(provision []string) (cfg config.Config) {
 	cfg.Forge = config.Forge{Kind: "github", Repo: "afk/integration-test"}
-	cfg.Image = config.Image{Template: "debian13", Provision: provision}
+	cfg.Machine.Sandbox = config.Machine{Template: "debian13", MaxAge: "0", MemoryMiB: 2048, CPUs: 2, Build: provision}
 	return
 }
 
@@ -95,6 +95,7 @@ func TestIntegrationBuildAndIsolationProbe(t *testing.T) {
 	port, accepted := listenAndCount(t)
 	lan := lanAddr(t)
 	projectDir := paths.projectDir(integrationProject)
+	machineDir := paths.machineDir(integrationProject, config.SandboxMachine)
 	t.Cleanup(func() { _ = os.RemoveAll(projectDir) })
 
 	// docs/isolation.md probe, run in the guest as a project provision step
@@ -115,8 +116,12 @@ exit 0 # must not skip the mandatory final steps
 	if err != nil {
 		t.Fatal(err)
 	}
-	if latest, err := Latest(paths, integrationProject); err != nil || latest != got || filepath.Dir(got) != projectDir {
-		t.Errorf("Latest = %q, %v; want the built version %q in %s", latest, err, got, projectDir)
+	if latest, err := Latest(paths, integrationProject, config.SandboxMachine); err != nil || latest != got || filepath.Dir(got) != machineDir {
+		t.Errorf("Latest = %q, %v; want the built version %q in %s", latest, err, got, machineDir)
+	}
+	wantHash, _ := ConfigHash(integrationConfig([]string{probe}), nil)
+	if data, err := os.ReadFile(filepath.Join(got, hashFile)); err != nil || strings.TrimSpace(string(data)) != wantHash {
+		t.Errorf("%s = %q, %v; want %q", hashFile, data, err, wantHash)
 	}
 	disk := filepath.Join(got, templates["debian13"].DiskName)
 	if info, err := os.Stat(disk); err != nil || info.Size() == 0 {
@@ -158,6 +163,7 @@ func TestIntegrationInterruptDuringProvisioningLeavesNoQEMU(t *testing.T) {
 func interruptBuildWhenOutputContains(t *testing.T, paths Paths, provision []string, marker string) {
 	t.Helper()
 	projectDir := paths.projectDir(integrationProject)
+	machineDir := paths.machineDir(integrationProject, config.SandboxMachine)
 	t.Cleanup(func() { _ = os.RemoveAll(projectDir) })
 
 	ctx, cancel := context.WithCancel(t.Context())
@@ -184,12 +190,12 @@ func interruptBuildWhenOutputContains(t *testing.T, paths Paths, provision []str
 		t.Error("Build succeeded after interrupt")
 	}
 	assertNoQEMU(t)
-	if _, err := Latest(paths, integrationProject); err == nil {
+	if _, err := Latest(paths, integrationProject, config.SandboxMachine); err == nil {
 		t.Error("interrupted build installed an image")
 	}
-	entries, _ := os.ReadDir(projectDir)
+	entries, _ := os.ReadDir(machineDir)
 	for _, entry := range entries {
-		t.Errorf("leftover in project dir: %s", entry.Name())
+		t.Errorf("leftover in machine dir: %s", entry.Name())
 	}
 }
 
@@ -207,7 +213,8 @@ func assertNoQEMU(t *testing.T) {
 
 // assertFinalSteps checks the mandatory final steps in the built disk by
 // reading its root file system with debugfs (no root needed); skipped when the
-// tools are missing.
+// tools are missing. It also checks that cloud-init grew the file system to
+// the 64G disk during the build.
 func assertFinalSteps(t *testing.T, paths Paths, disk string) {
 	t.Helper()
 	const sfdisk, debugfs = "/sbin/sfdisk", "/sbin/debugfs"
@@ -248,6 +255,9 @@ func assertFinalSteps(t *testing.T, paths Paths, disk string) {
 		}
 		return string(out)
 	}
+	if gib := fileSystemBytes(t, inGuest("stats")) >> 30; gib < 60 {
+		t.Errorf("root file system is %d GiB, want ~64 (cloud-init did not grow it)", gib)
+	}
 	for _, path := range []string{"/etc/cloud/cloud-init.disabled", "/etc/netplan/90-afk.yaml"} {
 		if out := inGuest("stat " + path); !strings.Contains(out, "Inode:") {
 			t.Errorf("%s missing in the image:\n%s", path, out)
@@ -261,4 +271,24 @@ func assertFinalSteps(t *testing.T, paths Paths, disk string) {
 			t.Errorf("%s still in the image:\n%s", path, out)
 		}
 	}
+}
+
+// fileSystemBytes is the size of a file system from the output of debugfs stats.
+func fileSystemBytes(t *testing.T, stats string) (size int64) {
+	t.Helper()
+	var blocks, blockSize int64
+	for line := range strings.Lines(stats) {
+		key, value, _ := strings.Cut(line, ":")
+		switch key {
+		case "Block count":
+			blocks, _ = strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+		case "Block size":
+			blockSize, _ = strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+		}
+	}
+	if blocks == 0 || blockSize == 0 {
+		t.Fatalf("no block count or size in debugfs stats:\n%s", stats)
+	}
+	size = blocks * blockSize
+	return
 }

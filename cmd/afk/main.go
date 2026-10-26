@@ -3,17 +3,17 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"os/signal"
-	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/graf0/afk/config"
 	"github.com/graf0/afk/image"
+	"github.com/graf0/afk/machine"
+	"github.com/graf0/afk/run"
 )
 
 func main() {
@@ -23,7 +23,10 @@ func main() {
 		err = runCommand(ctx, abort, os.Args[1:], dir, os.Stdout)
 	}
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "afk:", err)
+		// Config errors come one per line; each line gets the prefix.
+		for line := range strings.SplitSeq(strings.TrimSuffix(err.Error(), "\n"), "\n") {
+			fmt.Fprintln(os.Stderr, "afk:", line)
+		}
 		os.Exit(1)
 	}
 }
@@ -54,26 +57,25 @@ func runCommand(ctx context.Context, abort <-chan struct{}, args []string, dir s
 		err = runFactory(ctx, args[1:], dir, stdout)
 		return
 	}
-	cfg, err := config.Load(dir)
-	if err != nil {
-		err = fmt.Errorf("loading project: %w", err)
-		return
-	}
-	if len(args) == 0 {
-		return
-	}
-	switch args[0] {
-	case "config":
+	// Commands that run something read the base branch (ADR-0010). The working
+	// tree is read only to check the file: by `afk config` and by afk without a command.
+	switch {
+	case len(args) == 0:
+		_, err = config.Load(dir)
+	case args[0] == "config":
+		var cfg config.Config
+		if cfg, err = config.Load(dir); err != nil {
+			return
+		}
 		var data []byte
-		data, err = cfg.Marshal()
-		if err != nil {
+		if data, err = cfg.Marshal(); err != nil {
 			return
 		}
 		_, err = stdout.Write(data)
-	case "image":
-		err = runImage(ctx, abort, args[1:], dir, cfg, stdout)
-	case "vm":
-		err = runVM(ctx, args[1:], cfg, stdout)
+	case args[0] == "image":
+		err = runImage(ctx, abort, args[1:], dir, stdout)
+	case args[0] == "vm":
+		err = runVM(ctx, args[1:], dir, stdout)
 	default:
 		err = fmt.Errorf("unknown command %q", args[0])
 	}
@@ -81,25 +83,19 @@ func runCommand(ctx context.Context, abort <-chan struct{}, args []string, dir s
 }
 
 // runImage executes `afk image <subcommand>`.
-func runImage(ctx context.Context, abort <-chan struct{}, args []string, dir string, cfg config.Config, stdout io.Writer) (err error) {
+func runImage(ctx context.Context, abort <-chan struct{}, args []string, dir string, stdout io.Writer) (err error) {
 	if len(args) != 1 || args[0] != "build" {
 		err = fmt.Errorf("usage: afk image build")
+		return
+	}
+	base, err := run.ReadBase(ctx, dir)
+	if err != nil {
 		return
 	}
 	paths, err := image.DefaultPaths()
 	if err != nil {
 		return
 	}
-	// Like .afk.toml above: the working tree of the Project.
-	root, err := config.FindRoot(dir)
-	if err != nil {
-		return
-	}
-	settings, err := os.ReadFile(filepath.Join(root, ".claude", "settings.json"))
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		err = fmt.Errorf("reading .claude/settings.json: %w", err)
-		return
-	}
-	_, err = image.Build(ctx, image.Options{Paths: paths, Config: cfg, Out: stdout, Abort: abort, ProjectSettings: settings})
+	_, err = image.BuildExclusive(ctx, image.Options{Paths: paths, Config: base.Config, Out: stdout, Abort: abort, ProjectSettings: base.Settings}, func() ([]string, error) { return machine.Overlays("") })
 	return
 }

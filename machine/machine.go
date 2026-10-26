@@ -77,10 +77,12 @@ func parseName(name string) (kind Kind, id string, err error) {
 
 // Spec describes a machine to start.
 type Spec struct {
-	Project  string // Project name (image.ProjectName)
-	Kind     Kind
-	ID       string // unique per Kind: [a-z0-9-], at most 40 characters
-	BaseDisk string // Base image disk the overlay is based on
+	Project   string // Project name (image.ProjectName)
+	Kind      Kind
+	ID        string // unique per Kind: [a-z0-9-], at most 40 characters
+	BaseDisk  string // Base image disk the overlay is based on
+	MemoryMiB int    // RAM of the VM
+	CPUs      int    // vCPUs of the VM
 }
 
 // Machine is a running Sandbox VM.
@@ -129,6 +131,25 @@ func (c *Conn) dir(kind Kind, id string) (dir string) {
 	return filepath.Join(root, string(kind)+"s", id)
 }
 
+// Overlays returns the disks (overlays) of all machines' directories under
+// root (DefaultRoot when empty): of Runs and Chats.
+func Overlays(root string) (disks []string, err error) {
+	if root == "" {
+		root = DefaultRoot
+	}
+	disks = []string{} // not nil: no machines is not an unknown list
+	for _, kind := range []Kind{KindRun, KindChat} {
+		pattern := filepath.Join(root, string(kind)+"s", "*", diskName)
+		found, globErr := filepath.Glob(pattern)
+		if globErr != nil {
+			err = fmt.Errorf("listing overlays %s: %w", pattern, globErr)
+			return
+		}
+		disks = append(disks, found...)
+	}
+	return
+}
+
 // Up creates and starts the machine described by spec. It does not wait for
 // the guest to boot; SSH does. When Up fails or ctx is cancelled, everything
 // it created is destroyed, including the QEMU process.
@@ -139,6 +160,10 @@ func (c *Conn) Up(ctx context.Context, spec Spec) (m Machine, err error) {
 	}
 	if spec.Project == "" || spec.BaseDisk == "" {
 		err = fmt.Errorf("machine %s: project and base disk are required", name)
+		return
+	}
+	if spec.MemoryMiB <= 0 || spec.CPUs <= 0 {
+		err = fmt.Errorf("machine %s: memory and cpus must be positive, got %d MiB and %d", name, spec.MemoryMiB, spec.CPUs)
 		return
 	}
 	dir := c.dir(spec.Kind, spec.ID)
@@ -172,7 +197,7 @@ func (c *Conn) Up(ctx context.Context, spec Spec) (m Machine, err error) {
 		return
 	}
 
-	def := definition{Name: name, Disk: filepath.Join(dir, diskName)}
+	def := definition{Name: name, Disk: filepath.Join(dir, diskName), MemoryMiB: spec.MemoryMiB, CPUs: spec.CPUs}
 	if err = createOverlay(ctx, spec.BaseDisk, def.Disk); err != nil {
 		return
 	}

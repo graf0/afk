@@ -1,25 +1,16 @@
-// Package forge talks to the Forge (GitHub, later Gitea) over REST with the
-// host's credentials. Only afk on the host does that; the Agent never has
-// Forge access (ADR-0003).
 package forge
 
 import (
-	"bytes"
 	"context"
-	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/graf0/afk/config"
 )
@@ -32,30 +23,9 @@ const (
 
 	githubAPIVersion = "2022-11-28"
 	perPage          = 100
-	maxResponseSize  = 16 << 20
-	requestTimeout   = time.Minute
 )
 
-// Ticket is a ticket read from the Forge.
-type Ticket struct {
-	Number   int
-	Title    string
-	Body     string
-	Comments []string
-	Labels   []string
-
-	// SubIssues is the number of sub-issues: more than zero makes the ticket a Spec.
-	SubIssues int
-	// Parent is the Spec the ticket is a sub-issue of, zero without one.
-	Parent int
-}
-
-// SubIssue is a sub-issue of a Spec as listed on the Forge.
-type SubIssue struct {
-	Number int
-	Open   bool
-	Labels []string
-}
+var _ Forge = (*GitHub)(nil)
 
 // GitHub reads and updates tickets and pull requests of Repo through the
 // GitHub REST API; GitURL is where the ticket branches are pushed.
@@ -122,10 +92,6 @@ func HostToken(ctx context.Context) (token string, err error) {
 
 // NewGitHub returns a GitHub client for the Project's forge.
 func NewGitHub(forge config.Forge, token string) (g *GitHub, err error) {
-	if forge.Kind != "github" {
-		err = fmt.Errorf("forge.kind %q is not supported yet", forge.Kind)
-		return
-	}
 	if forge.URL != "" {
 		err = errors.New("forge.url is not supported for github (GitHub Enterprise) yet")
 		return
@@ -150,7 +116,7 @@ func (g *GitHub) ReadyTicket(ctx context.Context, n int, label string) (ticket T
 }
 
 // Ticket reads ticket n with its comments. Pull requests and closed issues are
-// refused. A Spec (an issue with sub-issues) is read too: see Ticket.SubIssues.
+// refused. A Spec is read too.
 func (g *GitHub) Ticket(ctx context.Context, n int) (ticket Ticket, err error) {
 	ticket, err = g.ticket(ctx, n, "")
 	return
@@ -173,7 +139,7 @@ func (g *GitHub) ticket(ctx context.Context, n int, label string) (ticket Ticket
 		return
 	}
 	ticket = issue.ticket()
-	if label != "" && !slices.Contains(ticket.Labels, label) {
+	if label != "" && !ticket.HasLabel(label) {
 		err = fmt.Errorf("ticket #%d lacks the label %q: only tickets a human marked ready run in the Factory", n, label)
 		ticket = Ticket{}
 		return
@@ -232,6 +198,26 @@ func (g *GitHub) ListLabeled(ctx context.Context, label string) (numbers []int, 
 	}
 }
 
+// Labels lists the names of the labels of the repository.
+func (g *GitHub) Labels(ctx context.Context) (names []string, err error) {
+	for page := 1; ; page++ {
+		var labels []struct {
+			Name string `json:"name"`
+		}
+		path := fmt.Sprintf("/repos/%s/labels?per_page=%d&page=%d", g.Repo, perPage, page)
+		if err = g.get(ctx, path, &labels); err != nil {
+			err = fmt.Errorf("listing labels: %w", err)
+			return
+		}
+		for _, label := range labels {
+			names = append(names, label.Name)
+		}
+		if len(labels) < perPage {
+			return
+		}
+	}
+}
+
 // --- specs ---
 
 // SubIssues lists the sub-issues of Spec n, open and closed.
@@ -256,13 +242,6 @@ func (g *GitHub) SubIssues(ctx context.Context, n int) (subs []SubIssue, err err
 	}
 }
 
-var (
-	// blockedBy is a line of a ticket's body naming its blockers: the
-	// convention for Forges without native dependencies (docs/workflow.md).
-	blockedBy = regexp.MustCompile(`(?im)^blocked by:(.*)$`)
-	issueRef  = regexp.MustCompile(`#(\d+)`)
-)
-
 // Blocked reports whether ticket has an open blocker: a native dependency
 // or an issue named in a "Blocked by: #a, #b" line of its body
 // (docs/reference/ralph.sh, blocked). The state of the blockers is read, not
@@ -283,17 +262,15 @@ func (g *GitHub) Blocked(ctx context.Context, ticket Ticket) (blocked bool, err 
 			break
 		}
 	}
-	for _, line := range blockedBy.FindAllStringSubmatch(ticket.Body, -1) {
-		for _, ref := range issueRef.FindAllStringSubmatch(line[1], -1) {
-			var blocker githubIssue
-			if err = g.get(ctx, fmt.Sprintf("/repos/%s/issues/%s", g.Repo, ref[1]), &blocker); err != nil {
-				err = fmt.Errorf("reading blocker #%s of #%d: %w", ref[1], ticket.Number, err)
-				return
-			}
-			if blocker.State == "open" {
-				blocked = true
-				return
-			}
+	for _, ref := range blockedByRefs(ticket.Body) {
+		var blocker githubIssue
+		if err = g.get(ctx, fmt.Sprintf("/repos/%s/issues/%d", g.Repo, ref), &blocker); err != nil {
+			err = fmt.Errorf("reading blocker #%d of #%d: %w", ref, ticket.Number, err)
+			return
+		}
+		if blocker.State == "open" {
+			blocked = true
+			return
 		}
 	}
 	return
@@ -301,44 +278,24 @@ func (g *GitHub) Blocked(ctx context.Context, ticket Ticket) (blocked bool, err 
 
 // --- git ---
 
-// Remote is where git pushes ticket branches, with the environment that
-// authenticates it.
-type Remote struct {
-	URL string
-	Env []string
-}
-
-// Remote is GitURL with Token in an Authorization header scoped to GitURL,
-// given to git through GIT_CONFIG_* variables: never on argv, never in a
-// config file. The user's global and system git config is ignored, so no
-// url.insteadOf can send the push elsewhere (another host, ssh with the
-// user's key); redirects, credential helpers and prompts are off.
+// Remote is GitURL with Token in an Authorization header (see tokenRemote).
 func (g *GitHub) Remote() (remote Remote) {
-	auth := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + g.Token))
-	return Remote{URL: g.GitURL, Env: []string{
-		"GIT_CONFIG_GLOBAL=" + os.DevNull,
-		"GIT_CONFIG_NOSYSTEM=1",
-		"GIT_TERMINAL_PROMPT=0",
-		"GIT_TRACE_REDACT=1",
-		"GIT_CONFIG_COUNT=3",
-		"GIT_CONFIG_KEY_0=http." + g.GitURL + ".extraHeader",
-		"GIT_CONFIG_VALUE_0=Authorization: Basic " + auth,
-		"GIT_CONFIG_KEY_1=credential.helper",
-		"GIT_CONFIG_VALUE_1=",
-		"GIT_CONFIG_KEY_2=http.followRedirects",
-		"GIT_CONFIG_VALUE_2=false",
-	}}
+	return tokenRemote(g.Repo, g.GitURL, "x-access-token", g.Token)
 }
 
 // --- writes ---
 
-// PullRequest is a pull request of afk.
-type PullRequest struct {
+// githubPull is the part of the pull request resource afk reads.
+type githubPull struct {
 	Number int    `json:"number"`
 	URL    string `json:"html_url"`
-	State  string `json:"state"` // open or closed (merged too)
+	State  string `json:"state"`
 	Draft  bool   `json:"draft"`
 	NodeID string `json:"node_id"` // for GraphQL
+}
+
+func (p githubPull) pull() (pull PullRequest) {
+	return PullRequest{Number: p.Number, URL: p.URL, State: p.State, Draft: p.Draft, ID: p.NodeID}
 }
 
 // CreatePull opens a pull request of branch head into base, as a draft when draft is set.
@@ -347,9 +304,12 @@ func (g *GitHub) CreatePull(ctx context.Context, head, base, title, body string,
 	if draft {
 		in["draft"] = true
 	}
-	if err = g.call(ctx, http.MethodPost, fmt.Sprintf("/repos/%s/pulls", g.Repo), in, &pull); err != nil {
+	var created githubPull
+	if err = g.call(ctx, http.MethodPost, fmt.Sprintf("/repos/%s/pulls", g.Repo), in, &created); err != nil {
 		err = fmt.Errorf("opening pull request of %s: %w", head, err)
+		return
 	}
+	pull = created.pull()
 	return
 }
 
@@ -357,13 +317,13 @@ func (g *GitHub) CreatePull(ctx context.Context, head, base, title, body string,
 func (g *GitHub) FindPull(ctx context.Context, branch string) (pull PullRequest, found bool, err error) {
 	owner, _, _ := strings.Cut(g.Repo, "/")
 	path := fmt.Sprintf("/repos/%s/pulls?state=all&sort=created&direction=desc&per_page=1&head=%s", g.Repo, url.QueryEscape(owner+":"+branch))
-	var pulls []PullRequest
+	var pulls []githubPull
 	if err = g.get(ctx, path, &pulls); err != nil {
 		err = fmt.Errorf("looking for the pull request of %s: %w", branch, err)
 		return
 	}
 	if found = len(pulls) > 0; found {
-		pull = pulls[0]
+		pull = pulls[0].pull()
 	}
 	return
 }
@@ -381,7 +341,7 @@ func (g *GitHub) UpdatePullBody(ctx context.Context, n int, body string) (err er
 func (g *GitHub) ReadyPull(ctx context.Context, pull PullRequest) (err error) {
 	in := map[string]any{
 		"query":     "mutation($id: ID!) { markPullRequestReadyForReview(input: {pullRequestId: $id}) { pullRequest { id } } }",
-		"variables": map[string]string{"id": pull.NodeID},
+		"variables": map[string]string{"id": pull.ID},
 	}
 	// GraphQL reports errors in a 200 response.
 	var out struct {
@@ -389,11 +349,12 @@ func (g *GitHub) ReadyPull(ctx context.Context, pull PullRequest) (err error) {
 			Message string `json:"message"`
 		} `json:"errors"`
 	}
-	if err = g.call(ctx, http.MethodPost, "/graphql", in, &out); err == nil && len(out.Errors) > 0 {
-		err = errors.New(out.Errors[0].Message)
-	}
-	if err != nil {
+	if err = g.call(ctx, http.MethodPost, "/graphql", in, &out); err != nil {
 		err = fmt.Errorf("marking pull request #%d ready for review: %w", pull.Number, err)
+		return
+	}
+	if len(out.Errors) > 0 {
+		err = fmt.Errorf("marking pull request #%d ready for review: %s", pull.Number, out.Errors[0].Message)
 	}
 	return
 }
@@ -441,17 +402,6 @@ func (g *GitHub) RemoveLabel(ctx context.Context, n int, label string) (err erro
 
 // --- http ---
 
-// apiError is a non-2xx response of the GitHub API.
-type apiError struct {
-	Method, Path string
-	Status       int
-	Message      string
-}
-
-func (e *apiError) Error() (text string) {
-	return fmt.Sprintf("%s %s: %d %s: %s", e.Method, e.Path, e.Status, http.StatusText(e.Status), e.Message)
-}
-
 // get decodes the JSON resource at path (relative to APIURL) into v.
 func (g *GitHub) get(ctx context.Context, path string, v any) (err error) {
 	err = g.call(ctx, http.MethodGet, path, nil, v)
@@ -461,78 +411,11 @@ func (g *GitHub) get(ctx context.Context, path string, v any) (err error) {
 // call sends a method request to path (relative to APIURL) with in as JSON
 // body (none when nil) and decodes a 2xx response into out (unless nil).
 func (g *GitHub) call(ctx context.Context, method, path string, in, out any) (err error) {
-	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
-	defer cancel()
-	base, err := url.Parse(g.APIURL)
-	if err != nil {
-		err = fmt.Errorf("parsing API URL: %w", err)
-		return
+	header := http.Header{
+		"Accept":               {"application/vnd.github+json"},
+		"X-GitHub-Api-Version": {githubAPIVersion},
+		"Authorization":        {"Bearer " + g.Token},
 	}
-	target, err := base.Parse(strings.TrimSuffix(base.Path, "/") + path)
-	if err != nil {
-		err = fmt.Errorf("building URL: %w", err)
-		return
-	}
-	var body io.Reader
-	if in != nil {
-		var data []byte
-		if data, err = json.Marshal(in); err != nil {
-			err = fmt.Errorf("encoding request: %w", err)
-			return
-		}
-		body = bytes.NewReader(data)
-	}
-	req, err := http.NewRequestWithContext(ctx, method, target.String(), body)
-	if err != nil {
-		err = fmt.Errorf("building request: %w", err)
-		return
-	}
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("X-GitHub-Api-Version", githubAPIVersion)
-	req.Header.Set("Authorization", "Bearer "+g.Token)
-	if in != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	client := g.Client
-	if client == nil {
-		client = http.DefaultClient
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		err = fmt.Errorf("%s %s: %w", method, target.Path, err)
-		return
-	}
-	defer func() { _ = resp.Body.Close() }()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize))
-	if err != nil {
-		err = fmt.Errorf("%s %s: reading response: %w", method, target.Path, err)
-		return
-	}
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		err = &apiError{Method: method, Path: target.Path, Status: resp.StatusCode, Message: apiMessage(data)}
-		return
-	}
-	if out == nil {
-		return
-	}
-	if err = json.Unmarshal(data, out); err != nil {
-		err = fmt.Errorf("%s %s: decoding response: %w", method, target.Path, err)
-	}
+	err = doJSON(ctx, g.Client, g.APIURL, method, path, header, in, out)
 	return
-}
-
-// apiMessage returns the "message" of a GitHub error response, else the
-// beginning of the body.
-func apiMessage(data []byte) (message string) {
-	var body struct {
-		Message string `json:"message"`
-	}
-	if json.Unmarshal(data, &body) == nil && body.Message != "" {
-		return body.Message
-	}
-	data = bytes.TrimSpace(data)
-	if len(data) > 200 {
-		data = data[:200]
-	}
-	return strconv.Quote(string(data))
 }
