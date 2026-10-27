@@ -61,7 +61,7 @@ type Options struct {
 
 // forgeChannel is what afk-forge of the Chat works on; chatDir is its state.
 func (opts Options) forgeChannel(chatDir string) (ch forgeChannel) {
-	return forgeChannel{Forge: opts.Forge, Labels: opts.Base.Config.Labels, Chat: opts.Name, IssuesPath: filepath.Join(chatDir, issuesName)}
+	return forgeChannel{Forge: opts.Forge, ProjectLabels: opts.Base.Config.Labels, Chat: opts.Name, IssuesPath: filepath.Join(chatDir, issuesName)}
 }
 
 // ValidateName checks a Chat's name: [a-z0-9-]{1,32}, not starting with "-".

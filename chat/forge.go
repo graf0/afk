@@ -90,10 +90,10 @@ const (
 // labels, the Chat's name (the footer of what it writes) and the file in its
 // state where the issues it creates are noted.
 type forgeChannel struct {
-	Forge      forge.Forge
-	Labels     config.Labels
-	Chat       string
-	IssuesPath string
+	Forge         forge.Forge
+	ProjectLabels config.Labels
+	Chat          string
+	IssuesPath    string
 }
 
 // forgeServer answers the guest's afk-forge calls with the Project's Forge,
@@ -122,11 +122,35 @@ func (s *forgeServer) handler() (handler http.Handler) {
 	return mux
 }
 
+// request reads the issue number of r's path (when the route has one) and
+// decodes its body into in (when not nil); on failure it answers 400 and
+// ok is false. op names the call for the log.
+func (s *forgeServer) request(w http.ResponseWriter, r *http.Request, name string, in any) (n int, op string, ok bool) {
+	op = name
+	var err error
+	if r.PathValue("n") != "" {
+		op = name + " " + r.PathValue("n")
+		if n, err = issueNumber(r.PathValue("n")); err == nil {
+			op = fmt.Sprintf("%s #%d", name, n)
+		}
+	}
+	if err == nil && in != nil {
+		if err = json.NewDecoder(http.MaxBytesReader(w, r.Body, maxForgeBody)).Decode(in); err != nil {
+			err = fmt.Errorf("decoding the request: %w", err)
+		}
+	}
+	if err != nil {
+		s.reply(w, op, "", "", http.StatusBadRequest, err)
+		return
+	}
+	ok = true
+	return
+}
+
 // view serves `issue view <n>`: the ticket as the TICKET.md of a Run.
 func (s *forgeServer) view(w http.ResponseWriter, r *http.Request) {
-	n, err := issueNumber(r.PathValue("n"))
-	if err != nil {
-		s.reply(w, "view "+r.PathValue("n"), "", "", http.StatusBadRequest, err)
+	n, op, ok := s.request(w, r, "view", nil)
+	if !ok {
 		return
 	}
 	// Ticket refuses closed issues, which `issue list --state closed` shows: those come without comments.
@@ -134,7 +158,7 @@ func (s *forgeServer) view(w http.ResponseWriter, r *http.Request) {
 	if err == nil && open {
 		ticket, err = s.Forge.Ticket(r.Context(), n)
 	}
-	s.reply(w, fmt.Sprintf("view #%d", n), agent.Sanitize(agent.TicketFile(ticket)), "", http.StatusBadGateway, err)
+	s.reply(w, op, agent.Sanitize(agent.TicketFile(ticket)), "", http.StatusBadGateway, err)
 }
 
 // list serves `issue list`: a line `#N  [labels]  title` per issue.
@@ -159,19 +183,19 @@ func (s *forgeServer) list(w http.ResponseWriter, r *http.Request) {
 // is for a human to give.
 func (s *forgeServer) create(w http.ResponseWriter, r *http.Request) {
 	var in createRequest
-	err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxForgeBody)).Decode(&in)
-	if err == nil && titleLine(in.Title) == "" {
-		err = errors.New("title: required")
+	if _, _, ok := s.request(w, r, "create", &in); !ok {
+		return
 	}
-	if err != nil {
-		s.reply(w, "create", "", "", http.StatusBadRequest, err)
+	title := titleLine(in.Title)
+	if title == "" {
+		s.reply(w, "create", "", "", http.StatusBadRequest, errors.New("title: required"))
 		return
 	}
 	labels, replaced := s.triageLabels(in.Labels)
-	err = s.checkLabels(r.Context(), labels)
+	err := s.checkLabels(r.Context(), labels)
 	var n int
 	if err == nil {
-		n, err = s.Forge.CreateIssue(r.Context(), titleLine(in.Title), s.withFooter(in.Body), labels)
+		n, err = s.Forge.CreateIssue(r.Context(), title, s.withFooter(in.Body), labels)
 	}
 	op := "create"
 	if err == nil {
@@ -188,22 +212,17 @@ func (s *forgeServer) create(w http.ResponseWriter, r *http.Request) {
 // request is refused.
 func (s *forgeServer) comment(w http.ResponseWriter, r *http.Request) {
 	var in commentRequest
-	n, err := issueNumber(r.PathValue("n"))
-	if err != nil {
-		s.reply(w, "comment "+r.PathValue("n"), "", "", http.StatusBadRequest, err)
+	n, op, ok := s.request(w, r, "comment", &in)
+	if !ok {
 		return
 	}
-	op := fmt.Sprintf("comment #%d", n)
-	err = json.NewDecoder(http.MaxBytesReader(w, r.Body, maxForgeBody)).Decode(&in)
-	if err == nil && strings.TrimSpace(in.Body) == "" {
-		err = errors.New("body: required")
-	}
-	if err != nil {
-		s.reply(w, op, "", "", http.StatusBadRequest, err)
+	if strings.TrimSpace(in.Body) == "" {
+		s.reply(w, op, "", "", http.StatusBadRequest, errors.New("body: required"))
 		return
 	}
 	// Peek refuses a pull request.
-	if _, _, err = s.Forge.Peek(r.Context(), n); err == nil {
+	_, _, err := s.Forge.Peek(r.Context(), n)
+	if err == nil {
 		err = s.Forge.Comment(r.Context(), n, s.withFooter(in.Body))
 	}
 	s.reply(w, op, "", "", http.StatusBadGateway, err)
@@ -216,24 +235,26 @@ func (s *forgeServer) comment(w http.ResponseWriter, r *http.Request) {
 // refused.
 func (s *forgeServer) edit(w http.ResponseWriter, r *http.Request) {
 	var in editRequest
-	n, err := issueNumber(r.PathValue("n"))
-	if err != nil {
-		s.reply(w, "edit "+r.PathValue("n"), "", "", http.StatusBadRequest, err)
+	n, op, ok := s.request(w, r, "edit", &in)
+	if !ok {
 		return
 	}
-	op := fmt.Sprintf("edit #%d", n)
-	err = json.NewDecoder(http.MaxBytesReader(w, r.Body, maxForgeBody)).Decode(&in)
-	add, replaced := s.triageLabels(in.AddLabels)
+	var replaced bool
+	in.AddLabels, replaced = s.triageLabels(in.AddLabels)
 	// Removing ready-for-agent, given by a human, is fine: no triage here.
-	remove := cleanLabels(in.RemoveLabels)
-	if err == nil && len(add)+len(remove) == 0 && in.Title == nil && in.Body == nil {
+	in.RemoveLabels = cleanLabels(in.RemoveLabels)
+	var err error
+	if len(in.AddLabels)+len(in.RemoveLabels) == 0 && in.Title == nil && in.Body == nil {
 		err = errors.New("nothing to change")
 	}
-	if err == nil && in.Title != nil && titleLine(*in.Title) == "" {
-		err = errors.New("title: required")
+	if err == nil && in.Title != nil {
+		line := titleLine(*in.Title)
+		if in.Title = &line; line == "" {
+			err = errors.New("title: required")
+		}
 	}
-	for _, label := range add {
-		if err == nil && forge.ContainsLabel(remove, label) {
+	for _, label := range in.AddLabels {
+		if err == nil && forge.ContainsLabel(in.RemoveLabels, label) {
 			err = fmt.Errorf("label %q both added and removed", label)
 		}
 	}
@@ -241,7 +262,7 @@ func (s *forgeServer) edit(w http.ResponseWriter, r *http.Request) {
 		s.reply(w, op, "", "", http.StatusBadRequest, err)
 		return
 	}
-	op += fmt.Sprintf(" add=%q remove=%q", add, remove)
+	op += fmt.Sprintf(" add=%q remove=%q", in.AddLabels, in.RemoveLabels)
 	if in.Title != nil {
 		op += " title"
 	}
@@ -249,11 +270,13 @@ func (s *forgeServer) edit(w http.ResponseWriter, r *http.Request) {
 		op += " body"
 	}
 	op, warning := s.replacedNote(op, replaced)
-	s.reply(w, op, "", warning, http.StatusBadGateway, s.applyEdit(r.Context(), n, add, remove, in.Title, in.Body))
+	s.reply(w, op, "", warning, http.StatusBadGateway, s.applyEdit(r.Context(), n, in))
 }
 
-// applyEdit checks what edit may do, then does it.
-func (s *forgeServer) applyEdit(ctx context.Context, n int, add, remove []string, title, body *string) (err error) {
+// applyEdit checks what edit may do, then does it. edit has the labels
+// cleaned and triaged, and the title on one line.
+func (s *forgeServer) applyEdit(ctx context.Context, n int, edit editRequest) (err error) {
+	add, remove, title, body := edit.AddLabels, edit.RemoveLabels, edit.Title, edit.Body
 	// Peek refuses a pull request.
 	ticket, _, err := s.Forge.Peek(ctx, n)
 	if err != nil {
@@ -270,8 +293,8 @@ func (s *forgeServer) applyEdit(ctx context.Context, n int, add, remove []string
 		}
 		// A human approved this text with the label: changing it would skip the review.
 		// The label as it is before any write counts, also when this call removes it.
-		if ticket.HasLabel(s.Labels.ReadyForAgent) {
-			err = fmt.Errorf("title and body: #%d is %s, only its labels can change", n, s.Labels.ReadyForAgent)
+		if ticket.HasLabel(s.ProjectLabels.ReadyForAgent) {
+			err = fmt.Errorf("title and body: #%d is %s, only its labels can change", n, s.ProjectLabels.ReadyForAgent)
 			return
 		}
 	}
@@ -279,10 +302,6 @@ func (s *forgeServer) applyEdit(ctx context.Context, n int, add, remove []string
 		return
 	}
 	if title != nil || body != nil {
-		if title != nil {
-			line := titleLine(*title)
-			title = &line
-		}
 		if body != nil {
 			signed := s.withFooter(*body)
 			body = &signed
@@ -325,8 +344,8 @@ func (s *forgeServer) checkLabels(ctx context.Context, labels []string) (err err
 func (s *forgeServer) triageLabels(labels []string) (out []string, replaced bool) {
 	labels = cleanLabels(labels)
 	for i, label := range labels {
-		if strings.EqualFold(label, s.Labels.ReadyForAgent) {
-			labels[i], replaced = s.Labels.NeedsTriage, true
+		if strings.EqualFold(label, s.ProjectLabels.ReadyForAgent) {
+			labels[i], replaced = s.ProjectLabels.NeedsTriage, true
 		}
 	}
 	out = cleanLabels(labels)
@@ -338,8 +357,8 @@ func (s *forgeServer) triageLabels(labels []string) (out []string, replaced bool
 func (s *forgeServer) replacedNote(op string, replaced bool) (noted, warning string) {
 	noted = op
 	if replaced {
-		noted += " (" + s.Labels.ReadyForAgent + " replaced)"
-		warning = fmt.Sprintf("label %s replaced with %s: only a human makes an issue ready for the Factory", s.Labels.ReadyForAgent, s.Labels.NeedsTriage)
+		noted += " (" + s.ProjectLabels.ReadyForAgent + " replaced)"
+		warning = fmt.Sprintf("label %s replaced with %s: only a human makes an issue ready for the Factory", s.ProjectLabels.ReadyForAgent, s.ProjectLabels.NeedsTriage)
 	}
 	return
 }

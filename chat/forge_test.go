@@ -128,7 +128,7 @@ func serveFake(t *testing.T, f forge.Forge) (socket, logPath, issuesPath string)
 		t.Fatal(err)
 	}
 	server := &http.Server{Handler: newForgeServer(forgeChannel{
-		Forge: f, Labels: config.Labels{NeedsTriage: "needs-triage", ReadyForAgent: "ready-for-agent"}, Chat: "chat-1", IssuesPath: issuesPath,
+		Forge: f, ProjectLabels: config.Labels{NeedsTriage: "needs-triage", ReadyForAgent: "ready-for-agent"}, Chat: "chat-1", IssuesPath: issuesPath,
 	}, logFile).handler()}
 	go func() { _ = server.Serve(ln) }()
 	t.Cleanup(func() { _ = server.Close(); _ = logFile.Close() })
