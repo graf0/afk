@@ -67,7 +67,7 @@ func (r run) publish(ctx context.Context, res result) (err error) {
 	}
 	var pushed string
 	var pull forge.PullRequest
-	// afk's own closing keyword: added after agentText, it must work.
+	// afk's own closing keyword: added after AgentText, it must work.
 	body := fmt.Sprintf("Closes #%d\n", n)
 	steps := []step{
 		r.pushStep(ctx, &pushed, res.Commit),
@@ -214,7 +214,7 @@ func stepList(steps []step, todo bool) (list string) {
 func (r run) commitMessage(report agent.Report) (message string) {
 	message = fmt.Sprintf("%s (#%d)\n", r.Ticket.Title, r.Ticket.Number)
 	if summary := strings.TrimSpace(report.Summary); summary != "" {
-		message += "\n" + agentText(summary) + "\n"
+		message += "\n" + AgentText(summary) + "\n"
 	}
 	return
 }
@@ -226,14 +226,14 @@ func reportComment(heading string, report agent.Report) (text string) {
 	fmt.Fprintf(&b, "### %s\n\n%s\n", heading, report.Summary)
 	writeList(&b, "Odstępstwa od ticketu", report.Deviations)
 	writeList(&b, "Wątpliwości do sprawdzenia", report.Doubts)
-	return agentText(b.String())
+	return AgentText(b.String())
 }
 
 // reviewMessage is the message of the commit with the review's fixes.
 func (r run) reviewMessage(review agent.Report) (message string) {
 	message = fmt.Sprintf("code review: %s\n", r.Ticket.Title)
 	if summary := strings.TrimSpace(review.Summary); summary != "" {
-		message += "\n" + agentText(summary) + "\n"
+		message += "\n" + AgentText(summary) + "\n"
 	}
 	return
 }
@@ -244,7 +244,7 @@ func reviewComment(review agent.Report) (text string) {
 	fmt.Fprintf(&b, "### Code review\n\n%s\n", strings.TrimSpace(review.Summary))
 	writeList(&b, "Poprawione w review", review.FindingsFixed)
 	writeList(&b, "Pominięte w review", review.FindingsSkipped)
-	return agentText(b.String())
+	return AgentText(b.String())
 }
 
 // needsInfoComment tells the ticket's author why the Agent stopped.
@@ -252,7 +252,7 @@ func needsInfoComment(report agent.Report) (text string) {
 	var b strings.Builder
 	fmt.Fprintf(&b, "afk: Agent nie podjął się ticketu. %s\n", report.Reason)
 	writeList(&b, "Pytania", report.Questions)
-	return agentText(b.String())
+	return AgentText(b.String())
 }
 
 // writeList appends a bold title and items as a Markdown list; nothing
@@ -267,13 +267,13 @@ func writeList(b *strings.Builder, title string, items []string) {
 	}
 }
 
-// agentText prepares text from the Agent for GitHub (comments and commit
+// AgentText prepares text from the Agent for GitHub (comments and commit
 // messages): no control or format characters; no @-mentions (the Agent
 // must not ping anyone) and no closing keywords (nor close foreign issues),
 // both broken by a zero-width space; no HTML comments, which would hide
 // text from the reviewer; at most maxGitHubText bytes. Other Markdown
 // stays as is: a human reads it before merging.
-func agentText(text string) (clean string) {
+func AgentText(text string) (clean string) {
 	clean = agent.Sanitize(text)
 	clean = mention.ReplaceAllString(clean, "@\u200b$1")
 	clean = closing.ReplaceAllStringFunc(clean, func(match string) (broken string) { return match[:1] + "\u200b" + match[1:] })

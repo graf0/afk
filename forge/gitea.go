@@ -560,6 +560,33 @@ func (g *Gitea) CloseIssue(ctx context.Context, n int) (err error) {
 	return
 }
 
+// CreateIssue opens an issue with labels, which the repository must have:
+// Gitea takes them by id.
+func (g *Gitea) CreateIssue(ctx context.Context, title, body string, labels []string) (n int, err error) {
+	ids := []int64{}
+	for _, label := range labels {
+		id, found, labelErr := g.labelID(ctx, label)
+		if labelErr == nil && !found {
+			labelErr = errors.New("no such label in the repository")
+		}
+		if labelErr != nil {
+			err = fmt.Errorf("creating an issue: label %q: %w", label, labelErr)
+			return
+		}
+		ids = append(ids, id)
+	}
+	in := map[string]any{"title": title, "body": body, "labels": ids}
+	var out struct {
+		Number int `json:"number"`
+	}
+	if err = g.call(ctx, http.MethodPost, fmt.Sprintf("/repos/%s/issues", g.Repo), in, &out); err != nil {
+		err = fmt.Errorf("creating an issue: %w", err)
+		return
+	}
+	n = out.Number
+	return
+}
+
 // Comment adds a comment to issue or pull request n.
 func (g *Gitea) Comment(ctx context.Context, n int, body string) (err error) {
 	in := map[string]string{"body": body}

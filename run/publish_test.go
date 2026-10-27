@@ -256,20 +256,20 @@ func TestAgentText(t *testing.T) {
 		"hidden <!-- Fixes #9 --> text":     "hidden &lt;!-- F\u200bixes #9 --> text",
 		"prefixes #3, fixtures #4, fix it":  "prefixes #3, fixtures #4, fix it",
 	} {
-		if got := agentText(in); got != want {
-			t.Errorf("agentText(%q) = %q, want %q", in, got, want)
+		if got := AgentText(in); got != want {
+			t.Errorf("AgentText(%q) = %q, want %q", in, got, want)
 		}
 	}
 	for _, keyword := range []string{"close", "closes", "closed", "fix", "fixes", "fixed", "resolve", "resolves", "resolved", "Closes", "FIXES", "Resolved"} {
 		for _, ref := range []string{" #12", ": #12", " owner/repo#3", ":owner/re.po#3", " https://github.com/o/r/issues/5"} {
 			in := "Text. " + keyword + ref + " more"
 			want := "Text. " + keyword[:1] + "\u200b" + keyword[1:] + ref + " more"
-			if got := agentText(in); got != want {
-				t.Errorf("agentText(%q) = %q, want %q", in, got, want)
+			if got := AgentText(in); got != want {
+				t.Errorf("AgentText(%q) = %q, want %q", in, got, want)
 			}
 		}
 	}
-	long := agentText(strings.Repeat("ą", maxGitHubText))
+	long := AgentText(strings.Repeat("ą", maxGitHubText))
 	if len(long) > maxGitHubText+100 || !strings.HasSuffix(long, "(obcięte)\n") || !strings.HasPrefix(long, "ąą") {
 		t.Errorf("long text: %d bytes, suffix %q", len(long), long[len(long)-20:])
 	}

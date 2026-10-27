@@ -60,6 +60,8 @@ type Forge interface {
 	ReadyPull(ctx context.Context, pull PullRequest) (err error)
 	// CloseIssue closes issue n as completed.
 	CloseIssue(ctx context.Context, n int) (err error)
+	// CreateIssue opens an issue with labels, which the repository must have.
+	CreateIssue(ctx context.Context, title, body string, labels []string) (n int, err error)
 	// Comment adds a comment to issue or pull request n.
 	Comment(ctx context.Context, n int, body string) (err error)
 	// AddLabel adds label to issue or pull request n.

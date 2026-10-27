@@ -366,7 +366,7 @@ func (s *specRun) finish(ctx context.Context) (err error) {
 	if err != nil {
 		return
 	}
-	body := s.closes() + "\n" + agentText(commitList(subjects))
+	body := s.closes() + "\n" + AgentText(commitList(subjects))
 
 	var steps []step
 	if res.Commit != s.pushed {
@@ -397,7 +397,7 @@ func (s *specRun) finish(ctx context.Context) (err error) {
 // --- texts ---
 
 // closes is "Closes #N" for the Spec and every child, a line each: merging
-// the pull request closes them all. afk's own closing keywords, never from agentText.
+// the pull request closes them all. afk's own closing keywords, never from AgentText.
 func (s *specRun) closes() (text string) {
 	var b strings.Builder
 	for _, n := range slices.Concat([]int{s.Ticket.Number}, s.children) {

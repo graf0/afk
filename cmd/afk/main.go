@@ -24,7 +24,7 @@ func main() {
 	var err error
 	if filepath.Base(os.Args[0]) == chat.ForgeBinary { // the copy in a Chat's VM (ADR-0012)
 		name = chat.ForgeBinary
-		err = chat.RunForge(ctx, chat.ForgeSocket, os.Args[1:], os.Stdout)
+		err = chat.RunForge(ctx, chat.ForgeSocket, os.Args[1:], os.Stdin, os.Stdout, os.Stderr)
 	} else {
 		var dir string
 		if dir, err = os.Getwd(); err == nil {

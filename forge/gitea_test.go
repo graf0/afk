@@ -245,6 +245,19 @@ func (fake *fakeGitea) mux() (handler http.Handler) {
 		fake.issues[pull.Number] = &seedIssue{Number: pull.Number, Title: pull.Title, Body: pull.Body, Open: true, IsPull: true}
 		reply(w, http.StatusCreated, pullJSON(pull))
 	})
+	handle("POST issues", func(w http.ResponseWriter, r *http.Request) {
+		in := body(r)
+		issue := &seedIssue{Number: 1, Title: fmt.Sprint(in["title"]), Body: fmt.Sprint(in["body"]), Open: true}
+		for n := range fake.issues {
+			issue.Number = max(issue.Number, n+1)
+		}
+		ids, _ := in["labels"].([]any)
+		for _, id := range ids {
+			issue.Labels = append(issue.Labels, fake.labels[int(id.(float64))-1])
+		}
+		fake.issues[issue.Number] = issue
+		reply(w, http.StatusCreated, issueJSON(issue))
+	})
 	handle("GET pulls", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("state") != "all" {
 			reply(w, http.StatusBadRequest, map[string]string{"message": "state"})

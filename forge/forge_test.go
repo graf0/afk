@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -328,6 +329,21 @@ func testContractWrites(t *testing.T, newFake newFakeForge) {
 		}
 		if err := f.Comment(t.Context(), 99, "x"); err == nil {
 			t.Error("Comment on a missing issue: want error")
+		}
+	})
+
+	t.Run("create issue", func(t *testing.T) {
+		f, state := forge(t)
+		n, err := f.CreateIssue(t.Context(), "Idea", "Body", []string{"spec", "needs-info"})
+		if err != nil || n <= 14 {
+			t.Fatalf("CreateIssue = %d, %v", n, err)
+		}
+		want := seedIssue{Number: n, Title: "Idea", Body: "Body", Open: true, Labels: []string{"spec", "needs-info"}}
+		if got := state().Issues[n]; !reflect.DeepEqual(got, want) {
+			t.Errorf("issue = %+v, want %+v", got, want)
+		}
+		if _, err = f.CreateIssue(t.Context(), "No label", "", nil); err != nil {
+			t.Errorf("CreateIssue without labels: %v", err)
 		}
 	})
 }

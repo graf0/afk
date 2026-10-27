@@ -378,6 +378,20 @@ func (g *GitHub) CloseIssue(ctx context.Context, n int) (err error) {
 	return
 }
 
+// CreateIssue opens an issue with labels, which the repository must have.
+func (g *GitHub) CreateIssue(ctx context.Context, title, body string, labels []string) (n int, err error) {
+	in := map[string]any{"title": title, "body": body, "labels": labels}
+	var out struct {
+		Number int `json:"number"`
+	}
+	if err = g.call(ctx, http.MethodPost, fmt.Sprintf("/repos/%s/issues", g.Repo), in, &out); err != nil {
+		err = fmt.Errorf("creating an issue: %w", err)
+		return
+	}
+	n = out.Number
+	return
+}
+
 // Comment adds a comment to issue or pull request n.
 func (g *GitHub) Comment(ctx context.Context, n int, body string) (err error) {
 	in := map[string]string{"body": body}

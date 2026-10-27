@@ -219,6 +219,20 @@ func (fake *fakeGitHub) mux() (handler http.Handler) {
 		reply(w, http.StatusOK, list)
 	})
 
+	mux.HandleFunc("POST /repos/o/r/issues", func(w http.ResponseWriter, r *http.Request) {
+		fake.mu.Lock()
+		defer fake.mu.Unlock()
+		in := body(r)
+		issue := &seedIssue{Number: 1, Title: field[string](in, "title"), Body: field[string](in, "body"), Open: true}
+		for n := range fake.issues {
+			issue.Number = max(issue.Number, n+1)
+		}
+		for _, label := range field[[]any](in, "labels") {
+			issue.Labels = append(issue.Labels, fmt.Sprint(label))
+		}
+		fake.issues[issue.Number] = issue
+		reply(w, http.StatusCreated, fake.issueJSON(issue))
+	})
 	mux.HandleFunc("POST /repos/o/r/pulls", func(w http.ResponseWriter, r *http.Request) {
 		fake.mu.Lock()
 		defer fake.mu.Unlock()
@@ -365,6 +379,9 @@ func TestGitHubWrites(t *testing.T) {
 	if err != nil || pull.Number != 42 || pull.URL != "https://github.com/o/r/pull/42" {
 		t.Errorf("CreatePull = %+v, %v", pull, err)
 	}
+	if n, err := g.CreateIssue(t.Context(), "idea", "text", []string{"bug"}); err != nil || n != 42 {
+		t.Errorf("CreateIssue = %d, %v", n, err)
+	}
 	for _, err := range []error{
 		g.Comment(t.Context(), 42, "report"),
 		g.AddLabel(t.Context(), 42, "ready-for-human"),
@@ -379,6 +396,7 @@ func TestGitHubWrites(t *testing.T) {
 	}
 	want := []string{
 		`POST /repos/o/r/pulls {"base":"main","body":"Closes #7\n","head":"ticket-7","title":"Do it"}`,
+		`POST /repos/o/r/issues {"body":"text","labels":["bug"],"title":"idea"}`,
 		`POST /repos/o/r/issues/42/comments {"body":"report"}`,
 		`POST /repos/o/r/issues/42/labels {"labels":["ready-for-human"]}`,
 		`DELETE /repos/o/r/issues/7/labels/ready%20for%2Fagent`,
