@@ -98,7 +98,11 @@ func chatAttach(ctx context.Context, name string, dir string, stdout io.Writer) 
 	if err != nil {
 		return
 	}
-	err = chat.Attach(ctx, chat.Options{Base: base, Name: name, ClaudeToken: claudeToken, Paths: paths, Out: stdout})
+	gitForge, err := forge.New(ctx, base.Config, paths.StateDir)
+	if err != nil {
+		return
+	}
+	err = chat.Attach(ctx, chat.Options{Base: base, Name: name, ClaudeToken: claudeToken, Paths: paths, Forge: gitForge, Out: stdout})
 	return
 }
 

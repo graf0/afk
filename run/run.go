@@ -348,6 +348,11 @@ func say(w io.Writer, format string, args ...any) {
 	_, _ = fmt.Fprintf(w, "= "+format+"\n", args...)
 }
 
+// Upload runs command in the guest with stdin: a file sent to it.
+func Upload(ctx context.Context, client *ssh.Client, command string, stdin io.Reader) (err error) {
+	return remote(ctx, client, command, stdin, nil)
+}
+
 // remote runs command in the guest; its stderr (sanitized, truncated) goes
 // into the error. Cancelling ctx closes the session.
 func remote(ctx context.Context, client *ssh.Client, command string, stdin io.Reader, stdout io.Writer) (err error) {

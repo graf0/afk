@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -173,6 +174,40 @@ func testContractReads(t *testing.T, newFake newFakeForge) {
 		}
 	})
 
+	t.Run("List", func(t *testing.T) {
+		f, _ := forge(t)
+		numbersOf := func(label string, state State) (numbers []int) {
+			tickets, err := f.List(t.Context(), label, state)
+			if err != nil {
+				t.Fatalf("List(%q, %q): %v", label, state, err)
+			}
+			for _, ticket := range tickets {
+				numbers = append(numbers, ticket.Number)
+			}
+			return
+		}
+		// No pull requests (#8), ascending.
+		for _, tc := range []struct {
+			label string
+			state State
+			want  []int
+		}{
+			{"ready-for-agent", StateOpen, []int{7, 11, 14}},
+			{"ready-for-agent", StateClosed, []int{9}},
+			{"ready-for-agent", StateAll, []int{7, 9, 11, 14}},
+			{"", StateClosed, []int{9, 13, 20}},
+			{"needs-triage", StateOpen, []int{12}},
+			{"nothing", StateAll, nil},
+		} {
+			if got := numbersOf(tc.label, tc.state); !slices.Equal(got, tc.want) {
+				t.Errorf("List(%q, %q) = %v, want %v", tc.label, tc.state, got, tc.want)
+			}
+		}
+		if tickets, _ := f.List(t.Context(), "bug", StateOpen); len(tickets) != 1 || tickets[0].Title != "Do it" || !slices.Equal(tickets[0].Labels, []string{"bug", "ready-for-agent"}) {
+			t.Errorf("List(bug) = %+v", tickets)
+		}
+	})
+
 	t.Run("Labels", func(t *testing.T) {
 		f, _ := forge(t)
 		names, err := f.Labels(t.Context())
@@ -286,15 +321,40 @@ func testContractWrites(t *testing.T, newFake newFakeForge) {
 		if err := f.RemoveLabel(t.Context(), 14, "needs-info"); err != nil { // not on the issue: fine
 			t.Errorf("RemoveLabel of a missing label: %v", err)
 		}
+		title, text := "New title", "New body"
+		if err := f.EditIssue(t.Context(), 7, &title, nil); err != nil {
+			t.Error(err)
+		}
+		if err := f.EditIssue(t.Context(), 7, nil, &text); err != nil {
+			t.Error(err)
+		}
 		if err := f.CloseIssue(t.Context(), 7); err != nil {
 			t.Error(err)
 		}
 		got := state().Issues[7]
+		if got.Title != title || got.Body != text {
+			t.Errorf("issue 7 after EditIssue: title %q, body %q", got.Title, got.Body)
+		}
 		if got.Open || !slices.Equal(got.Labels, []string{"bug", "needs-info"}) || got.Comments[len(got.Comments)-1] != "question" || len(got.Comments) != 151 {
 			t.Errorf("issue 7 = %+v", got)
 		}
 		if err := f.Comment(t.Context(), 99, "x"); err == nil {
 			t.Error("Comment on a missing issue: want error")
+		}
+	})
+
+	t.Run("create issue", func(t *testing.T) {
+		f, state := forge(t)
+		n, err := f.CreateIssue(t.Context(), "Idea", "Body", []string{"spec", "needs-info"})
+		if err != nil || n <= 14 {
+			t.Fatalf("CreateIssue = %d, %v", n, err)
+		}
+		want := seedIssue{Number: n, Title: "Idea", Body: "Body", Open: true, Labels: []string{"spec", "needs-info"}}
+		if got := state().Issues[n]; !reflect.DeepEqual(got, want) {
+			t.Errorf("issue = %+v, want %+v", got, want)
+		}
+		if _, err = f.CreateIssue(t.Context(), "No label", "", nil); err != nil {
+			t.Errorf("CreateIssue without labels: %v", err)
 		}
 	})
 }
@@ -427,5 +487,18 @@ func testRemote(t *testing.T, user string, remoteOf func(gitURL string) Remote) 
 	want := []string{"/o/r.git/info/refs " + basic, "/x/r.git/info/refs ", "/moved/r.git/info/refs " + basic}
 	if got := requests(); !slices.Equal(got, want) {
 		t.Errorf("requests with Authorization = %q, want %q", got, want)
+	}
+}
+
+func TestParseState(t *testing.T) {
+	for _, s := range []string{"open", "closed", "all"} {
+		if state, err := ParseState(s); err != nil || string(state) != s {
+			t.Errorf("ParseState(%q) = %q, %v", s, state, err)
+		}
+	}
+	for _, s := range []string{"", "bad", "Open"} {
+		if _, err := ParseState(s); err == nil {
+			t.Errorf("ParseState(%q): want an error", s)
+		}
 	}
 }

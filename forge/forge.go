@@ -6,6 +6,7 @@ package forge
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"os"
 	"regexp"
@@ -23,6 +24,24 @@ var (
 	issueRef  = regexp.MustCompile(`#(\d+)`)
 )
 
+// State is which issues List returns.
+type State string
+
+const (
+	StateOpen   State = "open"
+	StateClosed State = "closed"
+	StateAll    State = "all"
+)
+
+// ParseState validates s as a State.
+func ParseState(s string) (state State, err error) {
+	state = State(s)
+	if state != StateOpen && state != StateClosed && state != StateAll {
+		err = errors.New("state: want open, closed or all")
+	}
+	return
+}
+
 // Forge is what afk needs of the Project's Forge: tickets, Specs, the pull
 // request of a Run and the git remote its branch is pushed to. GitHub is the
 // first implementation; Gitea is the second (Spec #21), which is
@@ -36,6 +55,9 @@ type Forge interface {
 	Peek(ctx context.Context, n int) (ticket Ticket, open bool, err error)
 	// ListLabeled returns the numbers of the open issues with label, ascending.
 	ListLabeled(ctx context.Context, label string) (numbers []int, err error)
+	// List returns the issues (no pull requests) in state (open, closed or
+	// all), with label unless it is empty, ascending, without comments.
+	List(ctx context.Context, label string, state State) (tickets []Ticket, err error)
 	// Labels lists the names of the labels the repository has.
 	Labels(ctx context.Context) (names []string, err error)
 
@@ -57,10 +79,14 @@ type Forge interface {
 	ReadyPull(ctx context.Context, pull PullRequest) (err error)
 	// CloseIssue closes issue n as completed.
 	CloseIssue(ctx context.Context, n int) (err error)
+	// CreateIssue opens an issue with labels, which the repository must have.
+	CreateIssue(ctx context.Context, title, body string, labels []string) (n int, err error)
 	// Comment adds a comment to issue or pull request n.
 	Comment(ctx context.Context, n int, body string) (err error)
 	// AddLabel adds label to issue or pull request n.
 	AddLabel(ctx context.Context, n int, label string) (err error)
+	// EditIssue sets the title and the body of issue n; a nil one stays.
+	EditIssue(ctx context.Context, n int, title, body *string) (err error)
 	// RemoveLabel removes label from issue or pull request n; a label it
 	// doesn't have is no error.
 	RemoveLabel(ctx context.Context, n int, label string) (err error)

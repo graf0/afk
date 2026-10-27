@@ -246,7 +246,7 @@ func (g *Gitea) ticketOf(ctx context.Context, issue giteaIssue) (ticket Ticket, 
 // ListLabeled returns the numbers of the open issues with label, ascending.
 // The list lags behind labels changed a moment ago: Peek decides.
 func (g *Gitea) ListLabeled(ctx context.Context, label string) (numbers []int, err error) {
-	issues, err := g.listOpen(ctx, label)
+	issues, err := g.list(ctx, label, StateOpen)
 	if err != nil {
 		err = fmt.Errorf("listing tickets labeled %q: %w", label, err)
 		return
@@ -257,21 +257,35 @@ func (g *Gitea) ListLabeled(ctx context.Context, label string) (numbers []int, e
 	return
 }
 
-// listOpen returns the open issues (no pull requests) with label, ascending,
-// with their bodies. Gitea may drop a filter it does not know, and whether
-// names match regardless of case depends on its database: the label is
-// checked here as well.
-func (g *Gitea) listOpen(ctx context.Context, label string) (issues []giteaIssue, err error) {
-	listed, err := giteaList(ctx, g, "/repos/"+g.Repo+"/issues?state=open&type=issues&labels="+url.QueryEscape(label)+"&", func(i giteaIssue) int { return i.Number })
+// list returns the issues in state (no pull requests) with label unless it is
+// empty, ascending, with their bodies. Gitea may drop a filter it does not
+// know, and whether names match regardless of case depends on its database:
+// the label is checked here as well.
+func (g *Gitea) list(ctx context.Context, label string, state State) (issues []giteaIssue, err error) {
+	listed, err := giteaList(ctx, g, "/repos/"+g.Repo+"/issues?state="+url.QueryEscape(string(state))+"&type=issues&labels="+url.QueryEscape(label)+"&", func(i giteaIssue) int { return i.Number })
 	if err != nil {
 		return
 	}
 	for _, issue := range listed {
-		if issue.PullRequest == nil && ContainsLabel(issue.ticket().Labels, label) {
+		if issue.PullRequest == nil && (label == "" || ContainsLabel(issue.ticket().Labels, label)) {
 			issues = append(issues, issue)
 		}
 	}
 	slices.SortFunc(issues, func(a, b giteaIssue) int { return a.Number - b.Number })
+	return
+}
+
+// List returns the issues in state (open, closed or all), with label unless it
+// is empty, ascending, without comments.
+func (g *Gitea) List(ctx context.Context, label string, state State) (tickets []Ticket, err error) {
+	issues, err := g.list(ctx, label, state)
+	if err != nil {
+		err = fmt.Errorf("listing %s tickets labeled %q: %w", state, label, err)
+		return
+	}
+	for _, issue := range issues {
+		tickets = append(tickets, issue.ticket())
+	}
 	return
 }
 
@@ -365,7 +379,7 @@ func (g *Gitea) parentOf(ctx context.Context, n int) (parent int, err error) {
 	if g.SpecLabel == "" {
 		return
 	}
-	specs, err := g.listOpen(ctx, g.SpecLabel)
+	specs, err := g.list(ctx, g.SpecLabel, StateOpen)
 	if err != nil {
 		err = fmt.Errorf("looking for the Spec of #%d: %w", n, err)
 		return
@@ -543,6 +557,48 @@ func (g *Gitea) CloseIssue(ctx context.Context, n int) (err error) {
 	if err = g.call(ctx, http.MethodPatch, fmt.Sprintf("/repos/%s/issues/%d", g.Repo, n), in, nil); err != nil {
 		err = fmt.Errorf("closing #%d: %w", n, err)
 	}
+	return
+}
+
+// EditIssue sets the title and the body of issue n; a nil one stays.
+func (g *Gitea) EditIssue(ctx context.Context, n int, title, body *string) (err error) {
+	in := map[string]string{}
+	if title != nil {
+		in["title"] = *title
+	}
+	if body != nil {
+		in["body"] = *body
+	}
+	if err = g.call(ctx, http.MethodPatch, fmt.Sprintf("/repos/%s/issues/%d", g.Repo, n), in, nil); err != nil {
+		err = fmt.Errorf("editing #%d: %w", n, err)
+	}
+	return
+}
+
+// CreateIssue opens an issue with labels, which the repository must have:
+// Gitea takes them by id.
+func (g *Gitea) CreateIssue(ctx context.Context, title, body string, labels []string) (n int, err error) {
+	ids := []int64{}
+	for _, label := range labels {
+		id, found, labelErr := g.labelID(ctx, label)
+		if labelErr == nil && !found {
+			labelErr = errors.New("no such label in the repository")
+		}
+		if labelErr != nil {
+			err = fmt.Errorf("creating an issue: label %q: %w", label, labelErr)
+			return
+		}
+		ids = append(ids, id)
+	}
+	in := map[string]any{"title": title, "body": body, "labels": ids}
+	var out struct {
+		Number int `json:"number"`
+	}
+	if err = g.call(ctx, http.MethodPost, fmt.Sprintf("/repos/%s/issues", g.Repo), in, &out); err != nil {
+		err = fmt.Errorf("creating an issue: %w", err)
+		return
+	}
+	n = out.Number
 	return
 }
 

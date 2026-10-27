@@ -84,8 +84,9 @@ Strumień Agenta (stream-json) idzie do pliku logu w `~/.local/state/afk/<projec
 ADR-0012. Binarka `afk` kopiowana przy `attach` do `/usr/local/bin/afk-forge`; woła `afk` przez odwrotny unix socket na ssh (HTTP+JSON), istniejący tylko przy `attach`. `afk` wykonuje operacje swoim tokenem, tylko dla Forge tego Project:
 
 - `issue view <n>` — format `TICKET.md` (ta sama sanitizacja); `issue list [--label …] [--state open|closed|all]` — `#N  [labele]  tytuł`.
-- `issue create`, `issue comment` — treść ze stopką `— z Chat <nazwa>`.
-- `issue edit` — labele dowolnego issue; treść i tytuł tylko issue utworzonych przez ten Chat (lista numerów w `~/.local/state/afk/<project>/chats/<nazwa>/issues`).
+- `issue create`, `issue comment` — treść ze stopką `— z Chat <nazwa>`. Komentarz na dowolnym issue, także `ready-for-agent`: trafia do `TICKET.md` Run, ale w Chat jest człowiek in-the-loop, więc to świadomy kompromis, nie dziura. Label Spec dozwolony — Chat tworzy Specy.
+- `issue edit` — labele dowolnego issue; treść i tytuł tylko issue utworzonych przez ten Chat (lista numerów w `~/.local/state/afk/<project>/chats/<nazwa>/issues`) i tylko dopóki nie mają `ready-for-agent`: człowiek zatwierdził tę treść, więc jej zmiana omijałaby review (liczy się label sprzed zapisu, także gdy to samo wywołanie go zdejmuje). Label Spec na cudzym tickecie zmienia tryb Factory (ticket staje się Specem; jego dzieci i tak potrzebują `ready-for-agent`) — świadomie dozwolone.
+- `issue comment` na pull requeście jest odrzucany jak `issue edit`; nieznane trasy kanału też trafiają do logu.
 - `ready-for-agent` z Chat jest zamieniany na `needs-triage` — gotowość dla Factory nadaje człowiek. Bez zamykania issue i bez PR.
 - Każde wywołanie (operacja, numer, wynik) do `~/.local/state/afk/<project>/logs/chat-<nazwa>-<czas>-forge.txt`.
 

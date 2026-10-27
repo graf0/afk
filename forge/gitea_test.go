@@ -166,7 +166,7 @@ func (fake *fakeGitea) mux() (handler http.Handler) {
 		query := r.URL.Query()
 		var listed []*seedIssue
 		for _, issue := range fake.issues {
-			ok := (query.Get("state") != "open" || issue.Open) &&
+			ok := (query.Get("state") == "all" || issue.Open == (query.Get("state") != "closed")) &&
 				(query.Get("type") != "issues" || !issue.IsPull) &&
 				(fake.ignoreLabels || query.Get("labels") == "" || slices.Contains(issue.Labels, query.Get("labels")))
 			if ok {
@@ -193,7 +193,16 @@ func (fake *fakeGitea) mux() (handler http.Handler) {
 		return
 	}
 	issue("PATCH issues/{n}", func(w http.ResponseWriter, r *http.Request, issue *seedIssue) {
-		issue.Open = body(r)["state"] != "closed"
+		in := body(r)
+		if state, ok := in["state"]; ok {
+			issue.Open = state != "closed"
+		}
+		if title, ok := in["title"].(string); ok {
+			issue.Title = title
+		}
+		if text, ok := in["body"].(string); ok {
+			issue.Body = text
+		}
 		reply(w, http.StatusCreated, issueJSON(issue))
 	})
 	issue("POST issues/{n}/comments", func(w http.ResponseWriter, r *http.Request, issue *seedIssue) {
@@ -244,6 +253,19 @@ func (fake *fakeGitea) mux() (handler http.Handler) {
 		fake.pulls = append(fake.pulls, pull)
 		fake.issues[pull.Number] = &seedIssue{Number: pull.Number, Title: pull.Title, Body: pull.Body, Open: true, IsPull: true}
 		reply(w, http.StatusCreated, pullJSON(pull))
+	})
+	handle("POST issues", func(w http.ResponseWriter, r *http.Request) {
+		in := body(r)
+		issue := &seedIssue{Number: 1, Title: fmt.Sprint(in["title"]), Body: fmt.Sprint(in["body"]), Open: true}
+		for n := range fake.issues {
+			issue.Number = max(issue.Number, n+1)
+		}
+		ids, _ := in["labels"].([]any)
+		for _, id := range ids {
+			issue.Labels = append(issue.Labels, fake.labels[int(id.(float64))-1])
+		}
+		fake.issues[issue.Number] = issue
+		reply(w, http.StatusCreated, issueJSON(issue))
 	})
 	handle("GET pulls", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("state") != "all" {

@@ -179,20 +179,30 @@ func (g *GitHub) Peek(ctx context.Context, n int) (ticket Ticket, open bool, err
 // ListLabeled returns the numbers of the open issues with label, ascending.
 // The list lags behind labels changed a moment ago: Peek decides.
 func (g *GitHub) ListLabeled(ctx context.Context, label string) (numbers []int, err error) {
+	tickets, err := g.List(ctx, label, StateOpen)
+	for _, ticket := range tickets {
+		numbers = append(numbers, ticket.Number)
+	}
+	return
+}
+
+// List returns the issues in state (open, closed or all), with label unless it
+// is empty, ascending, without comments.
+func (g *GitHub) List(ctx context.Context, label string, state State) (tickets []Ticket, err error) {
 	for page := 1; ; page++ {
 		var issues []githubIssue
-		path := fmt.Sprintf("/repos/%s/issues?state=open&labels=%s&per_page=%d&page=%d", g.Repo, url.QueryEscape(label), perPage, page)
+		path := fmt.Sprintf("/repos/%s/issues?state=%s&labels=%s&per_page=%d&page=%d", g.Repo, url.QueryEscape(string(state)), url.QueryEscape(label), perPage, page)
 		if err = g.get(ctx, path, &issues); err != nil {
-			err = fmt.Errorf("listing tickets labeled %q: %w", label, err)
+			err = fmt.Errorf("listing %s tickets labeled %q: %w", state, label, err)
 			return
 		}
 		for _, issue := range issues {
 			if issue.PullRequest == nil {
-				numbers = append(numbers, issue.Number)
+				tickets = append(tickets, issue.ticket())
 			}
 		}
 		if len(issues) < perPage {
-			slices.Sort(numbers)
+			slices.SortFunc(tickets, func(a, b Ticket) int { return a.Number - b.Number })
 			return
 		}
 	}
@@ -365,6 +375,35 @@ func (g *GitHub) CloseIssue(ctx context.Context, n int) (err error) {
 	if err = g.call(ctx, http.MethodPatch, fmt.Sprintf("/repos/%s/issues/%d", g.Repo, n), in, nil); err != nil {
 		err = fmt.Errorf("closing #%d: %w", n, err)
 	}
+	return
+}
+
+// EditIssue sets the title and the body of issue n; a nil one stays.
+func (g *GitHub) EditIssue(ctx context.Context, n int, title, body *string) (err error) {
+	in := map[string]string{}
+	if title != nil {
+		in["title"] = *title
+	}
+	if body != nil {
+		in["body"] = *body
+	}
+	if err = g.call(ctx, http.MethodPatch, fmt.Sprintf("/repos/%s/issues/%d", g.Repo, n), in, nil); err != nil {
+		err = fmt.Errorf("editing #%d: %w", n, err)
+	}
+	return
+}
+
+// CreateIssue opens an issue with labels, which the repository must have.
+func (g *GitHub) CreateIssue(ctx context.Context, title, body string, labels []string) (n int, err error) {
+	in := map[string]any{"title": title, "body": body, "labels": labels}
+	var out struct {
+		Number int `json:"number"`
+	}
+	if err = g.call(ctx, http.MethodPost, fmt.Sprintf("/repos/%s/issues", g.Repo), in, &out); err != nil {
+		err = fmt.Errorf("creating an issue: %w", err)
+		return
+	}
+	n = out.Number
 	return
 }
 

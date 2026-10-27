@@ -59,6 +59,11 @@ type Options struct {
 	Command []string
 }
 
+// forgeChannel is what afk-forge of the Chat works on; chatDir is its state.
+func (opts Options) forgeChannel(chatDir string) (ch forgeChannel) {
+	return forgeChannel{Forge: opts.Forge, ProjectLabels: opts.Base.Config.Labels, Chat: opts.Name, IssuesPath: filepath.Join(chatDir, issuesName)}
+}
+
 // ValidateName checks a Chat's name: [a-z0-9-]{1,32}, not starting with "-".
 func ValidateName(name string) (err error) {
 	if !namePattern.MatchString(name) {
@@ -184,7 +189,7 @@ func New(ctx context.Context, opts Options) (err error) {
 	vm = m.Name
 	say(opts.Out, "Chat %s: VM %s started, base origin/%s %s", opts.Name, m.Name, opts.Base.Branch, opts.Base.Commit[:12])
 
-	client, closeLink, err := link(ctx, m, signer, denials)
+	client, closeLink, err := link(ctx, m, signer, denials, opts.forgeChannel(chatDir), logBase+"-forge.txt")
 	if err != nil {
 		return
 	}
@@ -220,8 +225,8 @@ func New(ctx context.Context, opts Options) (err error) {
 // then Claude Code with --continue on the terminal until it ends. The VM
 // stays. Model and effort are the Chat's own, kept in its VM's metadata; the
 // Tools' env comes from opts.Base.Config. Like New, it holds the lock of the
-// Chat for its whole life. Only opts.Base, Name, ClaudeToken, Paths, Out and
-// Command are used.
+// Chat for its whole life. Only opts.Base, Name, ClaudeToken, Paths, Forge,
+// Out and Command are used.
 func Attach(ctx context.Context, opts Options) (err error) {
 	if opts.ClaudeToken == "" {
 		err = errors.New("no Claude token")
@@ -253,12 +258,12 @@ func Attach(ctx context.Context, opts Options) (err error) {
 	if err != nil {
 		return
 	}
-	logs, _, closeLogs, denials, err := openLogs(stateDir, BranchPrefix+opts.Name, opts.Out)
+	logs, logBase, closeLogs, denials, err := openLogs(stateDir, BranchPrefix+opts.Name, opts.Out)
 	if err != nil {
 		return
 	}
 	defer closeLogs()
-	client, closeLink, err := link(ctx, m, signer, denials)
+	client, closeLink, err := link(ctx, m, signer, denials, opts.forgeChannel(chatDir), logBase+"-forge.txt")
 	if err != nil {
 		return
 	}
@@ -371,9 +376,10 @@ func openLogs(stateDir, branch string, out io.Writer) (logs, logBase string, clo
 	return
 }
 
-// link connects to m over ssh (waiting for the guest's sshd) and serves the
-// Egress proxy, AllowAll, over the connection. closeLink undoes both.
-func link(ctx context.Context, m machine.Machine, signer ssh.Signer, denials io.Writer) (client *ssh.Client, closeLink func(), err error) {
+// link connects to m over ssh (waiting for the guest's sshd) and serves over
+// the connection the Egress proxy, AllowAll, and the Forge for afk-forge,
+// whose calls go to forgeLog. closeLink undoes all of it.
+func link(ctx context.Context, m machine.Machine, signer ssh.Signer, denials io.Writer, ch forgeChannel, forgeLog string) (client *ssh.Client, closeLink func(), err error) {
 	sshCtx, cancel := context.WithTimeout(ctx, machine.SSHTimeout)
 	defer cancel()
 	if client, err = m.SSH(sshCtx, signer); err != nil {
@@ -384,7 +390,14 @@ func link(ctx context.Context, m machine.Machine, signer ssh.Signer, denials io.
 		_ = client.Close()
 		return
 	}
+	stopForge, err := serveForge(ctx, client, ch, forgeLog)
+	if err != nil {
+		stop()
+		_ = client.Close()
+		return
+	}
 	closeLink = func() {
+		stopForge()
 		stop()
 		_ = client.Close()
 	}

@@ -11,6 +11,8 @@ The skills speak in terms of five canonical triage roles, plus `spec` for afk. T
 | `wontfix`                  | `wontfix`            | Will not be actioned                     |
 | —                          | `spec`               | Parent ticket whose children afk implements as one Spec |
 
+Apply labels with `gh issue edit --add-label` (host) or `afk-forge issue edit --add-label` (Chat), see `issue-tracker.md`. In Chat `ready-for-agent` is replaced with `needs-triage`: only a human on the host grants it. `spec` is allowed in Chat.
+
 When a skill mentions a role (e.g. "apply the AFK-ready triage label"), use the corresponding label string from this table.
 
 Edit the "Label in our tracker" column to match whatever vocabulary you actually use.

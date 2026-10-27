@@ -7,9 +7,11 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 
+	"github.com/graf0/afk/chat"
 	"github.com/graf0/afk/config"
 	"github.com/graf0/afk/image"
 	"github.com/graf0/afk/machine"
@@ -18,14 +20,21 @@ import (
 
 func main() {
 	ctx, abort := handleSignals(context.Background())
-	dir, err := os.Getwd()
-	if err == nil {
-		err = runCommand(ctx, abort, os.Args[1:], dir, os.Stdout)
+	name := "afk"
+	var err error
+	if filepath.Base(os.Args[0]) == chat.ForgeBinary { // the copy in a Chat's VM (ADR-0012)
+		name = chat.ForgeBinary
+		err = chat.RunForge(ctx, chat.ForgeSocket, os.Args[1:], os.Stdin, os.Stdout, os.Stderr)
+	} else {
+		var dir string
+		if dir, err = os.Getwd(); err == nil {
+			err = runCommand(ctx, abort, os.Args[1:], dir, os.Stdout)
+		}
 	}
 	if err != nil {
 		// Config errors come one per line; each line gets the prefix.
 		for line := range strings.SplitSeq(strings.TrimSuffix(err.Error(), "\n"), "\n") {
-			fmt.Fprintln(os.Stderr, "afk:", line)
+			fmt.Fprintf(os.Stderr, "%s: %s\n", name, line)
 		}
 		os.Exit(1)
 	}
