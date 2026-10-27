@@ -13,6 +13,7 @@ import (
 	"github.com/graf0/afk/config"
 	"github.com/graf0/afk/forge"
 	"github.com/graf0/afk/image"
+	"github.com/graf0/afk/machine"
 )
 
 // Factory runs tickets one after another, like docs/reference/ralph.sh,
@@ -420,6 +421,9 @@ func (f *Factory) take(ctx context.Context, ticket forge.Ticket, resume *Leftove
 	case errors.Is(err, ErrNeedsInfo):
 		f.say("%v", err)
 		err = nil
+	case errors.Is(err, machine.ErrNoMemory):
+		f.say("#%d: no VM was created, the Factory stops; free host memory and run `afk factory` again.", ticket.Number)
+		err = fmt.Errorf("#%d: %w", ticket.Number, err)
 	default:
 		f.say("#%d failed, the Factory stops. A VM of the Run stays: afk vm list, afk vm shell <vm>, afk vm kill <vm>; `afk factory` continues the Run.", ticket.Number)
 		err = fmt.Errorf("#%d: %w", ticket.Number, err)

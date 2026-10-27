@@ -252,7 +252,7 @@ func TestWorkReviewFixesGoThroughGateAndValidation(t *testing.T) {
 				return agent.Report{Status: agent.StatusDone}
 			},
 		}
-		if _, err := r.work(t.Context(), g); err == nil || !strings.Contains(err.Error(), "protected paths: secrets/key") {
+		if _, err := r.work(t.Context(), g); err == nil || !strings.Contains(err.Error(), "sneaky: secrets/key") {
 			t.Fatalf("err = %v, want protected paths rejection", err)
 		}
 		if err := r.quarantine.CheckNew(t.Context(), r.branch); err != nil {
@@ -357,9 +357,46 @@ func TestTaskTools(t *testing.T) {
 // TestExecCommandSetsEnv runs the command Exec sends to the guest: the env of
 // the Tools is there for setup and the gate, which both go through Exec.
 func TestExecCommandSetsEnv(t *testing.T) {
-	cmd := exec.Command("bash", "-c", strings.ReplaceAll(execCommand(map[string]string{"DATABASE_URL": "pg:///it's"}, `printf %s "$DATABASE_URL"`), guestRepo, t.TempDir()))
+	cmd := exec.Command("bash", "-c", strings.ReplaceAll(execCommand(map[string]string{"DATABASE_URL": "pg:///it's"}, `printf %s "$DATABASE_URL"`), GuestRepo, t.TempDir()))
 	out, err := cmd.Output()
 	if err != nil || string(out) != "pg:///it's" {
 		t.Errorf("got %q, %v", out, err)
+	}
+}
+
+// TestGuestBranchFetch uses the exported API as Chat will: a GuestBranch and an
+// exec in the guest, not the Run (the fixture only sets them up).
+func TestGuestBranchFetch(t *testing.T) {
+	r, g, _ := workRun(t, &fakeGitHub{}, "true", 0)
+	b := GuestBranch{Quarantine: r.quarantine, Name: r.branch, TempDir: r.stateDir}
+	fetch := func() (head string, err error) {
+		return b.Fetch(t.Context(), g.Exec, r.Base.Commit, []string{"locked"}, &bytes.Buffer{})
+	}
+	if head, err := fetch(); err != nil || head != r.Base.Commit {
+		t.Fatalf("without commits = %q, %v, want the start", head, err)
+	}
+
+	g.commit("impl", agent.Report{})()
+	head, err := fetch()
+	if err != nil || head != sh(t, g.dir, "git rev-parse HEAD") {
+		t.Fatalf("Fetch = %q, %v", head, err)
+	}
+
+	// Uncommitted changes are the caller's to judge: Fetch ignores them.
+	sh(t, g.dir, "echo x > dirty")
+	if status, err := Dirty(t.Context(), g.Exec); err != nil || status != "?? dirty" {
+		t.Errorf("Dirty = %q, %v", status, err)
+	}
+	if _, err = fetch(); err != nil {
+		t.Errorf("dirty tree: Fetch err = %v", err)
+	}
+	if _, err = r.fetchResult(t.Context(), g); err == nil || !strings.Contains(err.Error(), "uncommitted") {
+		t.Errorf("dirty tree: fetchResult err = %v", err)
+	}
+	sh(t, g.dir, "rm dirty")
+
+	g.commit("locked", agent.Report{})()
+	if _, err = fetch(); err == nil || !strings.Contains(err.Error(), "rejected") {
+		t.Errorf("protected path: err = %v", err)
 	}
 }

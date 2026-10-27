@@ -11,6 +11,7 @@ import (
 
 	"github.com/graf0/afk/config"
 	"github.com/graf0/afk/forge"
+	"github.com/graf0/afk/machine"
 )
 
 // factoryEnv is a Factory on a fake GitHub with injected VMs: Execute
@@ -286,6 +287,21 @@ func TestFactoryFailureStops(t *testing.T) {
 		if !strings.Contains(env.out.String(), want) {
 			t.Errorf("output lacks %q:\n%s", want, env.out)
 		}
+	}
+}
+
+func TestFactoryNoMemoryStops(t *testing.T) {
+	env := newFactoryEnv(t, map[int]*fakeIssue{1: {title: "One", open: true, labels: ready()}, 2: {title: "Two", open: true, labels: ready()}})
+	env.fail[1] = fmt.Errorf("starting the VM: %w", machine.ErrNoMemory)
+	err := env.factory.Run(t.Context())
+	if !errors.Is(err, machine.ErrNoMemory) || !strings.Contains(err.Error(), "#1") {
+		t.Errorf("err = %v, want the refusal of #1", err)
+	}
+	if want := []int{1}; !slices.Equal(env.executed, want) {
+		t.Errorf("executed %v, want %v", env.executed, want)
+	}
+	if got := env.out.String(); strings.Contains(got, "VM of the Run stays") || !strings.Contains(got, "no VM was created") {
+		t.Errorf("output:\n%s", got)
 	}
 }
 

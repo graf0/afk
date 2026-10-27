@@ -77,3 +77,37 @@ func TestOverlays(t *testing.T) {
 		t.Errorf("Overlays = %v, %v; want %v", got, err, want)
 	}
 }
+
+func TestCheckMemory(t *testing.T) {
+	meminfo := func(body string) *Conn {
+		path := filepath.Join(t.TempDir(), "meminfo")
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return &Conn{meminfo: path}
+	}
+	const sample = "MemTotal:       32000000 kB\nMemAvailable:    6291456 kB\nSwapTotal: 0 kB\n" // 6144 MiB
+
+	if err := meminfo(sample).checkMemory("afk-run-x", 4096); err != nil {
+		t.Errorf("exactly enough memory refused: %v", err)
+	}
+	err := meminfo(sample).checkMemory("afk-run-x", 4097)
+	if !errors.Is(err, ErrNoMemory) || !strings.Contains(err.Error(), "6144 MiB available") || !strings.Contains(err.Error(), "need 6145 MiB") {
+		t.Errorf("err = %v, want refusal with both values", err)
+	}
+	if err = meminfo("MemTotal: 1 kB\n").checkMemory("afk-run-x", 1); err == nil {
+		t.Error("missing MemAvailable accepted")
+	}
+	if err = meminfo("MemAvailable: abc kB\n").checkMemory("afk-run-x", 1); err == nil {
+		t.Error("malformed MemAvailable accepted")
+	}
+	if err = (&Conn{meminfo: filepath.Join(t.TempDir(), "none")}).checkMemory("afk-run-x", 1); err == nil {
+		t.Error("unreadable meminfo accepted")
+	}
+
+	// Up refuses before touching libvirt (the nil connection is never used).
+	_, err = meminfo(sample).Up(t.Context(), Spec{Project: "p", Kind: KindRun, ID: "x", BaseDisk: "/b", MemoryMiB: 8192, CPUs: 1})
+	if !errors.Is(err, ErrNoMemory) {
+		t.Errorf("Up err = %v", err)
+	}
+}

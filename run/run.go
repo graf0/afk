@@ -28,8 +28,9 @@ import (
 
 const (
 	// Paths in the guest: the clone, and the ticket next to it, outside.
-	guestWork   = "/work"
-	guestRepo   = guestWork + "/repo"
+	guestWork = "/work"
+	// GuestRepo is the Agent's clone, in a Run and in a Chat.
+	GuestRepo   = guestWork + "/repo"
 	guestTicket = guestWork + "/TICKET.md"
 	guestSpec   = guestWork + "/SPEC.md"
 	// guestStart is where the guest fetches the tip of a Spec's branch.
@@ -75,7 +76,7 @@ type run struct {
 	branch     string // ticket-N, in the guest and the Quarantine repo
 	quarantine Quarantine
 	log        *rotatingLog
-	denials    *denialLog // Egress proxy denials of the session, next to log
+	denials    *DenialLog // Egress proxy denials of the session, next to log
 	id         string     // machine id of the VM, random when empty
 	resumed    bool       // the guest holds the Agent's earlier work: the next prompt says so
 
@@ -274,51 +275,20 @@ func (r run) prepared(prepare bool, work workFunc) (prepared workFunc) {
 	return work
 }
 
-// prepareGuest clones the base into guestRepo on the ticket branch, with the
+// prepareGuest clones the base into GuestRepo on the ticket branch, with the
 // base as origin/<branch>, and writes the ticket next to it. Inside a Spec
 // the branch starts at its tip instead, and the Spec is written too.
 func (r run) prepareGuest(ctx context.Context, client *ssh.Client) (err error) {
-	temp, err := os.CreateTemp(r.stateDir, "base-*.bundle")
-	if err != nil {
-		err = fmt.Errorf("creating base bundle: %w", err)
-		return
-	}
-	_ = temp.Close()
-	defer func() { _ = os.Remove(temp.Name()) }()
-	// git replaces the file (lock file + rename): open it only afterwards.
-	if err = r.quarantine.Bundle(ctx, r.branch, temp.Name()); err != nil {
-		return
-	}
-	bundle, err := os.Open(temp.Name())
-	if err != nil {
-		err = fmt.Errorf("opening base bundle: %w", err)
-		return
-	}
-	defer func() { _ = bundle.Close() }()
-	q := agent.ShellQuote
-	origin := originPrefix + r.Base.Branch
-	fetch, start := q("+"+baseRef(r.branch)+":"+origin), origin
-	if r.start() != r.Base.Commit {
-		fetch, start = fetch+" "+q("+"+resultRef(r.branch)+":"+guestStart), guestStart
-	}
-	script := strings.Join([]string{
-		"set -eu",
-		`sudo install -d -o "$(id -u)" -g "$(id -g)" ` + guestWork,
-		"cat > " + guestBundle,
-		"git init -q -b " + q(r.branch) + " " + guestRepo,
-		"cd " + guestRepo,
-		"git config user.name " + q(guestGitName),
-		"git config user.email " + q(guestGitEmail),
-		"git fetch -q --no-tags " + guestBundle + " " + fetch,
-		"git checkout -q -B " + q(r.branch) + " " + q(start),
-		"rm " + guestBundle,
-	}, "\n")
-	if err = remote(ctx, client, script, bundle, nil); err != nil {
-		err = fmt.Errorf("cloning the base in the guest: %w", err)
+	if err = r.guestBranch().Clone(ctx, client, r.Base.Branch, r.start() != r.Base.Commit); err != nil {
 		return
 	}
 	err = r.writeTicketFiles(ctx, client)
 	return
+}
+
+// guestBranch is the Run's branch in the Quarantine repo.
+func (r run) guestBranch() (b GuestBranch) {
+	return GuestBranch{Quarantine: r.quarantine, Name: r.branch, TempDir: r.stateDir}
 }
 
 // writeTicketFiles writes the ticket, and the Spec when there is one, next to the clone.
@@ -354,7 +324,7 @@ func (r *run) openLog(name string) (path string, err error) {
 	}
 	path = filepath.Join(dir, fmt.Sprintf("%s-%s.jsonl", name, time.Now().UTC().Format("20060102T150405Z")))
 	r.log = &rotatingLog{path: path, max: logRotateSize}
-	r.denials = &denialLog{path: strings.TrimSuffix(path, ".jsonl") + "-egress.txt"}
+	r.denials = &DenialLog{path: strings.TrimSuffix(path, ".jsonl") + "-egress.txt"}
 	if r.log.file, err = os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600); err != nil {
 		err = fmt.Errorf("creating log: %w", err)
 	}
@@ -371,8 +341,11 @@ func (r run) closeLogs() {
 }
 
 // say prints a line of afk itself, prefixed "= " like ralph.sh.
-func (r run) say(format string, args ...any) {
-	_, _ = fmt.Fprintf(r.Out, "= "+format+"\n", args...)
+func (r run) say(format string, args ...any) { say(r.Out, format, args...) }
+
+// say prints a line of afk itself to w.
+func say(w io.Writer, format string, args ...any) {
+	_, _ = fmt.Fprintf(w, "= "+format+"\n", args...)
 }
 
 // remote runs command in the guest; its stderr (sanitized, truncated) goes
@@ -483,9 +456,9 @@ func (l *limitWriter) Write(p []byte) (n int, err error) {
 	return
 }
 
-// denialLog is the file of the Egress proxy's denials, one line per Write.
+// DenialLog is the file of the Egress proxy's denials, one line per Write.
 // The file is created by the first denial: a Run without any leaves none.
-type denialLog struct {
+type DenialLog struct {
 	path string
 
 	mu    sync.Mutex
@@ -493,7 +466,13 @@ type denialLog struct {
 	count int
 }
 
-func (l *denialLog) Write(p []byte) (n int, err error) {
+// NewDenialLog is the DenialLog in the file at path.
+func NewDenialLog(path string) (l *DenialLog) { return &DenialLog{path: path} }
+
+// Path is the file of the log.
+func (l *DenialLog) Path() (path string) { return l.path }
+
+func (l *DenialLog) Write(p []byte) (n int, err error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.out == nil {
@@ -508,7 +487,7 @@ func (l *denialLog) Write(p []byte) (n int, err error) {
 }
 
 // Close closes the file and returns the number of denials written.
-func (l *denialLog) Close() (denied int, err error) {
+func (l *DenialLog) Close() (denied int, err error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	denied = l.count

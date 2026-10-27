@@ -69,13 +69,13 @@ Strumień Agenta (stream-json) idzie do pliku logu w `~/.local/state/afk/<projec
 
 ## Chat
 
-`afk chat new <nazwa> [--model …] [--effort …]`, `attach <nazwa>`, `export <nazwa>`, `rm [--force] <nazwa>`, `list`. Nazwa wymagana: `[a-z0-9-]{1,32}`, unikalna w Project; Chat o tej nazwie albo branch `chat-<nazwa>` na remote → odmowa przy tworzeniu.
+`afk chat new <nazwa> [--model …] [--effort …]`, `attach <nazwa>`, `export <nazwa>`, `rm [--force] <nazwa>`, `list`. Nazwa wymagana: `[a-z0-9-]{1,32}`, nie zaczyna się od `-`, unikalna w Project; Chat o tej nazwie albo branch `chat-<nazwa>` na remote → odmowa przy tworzeniu.
 
 - Własna, długo żyjąca Sandbox VM; kod to snapshot gałęzi bazowej z chwili utworzenia, bez synchronizacji (świeży stan = nowy Chat). `setup` i `env` Tooli jak w Run (log `<log>-setup.txt`).
-- Claude Code interaktywnie na pty po ssh, `--dangerously-skip-permissions`; model i effort z `[agent]`, do nadpisania przy tworzeniu.
-- Cały internet przez Egress proxy (bez adresów prywatnych i hosta), odmowy do `chat-<nazwa>-egress.txt`. Token i kod uznajemy za możliwe do wyniesienia (ADR-0003).
+- Claude Code interaktywnie na pty po ssh, `--dangerously-skip-permissions`; model z `[agent]` (do nadpisania `--model`), effort tylko flagą `--effort` (`claude --effort`); oba w metadanych VM. Brak Base image albo nieaktualny → budowany jak w Factory. Porażka przed startem `claude` usuwa VM, stan i refy Chat (zostają logi); po starcie Chat zostaje zawsze.
+- Cały internet przez Egress proxy (bez adresów prywatnych i hosta), odmowy do `chat-<nazwa>-<czas>-egress.txt` (logi per proces, jak w Run: także `-setup.txt`). Token i kod uznajemy za możliwe do wyniesienia (ADR-0003).
 - `--append-system-prompt` od `afk`: izolowana VM, brak `gh` i Forge, tickety przez `afk-forge`, kod to snapshot, eksport tylko przez `afk`, pełny internet.
-- Proces `attach` trzyma ssh, Egress proxy, kanał `afk-forge` i pty; `flock` na `~/.local/state/afk/<project>/chats/<nazwa>/lock` — drugi `attach` dostaje odmowę z PID właściciela. Koniec `claude` (`/exit`, crash) kończy proces, VM zostaje; kolejny `attach` uruchamia `claude --continue`. Wyłączona VM (restart hosta) jest startowana przy `attach`, `export` i `rm`; bez autostartu przy boocie.
+- Proces `attach` trzyma ssh, Egress proxy, kanał `afk-forge` i pty; `flock` na `~/.local/state/afk/<project>/chats/<nazwa>/lock` — drugi `attach` dostaje odmowę z PID właściciela. Koniec `claude` (`/exit`, crash) kończy proces, VM zostaje; kolejny `attach` uruchamia `claude --continue` (bez flagi, gdy w gościu nie ma jeszcze rozmowy), z modelem i effortem z metadanych VM oraz `env` Tooli i gałęzią bazową z chwili utworzenia Chat (`snapshot.json` w stanie Chat), nie z dzisiejszej bazy. Wyłączona VM (restart hosta) jest startowana przy `attach`, `export` i `rm`; bez autostartu przy boocie.
 - Shell w VM Chat (`M-s`): to samo Egress proxy, bez kanału `afk-forge`.
 - Pluginy i skille: to samo co w Factory, czyli co jest w obrazie i w repo; nic z `~/.claude` hosta (ADR-0009).
 
@@ -87,19 +87,23 @@ ADR-0012. Binarka `afk` kopiowana przy `attach` do `/usr/local/bin/afk-forge`; w
 - `issue create`, `issue comment` — treść ze stopką `— z Chat <nazwa>`.
 - `issue edit` — labele dowolnego issue; treść i tytuł tylko issue utworzonych przez ten Chat (lista numerów w `~/.local/state/afk/<project>/chats/<nazwa>/issues`).
 - `ready-for-agent` z Chat jest zamieniany na `needs-triage` — gotowość dla Factory nadaje człowiek. Bez zamykania issue i bez PR.
-- Każde wywołanie (operacja, numer, wynik) do `~/.local/state/afk/<project>/logs/chat-<nazwa>-forge.txt`.
+- Każde wywołanie (operacja, numer, wynik) do `~/.local/state/afk/<project>/logs/chat-<nazwa>-<czas>-forge.txt`.
 
 ### Eksport
 
-Na żądanie człowieka, wielokrotnie, bez `attach` (własne ssh; wyłączona VM jest startowana). Wszystkie commity od snapshotu bazy (`HEAD` z chwili wywołania) idą `git bundle` do Quarantine repo, bez squasha, z tą samą walidacją co wynik Run (przodek bazy, chronione ścieżki). Naruszenie → odrzucony cały eksport z listą commitów i ścieżek; człowiek każe Agentowi poprawić historię w Chat. Push `chat-<nazwa>` z `--force-with-lease=<ostatnio wypchnięty sha>` (pierwszy: pusty sha) — przepisana historia przechodzi, cudzy push na branch kończy się odmową. Bez PR.
+Na żądanie człowieka, wielokrotnie, bez `attach` (własne ssh; wyłączona VM jest startowana). Wszystkie commity od snapshotu bazy (`HEAD` z chwili wywołania) idą `git bundle` do Quarantine repo, bez squasha, z tą samą walidacją co wynik Run (przodek bazy, chronione ścieżki). Chronione ścieżki są z `.afk.toml` z chwili utworzenia Chat (snapshot). Naruszenie → odrzucony cały eksport; komunikat wymienia każdy naruszający commit (krótki sha i temat) z jego chronionymi ścieżkami, a człowiek każe Agentowi poprawić historię w Chat. Niezacommitowane zmiany w VM nie blokują eksportu: commity idą, a `afk` ostrzega, że zmian nie wyeksportowano. Bez nowych commitów (`HEAD` równy ostatnio wyeksportowanemu, a bez eksportu bazie) komunikat i brak pushu. Push `chat-<nazwa>` z `--force-with-lease=<ostatnio wypchnięty sha>` (pierwszy: pusty sha) — przepisana historia przechodzi, cudzy push na branch kończy się odmową. Ostatnio wypchnięty sha zapisuje `afk` w stanie Chat (`snapshot.json`, zapis atomowy) dopiero po udanym pushu; branch na remote już na `HEAD` (push bez zapisu po crashu) jest tylko zapisywany, a branch usunięty na remote przez człowieka — tworzony od nowa. `HEAD` cofnięty do bazy po eksporcie: komunikat, branch na remote zostaje. Bez PR.
 
 ### Zamknięcie
 
-`rm` niszczy VM i stan Chat. Odmawia bez `--force`, gdy w VM są niezacommitowane zmiany albo `HEAD` różni się od ostatniego eksportu (bez eksportu: od snapshotu). TUI przy `M-x` pyta: eksportuj / usuń / anuluj.
+`afk chat rm [--force] <nazwa>` niszczy VM (domena, sieć, filtr, overlay), refy Quarantine `chat-<nazwa>` i stan Chat (`snapshot.json`, blokada). Logi i branch `chat-<nazwa>` na remote zostają. Bierze blokadę Chat: trzymana przez `attach` → odmowa z PID właściciela, także z `--force`.
+
+Bez `--force` odmawia, gdy w VM są niezacommitowane zmiany (także pliki nieśledzone) albo `HEAD` ma commity nieosiągalne z ostatniego eksportu (`snapshot.json`), a bez eksportu z bazy snapshotu (ref bazy w Quarantine repo); komunikat podaje liczbę ścieżek z niezacommitowanymi zmianami i liczbę oraz krótkie sha (do 5) takich commitów. `HEAD` poza historią eksportu (przepisana historia) też jest odmową; `HEAD` cofnięty za eksport nie (wszystko w nim wyeksportowano). Pliki ignorowane przez git i historia rozmowy `claude` w VM giną bez ostrzeżenia. Wyłączona VM jest startowana do sprawdzenia (ssh jak w `export`, bez Egress proxy) i po odmowie zostaje uruchomiona. `--force` nie sprawdza niczego i nie startuje VM.
+
+Kolejność: VM, refy Quarantine, na końcu katalog stanu — przerwane `rm` zostawia Chat, który `rm` nadal usunie. Resztki: katalog stanu bez VM (nic do utracenia) jest usuwany razem z refami bez `--force`; VM bez katalogu stanu (nie wiadomo, co wyeksportowano) wymaga `--force` (usuwa VM i refy); nieznana nazwa → błąd. Katalog stanu bez czytelnego `snapshot.json` albo bez refu bazy, przy istniejącej VM, też wymaga `--force`. TUI przy `M-x` pyta: eksportuj / usuń / anuluj.
 
 ### Pamięć
 
-Przed utworzeniem każdej VM (Chat, Run, preflight, dziecko i review Spec) `afk` sprawdza `MemAvailable` hosta: mniej niż `memory` maszyny + 2 GiB → odmowa z czytelnym błędem; Factory kończy się wtedy jak przy porażce preflightu. Bez balloona i kolejkowania.
+Przed utworzeniem każdej VM (Chat, Run, preflight, dziecko i review Spec) `afk` sprawdza `MemAvailable` hosta: mniej niż `memory` maszyny + 2 GiB → odmowa z czytelnym błędem; Factory kończy się wtedy jak przy porażce preflightu (bez VM do inspekcji). Bez balloona i kolejkowania: to odczyt w chwili startu, więc dwie VM tworzone naraz mogą przejść oba. Budowa Base image (Packer, poza libvirt) nie jest sprawdzana.
 
 ## Pluginy
 

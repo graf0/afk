@@ -106,6 +106,7 @@ func TestQuarantineValidate(t *testing.T) {
 		"changed and reverted":   {`echo '# x' >> .afk.toml && git commit -qam x && git revert --no-edit HEAD >/dev/null`, []string{".afk.toml"}},
 		"parent of user entry":   {`git rm -rq secrets && echo x > secrets && git add secrets && git commit -qm x`, []string{"secrets", "secrets/key"}},
 		"hostile path name":      {`mkdir .claude/x && touch $'.claude/x/\e[2J\u202e' && git add -A && git commit -qm x`, []string{".claude/x/[2J"}},
+		"newline in path":        {`mkdir .claude/y && touch $'.claude/y/a\n  0123456789ab fake: none' && git add -A && git commit -qm x`, []string{`.claude/y/a\n  0123456789ab fake: none`}},
 		"nested .claude":         {`mkdir -p sub/.claude && echo '{}' > sub/.claude/settings.json && git add -A && git commit -qm x`, []string{"sub/.claude/settings.json"}},
 		"deep .claude hook":      {`mkdir -p a/b/.Claude/hooks && echo x > a/b/.Claude/hooks/x && git add -A && git commit -qm x`, []string{"a/b/.Claude/hooks/x"}},
 		".mcp.json":              {`echo '{}' > .mcp.json && mkdir -p sub && echo '{}' > sub/.mcp.json && git add -A && git commit -qm x`, []string{".mcp.json", "sub/.mcp.json"}},
@@ -401,7 +402,7 @@ func TestQuarantineResume(t *testing.T) {
 	if err = other.FetchBase(t.Context(), user, moved, "ticket-2"); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err = other.Resume(t.Context(), remote, "ticket-2", []string{"new"}); err == nil || !strings.Contains(err.Error(), "protected paths: new") {
+	if _, _, err = other.Resume(t.Context(), remote, "ticket-2", []string{"new"}); err == nil || !strings.Contains(err.Error(), "Do it (#1): new") {
 		t.Errorf("Resume with a protected path: err = %v", err)
 	}
 	if err = other.CheckNew(t.Context(), "ticket-2"); err != nil {
@@ -456,5 +457,26 @@ func TestQuarantineDeleteRemoteMoved(t *testing.T) {
 	}
 	if got := sh(t, root, "git --git-dir=origin.git for-each-ref --format='%(refname)' refs/heads/ticket-1"); got != "refs/heads/ticket-1" {
 		t.Errorf("the moved branch is gone: %q", got)
+	}
+}
+
+func TestQuarantineValidateNamesCommits(t *testing.T) {
+	root, user, base := userRepo(t)
+	q, err := OpenQuarantine(t.Context(), filepath.Join(t.TempDir(), "quarantine.git"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = q.FetchBase(t.Context(), user, base, "ticket-1"); err != nil {
+		t.Fatal(err)
+	}
+	bundle := agentResult(t, root, base, `echo 1 > ok && git add ok && git commit -qm fine && echo '# x' >> .afk.toml && git commit -qam 'bad one' && echo 2 > ok2 && git add ok2 && git commit -qm also-fine`)
+	head, err := q.Import(t.Context(), bundle, "ticket-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bad := sh(t, filepath.Join(root, "agent"), "git rev-parse HEAD~1")
+	_, err = q.Validate(t.Context(), base, head, []string{".afk.toml"})
+	if err == nil || !strings.Contains(err.Error(), bad[:12]+" bad one: .afk.toml") || strings.Contains(err.Error(), "fine") {
+		t.Errorf("err = %v, want only the commit %s with its path", err, bad[:12])
 	}
 }

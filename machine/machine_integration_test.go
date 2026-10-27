@@ -312,6 +312,54 @@ func TestIntegrationUpRefusesNameInUse(t *testing.T) {
 	assertGone(t, env.conn, name, env.conn.dir(spec.Kind, spec.ID))
 }
 
+// Start brings up a shut-off machine with its network down, as after a host
+// restart, and the guest answers on ssh again.
+func TestIntegrationStart(t *testing.T) {
+	env := setupIntegration(t)
+	spec := env.spec(t)
+	name, _ := Name(spec.Kind, spec.ID)
+	t.Cleanup(func() { _ = env.conn.Kill(name) })
+	m, err := env.conn.Up(t.Context(), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dom, err := env.conn.lv.DomainLookupByName(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	network, err := env.conn.lv.NetworkLookupByName(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = env.conn.lv.DomainDestroy(dom); err != nil {
+		t.Fatal(err)
+	}
+	if err = env.conn.lv.NetworkDestroy(network); err != nil {
+		t.Fatal(err)
+	}
+	if got, getErr := env.conn.Get(name); getErr != nil || got.Running {
+		t.Fatalf("after destroy: %+v, %v", got, getErr)
+	}
+	started, err := env.conn.Start(name)
+	if err != nil || !started.Running || started.Addr != m.Addr {
+		t.Fatalf("Start = %+v, %v", started, err)
+	}
+	if again, startErr := env.conn.Start(name); startErr != nil || !again.Running {
+		t.Errorf("Start of a running machine = %+v, %v", again, startErr)
+	}
+	signer, err := image.SSHSigner(env.paths)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), SSHTimeout)
+	defer cancel()
+	client, err := started.SSH(ctx, signer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = client.Close()
+}
+
 func keysEqual(a, b ssh.PublicKey) (equal bool) {
 	return a != nil && b != nil && string(a.Marshal()) == string(b.Marshal())
 }

@@ -74,6 +74,8 @@ func runCommand(ctx context.Context, abort <-chan struct{}, args []string, dir s
 		_, err = stdout.Write(data)
 	case args[0] == "image":
 		err = runImage(ctx, abort, args[1:], dir, stdout)
+	case args[0] == "chat":
+		err = runChat(ctx, args[1:], dir, stdout)
 	case args[0] == "vm":
 		err = runVM(ctx, args[1:], dir, stdout)
 	default:

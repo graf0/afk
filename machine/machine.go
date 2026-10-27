@@ -13,7 +13,9 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/digitalocean/go-libvirt"
 	"github.com/digitalocean/go-libvirt/socket/dialers"
@@ -31,11 +33,20 @@ const (
 	diskName   = "disk.qcow2"
 	diskSize   = "64G"
 
+	// defaultMeminfo is where the host's MemAvailable is read.
+	defaultMeminfo = "/proc/meminfo"
+
+	// memoryReserveMiB is left to the host on top of the VM's memory.
+	memoryReserveMiB = 2048
+
 	// defineAttempts bounds retries when a concurrent `up` takes the subnet.
 	defineAttempts = 5
 )
 
 var idPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,39}$`)
+
+// ErrNoMemory is Up's refusal for lack of host memory: no machine was created.
+var ErrNoMemory = errors.New("not enough host memory")
 
 // --- naming ---
 
@@ -83,6 +94,11 @@ type Spec struct {
 	BaseDisk  string // Base image disk the overlay is based on
 	MemoryMiB int    // RAM of the VM
 	CPUs      int    // vCPUs of the VM
+	// Repo, Model and Effort are kept in the metadata for whoever lists the
+	// machine later (a Chat); all optional.
+	Repo   string
+	Model  string
+	Effort string
 }
 
 // Machine is a running Sandbox VM.
@@ -93,12 +109,18 @@ type Machine struct {
 	ID      string
 	Addr    string        // guest IPv4 address
 	HostKey ssh.PublicKey // sshd host key of the guest, pinned by SSH
+	Repo    string        // see Spec
+	Model   string
+	Effort  string
+	Created time.Time // zero for a machine without the time in its metadata
+	Running bool      // the domain is running (Up: always)
 }
 
 // Conn is a connection to libvirt (qemu:///system).
 type Conn struct {
-	Root string // machine directories, DefaultRoot unless set
-	lv   *libvirt.Libvirt
+	Root    string // machine directories, DefaultRoot unless set
+	lv      *libvirt.Libvirt
+	meminfo string // host memory reading, defaultMeminfo unless set (tests)
 }
 
 // Connect connects to the system libvirt daemon.
@@ -166,6 +188,10 @@ func (c *Conn) Up(ctx context.Context, spec Spec) (m Machine, err error) {
 		err = fmt.Errorf("machine %s: memory and cpus must be positive, got %d MiB and %d", name, spec.MemoryMiB, spec.CPUs)
 		return
 	}
+	// Before anything is created: a refusal leaves nothing to clean up.
+	if err = c.checkMemory(name, spec.MemoryMiB); err != nil {
+		return
+	}
 	dir := c.dir(spec.Kind, spec.ID)
 	gid, err := image.SharedGroupID()
 	if err != nil {
@@ -216,6 +242,10 @@ func (c *Conn) Up(ctx context.Context, spec Spec) (m Machine, err error) {
 		ID:      spec.ID,
 		Addr:    def.Net.Addr(),
 		HostKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(hostKey))),
+		Repo:    spec.Repo,
+		Model:   spec.Model,
+		Effort:  spec.Effort,
+		Created: time.Now().UTC().Format(time.RFC3339),
 	}
 	if err = ctx.Err(); err != nil {
 		return
@@ -247,7 +277,68 @@ func (c *Conn) Up(ctx context.Context, spec Spec) (m Machine, err error) {
 	if err = ctx.Err(); err != nil {
 		return
 	}
-	m = Machine{Name: name, Project: spec.Project, Kind: spec.Kind, ID: spec.ID, Addr: def.Meta.Addr, HostKey: hostKey}
+	created, _ := time.Parse(time.RFC3339, def.Meta.Created)
+	m = Machine{Name: name, Project: spec.Project, Kind: spec.Kind, ID: spec.ID, Addr: def.Meta.Addr, HostKey: hostKey,
+		Repo: spec.Repo, Model: spec.Model, Effort: spec.Effort, Created: created, Running: true}
+	return
+}
+
+// Start starts the machine called name when it is shut off (after a host
+// restart, say), together with its network, which is persistent but not
+// autostarted, after the same host memory check as Up. A paused machine is
+// resumed, a running one returned as is. It does not wait for the guest to
+// boot; SSH does. The nwfilter is persistent and needs nothing.
+func (c *Conn) Start(name string) (m Machine, err error) {
+	if m, err = c.Get(name); err != nil || m.Running {
+		return
+	}
+	dom, err := c.lv.DomainLookupByName(name)
+	if err != nil {
+		err = fmt.Errorf("looking up machine %s: %w", name, err)
+		return
+	}
+	state, maxMemKiB, _, _, _, err := c.lv.DomainGetInfo(dom)
+	if err != nil {
+		err = fmt.Errorf("reading state of machine %s: %w", name, err)
+		return
+	}
+	switch libvirt.DomainState(state) {
+	case libvirt.DomainPaused:
+		if err = c.lv.DomainResume(dom); err != nil {
+			err = fmt.Errorf("resuming machine %s: %w", name, err)
+			return
+		}
+		m.Running = true
+		return
+	case libvirt.DomainShutoff, libvirt.DomainCrashed:
+	default:
+		err = fmt.Errorf("machine %s is in state %d: neither shut off nor paused", name, state)
+		return
+	}
+	if err = c.checkMemory(name, int(maxMemKiB/1024)); err != nil {
+		return
+	}
+	network, err := c.lv.NetworkLookupByName(name)
+	if err != nil {
+		err = fmt.Errorf("looking up network %s: %w", name, err)
+		return
+	}
+	active, err := c.lv.NetworkIsActive(network)
+	if err != nil {
+		err = fmt.Errorf("reading state of network %s: %w", name, err)
+		return
+	}
+	if active == 0 {
+		if err = c.lv.NetworkCreate(network); err != nil {
+			err = fmt.Errorf("starting network %s: %w", name, err)
+			return
+		}
+	}
+	if err = c.lv.DomainCreate(dom); err != nil {
+		err = fmt.Errorf("starting domain %s: %w", name, err)
+		return
+	}
+	m.Running = true
 	return
 }
 
@@ -275,7 +366,15 @@ func (c *Conn) Get(name string) (m Machine, err error) {
 		err = fmt.Errorf("parsing host key of %s: %w", name, err)
 		return
 	}
-	m = Machine{Name: name, Project: meta.Project, Kind: meta.Kind, ID: meta.ID, Addr: meta.Addr, HostKey: hostKey}
+	state, _, err := c.lv.DomainGetState(dom, 0)
+	if err != nil {
+		err = fmt.Errorf("reading state of %s: %w", name, err)
+		return
+	}
+	created, _ := time.Parse(time.RFC3339, meta.Created) // none or malformed: zero
+	m = Machine{Name: name, Project: meta.Project, Kind: meta.Kind, ID: meta.ID, Addr: meta.Addr, HostKey: hostKey,
+		Repo: meta.Repo, Model: meta.Model, Effort: meta.Effort, Created: created,
+		Running: libvirt.DomainState(state) == libvirt.DomainRunning}
 	return
 }
 
@@ -358,6 +457,37 @@ func (c *Conn) kill(name, dir string) (err error) {
 }
 
 // --- helpers ---
+
+// checkMemory fails with ErrNoMemory when the host's MemAvailable is below
+// memoryMiB plus memoryReserveMiB.
+func (c *Conn) checkMemory(name string, memoryMiB int) (err error) {
+	path := cmp.Or(c.meminfo, defaultMeminfo)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		err = fmt.Errorf("reading host memory: %w", err)
+		return
+	}
+	haveKiB := -1
+	for line := range strings.Lines(string(data)) {
+		// "MemAvailable:    6291456 kB"
+		if fields := strings.Fields(line); len(fields) >= 2 && fields[0] == "MemAvailable:" {
+			if kib, convErr := strconv.Atoi(fields[1]); convErr == nil && kib >= 0 {
+				haveKiB = kib
+			}
+			break
+		}
+	}
+	if haveKiB < 0 {
+		err = fmt.Errorf("reading host memory: no valid MemAvailable in %s", path)
+		return
+	}
+	haveMiB, needMiB := haveKiB/1024, memoryMiB+memoryReserveMiB
+	if haveMiB < needMiB {
+		err = fmt.Errorf("machine %s: %w: %d MiB available, need %d MiB (%d MiB for the VM + %d MiB reserve)",
+			name, ErrNoMemory, haveMiB, needMiB, memoryMiB, memoryReserveMiB)
+	}
+	return
+}
 
 // checkFree fails when a domain, network or nwfilter called name exists.
 func (c *Conn) checkFree(name string) (err error) {
