@@ -494,90 +494,162 @@ const forgeUsage = `usage:
 --body-file - reads the text from stdin; --label, --add-label and --remove-label may repeat or list labels with commas;
 --title and --body only on issues created by this Chat that are not ready-for-agent`
 
+// errForgeUsage answers arguments afk-forge does not take.
+var errForgeUsage = errors.New(forgeUsage)
+
+// forgeCall is a request to the channel: what a subcommand of afk-forge asks for.
+type forgeCall struct {
+	method, path string
+	body         any
+}
+
+// forgeCommands parse the arguments after `issue <subcommand>` into the call.
+var forgeCommands = map[string]func(args []string, stdin io.Reader) (call forgeCall, err error){
+	"view":    parseView,
+	"list":    parseList,
+	"create":  parseCreate,
+	"comment": parseComment,
+	"edit":    parseEdit,
+}
+
 // RunForge executes `afk-forge args` against the channel at socket and writes
 // the result to stdout and the channel's warning to stderr; stdin is the text
 // of --body-file -.
 func RunForge(ctx context.Context, socket string, args []string, stdin io.Reader, stdout, stderr io.Writer) (err error) {
-	method, path, in := http.MethodGet, "", any(nil)
-	switch {
-	case len(args) == 3 && args[0] == "issue" && args[1] == "view":
-		if _, err = issueNumber(args[2]); err != nil {
-			err = errors.New(forgeUsage)
-			return
-		}
-		path = "/issues/" + args[2]
-	case len(args) >= 2 && args[0] == "issue" && args[1] == "list":
-		flags := flag.NewFlagSet("issue list", flag.ContinueOnError)
-		flags.SetOutput(io.Discard)
-		label := flags.String("label", "", "")
-		state := flags.String("state", string(forge.StateOpen), "")
-		if err = flags.Parse(args[2:]); err == nil && flags.NArg() == 0 {
-			_, err = forge.ParseState(*state)
-		}
-		if err != nil || flags.NArg() != 0 {
-			err = errors.New(forgeUsage)
-			return
-		}
-		path = "/issues?label=" + url.QueryEscape(*label) + "&state=" + url.QueryEscape(*state)
-	case len(args) >= 2 && args[0] == "issue" && args[1] == "create":
-		var body string
-		req := createRequest{}
-		flags, text := textFlags("issue create", &body, stdin)
-		flags.StringVar(&req.Title, "title", "", "")
-		labelsFlag(flags, "label", &req.Labels)
-		if err = flags.Parse(args[2:]); err != nil || flags.NArg() != 0 || strings.TrimSpace(req.Title) == "" {
-			err = errors.New(forgeUsage)
-			return
-		}
-		if req.Body, err = text(); err != nil {
-			return
-		}
-		method, path, in = http.MethodPost, "/issues", req
-	case len(args) >= 3 && args[0] == "issue" && args[1] == "edit":
-		var body, title string
-		req := editRequest{}
-		_, convErr := issueNumber(args[2])
-		flags, text := textFlags("issue edit", &body, stdin)
-		flags.StringVar(&title, "title", "", "")
-		labelsFlag(flags, "add-label", &req.AddLabels)
-		labelsFlag(flags, "remove-label", &req.RemoveLabels)
-		if convErr != nil || flags.Parse(args[3:]) != nil || flags.NArg() != 0 {
-			err = errors.New(forgeUsage)
-			return
-		}
-		set := map[string]bool{}
-		flags.Visit(func(f *flag.Flag) { set[f.Name] = true })
-		if set["title"] {
-			req.Title = &title
-		}
-		if set["body"] || set["body-file"] {
-			if body, err = text(); err != nil {
-				return
-			}
-			req.Body = &body
-		}
-		method, path, in = http.MethodPatch, "/issues/"+args[2], req
-	case len(args) >= 3 && args[0] == "issue" && args[1] == "comment":
-		var body string
-		_, convErr := issueNumber(args[2])
-		flags, text := textFlags("issue comment", &body, stdin)
-		if convErr != nil || flags.Parse(args[3:]) != nil || flags.NArg() != 0 {
-			err = errors.New(forgeUsage)
-			return
-		}
+	var parse func(args []string, stdin io.Reader) (call forgeCall, err error)
+	if len(args) >= 2 && args[0] == "issue" {
+		parse = forgeCommands[args[1]]
+	}
+	if parse == nil {
+		err = errForgeUsage
+		return
+	}
+	call, err := parse(args[2:], stdin)
+	if err != nil {
+		return
+	}
+	err = sendForge(ctx, socket, call, stdout, stderr)
+	return
+}
+
+// issueArg splits args into the issue number in front, as the path of the
+// issue, and the rest.
+func issueArg(args []string) (path string, rest []string, err error) {
+	if len(args) == 0 {
+		err = errForgeUsage
+		return
+	}
+	if _, err = issueNumber(args[0]); err != nil {
+		err = errForgeUsage
+		return
+	}
+	path, rest = "/issues/"+args[0], args[1:]
+	return
+}
+
+// parseView parses `issue view <n>`.
+func parseView(args []string, _ io.Reader) (call forgeCall, err error) {
+	path, rest, err := issueArg(args)
+	if err == nil && len(rest) != 0 {
+		err = errForgeUsage
+	}
+	call = forgeCall{method: http.MethodGet, path: path}
+	return
+}
+
+// parseList parses `issue list [--label <label>] [--state <state>]`.
+func parseList(args []string, _ io.Reader) (call forgeCall, err error) {
+	flags := flag.NewFlagSet("issue list", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	label := flags.String("label", "", "")
+	state := flags.String("state", string(forge.StateOpen), "")
+	if err = flags.Parse(args); err == nil && flags.NArg() == 0 {
+		_, err = forge.ParseState(*state)
+	}
+	if err != nil || flags.NArg() != 0 {
+		err = errForgeUsage
+		return
+	}
+	call = forgeCall{method: http.MethodGet, path: "/issues?label=" + url.QueryEscape(*label) + "&state=" + url.QueryEscape(*state)}
+	return
+}
+
+// parseCreate parses `issue create`.
+func parseCreate(args []string, stdin io.Reader) (call forgeCall, err error) {
+	var body string
+	req := createRequest{}
+	flags, text := textFlags("issue create", &body, stdin)
+	flags.StringVar(&req.Title, "title", "", "")
+	labelsFlag(flags, "label", &req.Labels)
+	if err = flags.Parse(args); err != nil || flags.NArg() != 0 || strings.TrimSpace(req.Title) == "" {
+		err = errForgeUsage
+		return
+	}
+	if req.Body, err = text(); err != nil {
+		return
+	}
+	call = forgeCall{method: http.MethodPost, path: "/issues", body: req}
+	return
+}
+
+// parseComment parses `issue comment <n>`.
+func parseComment(args []string, stdin io.Reader) (call forgeCall, err error) {
+	path, rest, err := issueArg(args)
+	if err != nil {
+		return
+	}
+	var body string
+	flags, text := textFlags("issue comment", &body, stdin)
+	if flags.Parse(rest) != nil || flags.NArg() != 0 {
+		err = errForgeUsage
+		return
+	}
+	if body, err = text(); err != nil {
+		return
+	}
+	if strings.TrimSpace(body) == "" {
+		err = errForgeUsage
+		return
+	}
+	call = forgeCall{method: http.MethodPost, path: path + "/comments", body: commentRequest{Body: body}}
+	return
+}
+
+// parseEdit parses `issue edit <n>`: only the title and body given go in
+// the request, an absent one stays as it is.
+func parseEdit(args []string, stdin io.Reader) (call forgeCall, err error) {
+	path, rest, err := issueArg(args)
+	if err != nil {
+		return
+	}
+	var body string
+	req := editRequest{}
+	flags, text := textFlags("issue edit", &body, stdin)
+	flags.Func("title", "", func(value string) (err error) {
+		req.Title = &value
+		return
+	})
+	labelsFlag(flags, "add-label", &req.AddLabels)
+	labelsFlag(flags, "remove-label", &req.RemoveLabels)
+	if flags.Parse(rest) != nil || flags.NArg() != 0 {
+		err = errForgeUsage
+		return
+	}
+	var hasBody bool
+	flags.Visit(func(f *flag.Flag) { hasBody = hasBody || f.Name == "body" || f.Name == "body-file" })
+	if hasBody {
 		if body, err = text(); err != nil {
 			return
 		}
-		if strings.TrimSpace(body) == "" {
-			err = errors.New(forgeUsage)
-			return
-		}
-		method, path, in = http.MethodPost, "/issues/"+args[2]+"/comments", commentRequest{Body: body}
-	default:
-		err = errors.New(forgeUsage)
-		return
+		req.Body = &body
 	}
+	call = forgeCall{method: http.MethodPatch, path: path, body: req}
+	return
+}
 
+// sendForge sends call over the channel at socket and writes the reply: the
+// output to stdout, the warning to stderr.
+func sendForge(ctx context.Context, socket string, call forgeCall, stdout, stderr io.Writer) (err error) {
 	client := &http.Client{Timeout: time.Minute, Transport: &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (conn net.Conn, err error) {
 			conn, err = (&net.Dialer{}).DialContext(ctx, "unix", socket)
@@ -585,15 +657,15 @@ func RunForge(ctx context.Context, socket string, args []string, stdin io.Reader
 		},
 	}}
 	var payload io.Reader
-	if in != nil {
+	if call.body != nil {
 		var data []byte
-		if data, err = json.Marshal(in); err != nil {
+		if data, err = json.Marshal(call.body); err != nil {
 			err = fmt.Errorf("encoding the request: %w", err)
 			return
 		}
 		payload = bytes.NewReader(data)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, "http://afk"+path, payload)
+	req, err := http.NewRequestWithContext(ctx, call.method, "http://afk"+call.path, payload)
 	if err != nil {
 		err = fmt.Errorf("building the request: %w", err)
 		return
@@ -636,7 +708,7 @@ func textFlags(name string, body *string, stdin io.Reader) (flags *flag.FlagSet,
 		case *file == "":
 			text = *body
 		case *file != "-" || *body != "":
-			err = errors.New(forgeUsage)
+			err = errForgeUsage
 		default:
 			var data []byte
 			data, err = io.ReadAll(stdin)
