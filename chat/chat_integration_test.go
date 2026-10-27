@@ -39,6 +39,7 @@ env = { TOOL_VAR = "tool-value" }
 const fakeClaude = `set -eu
 fail() { echo "FAKE: $*" >&2; exit 1; }
 claude --version >/dev/null || fail "no claude in the image"
+grep -q '"hasCompletedOnboarding": true' ~/.claude.json || fail "onboarding not skipped"
 [ "$PWD" = /work/repo ] || fail "not in the clone: $PWD"
 [ "$(git rev-parse --abbrev-ref HEAD)" = chat-itest ] || fail "wrong branch"
 git rev-parse -q --verify origin/main >/dev/null || fail "no origin/main"

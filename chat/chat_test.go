@@ -1,6 +1,9 @@
 package chat
 
 import (
+	"context"
+	"encoding/json"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -66,6 +69,49 @@ func TestSessionCommand(t *testing.T) {
 	got = session{Prompt: "p"}.command()
 	if strings.Contains(got, "--model") || strings.Contains(got, "--effort") {
 		t.Errorf("default command passes model or effort: %s", got)
+	}
+}
+
+func TestSkipFirstStart(t *testing.T) {
+	home := t.TempDir()
+	if err := os.WriteFile(filepath.Join(home, ".claude.json"), []byte(`{"userID":"u","projects":{"/x":{"a":1}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	guest := func(ctx context.Context, command string, stdout io.Writer) (err error) {
+		cmd := exec.CommandContext(ctx, "bash", "-c", command)
+		cmd.Env = append(os.Environ(), "HOME="+home)
+		cmd.Stdout = stdout
+		return cmd.Run()
+	}
+	if err := skipFirstStart(t.Context(), guest); err != nil {
+		t.Fatal(err)
+	}
+	read := func(path string) (m map[string]any) {
+		t.Helper()
+		data, err := os.ReadFile(filepath.Join(home, path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = json.Unmarshal(data, &m); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	got := read(".claude.json")
+	projects := got["projects"].(map[string]any)
+	if got["userID"] != "u" || got["hasCompletedOnboarding"] != true || projects["/x"] == nil ||
+		projects[run.GuestRepo].(map[string]any)["hasTrustDialogAccepted"] != true {
+		t.Errorf(".claude.json = %v", got)
+	}
+	if got = read(".claude/settings.json"); got["skipDangerousModePermissionPrompt"] != true {
+		t.Errorf("settings.json = %v", got)
+	}
+
+	if _, err := mergeJSON([]byte("[1]"), func(map[string]any) {}); err == nil {
+		t.Error("a non-object accepted")
+	}
+	if merged, err := mergeJSON([]byte("null"), func(m map[string]any) { m["k"] = 1 }); err != nil || !strings.Contains(string(merged), `"k": 1`) {
+		t.Errorf("null: %s, %v", merged, err)
 	}
 }
 

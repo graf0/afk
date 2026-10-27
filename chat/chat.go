@@ -3,8 +3,10 @@
 package chat
 
 import (
+	"bytes"
 	"cmp"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -193,7 +195,11 @@ func New(ctx context.Context, opts Options) (err error) {
 		return
 	}
 	env := cfg.ToolEnv()
-	if err = run.SetupTools(ctx, run.NewExec(client, env), cfg, logBase+".jsonl", opts.Out); err != nil {
+	exec := run.NewExec(client, env)
+	if err = run.SetupTools(ctx, exec, cfg, logBase+".jsonl", opts.Out); err != nil {
+		return
+	}
+	if err = skipFirstStart(ctx, exec); err != nil {
 		return
 	}
 	say(opts.Out, "entering Chat %s (logs in %s)", opts.Name, logs)
@@ -441,6 +447,71 @@ func enter(ctx context.Context, client *ssh.Client, s session) (err error) {
 	if err = machine.Interactive(ctx, client, s.command(), s.Token); err != nil {
 		err = fmt.Errorf("claude: %w", err)
 	}
+	return
+}
+
+// firstStart are the keys Claude Code checks before an interactive session:
+// without them it shows the onboarding, whose login would put credentials in
+// the guest (ADR-0003), then asks to trust the clone and to accept bypass mode.
+var firstStart = []struct {
+	Path string // under $HOME
+	Set  func(m map[string]any)
+}{
+	{".claude.json", func(m map[string]any) {
+		m["hasCompletedOnboarding"] = true
+		projects, _ := m["projects"].(map[string]any)
+		if projects == nil {
+			projects = map[string]any{}
+			m["projects"] = projects
+		}
+		project, _ := projects[run.GuestRepo].(map[string]any)
+		if project == nil {
+			project = map[string]any{}
+			projects[run.GuestRepo] = project
+		}
+		project["hasTrustDialogAccepted"] = true
+	}},
+	{".claude/settings.json", func(m map[string]any) { m["skipDangerousModePermissionPrompt"] = true }},
+}
+
+// skipFirstStart sets the firstStart keys in the guest's Claude Code files,
+// keeping what the image put there.
+func skipFirstStart(ctx context.Context, exec run.ExecFunc) (err error) {
+	for _, file := range firstStart {
+		path := `"$HOME"/` + file.Path
+		var old bytes.Buffer
+		if err = exec(ctx, "cat "+path+" 2>/dev/null || true", &old); err != nil {
+			err = fmt.Errorf("reading the guest's %s: %w", file.Path, err)
+			return
+		}
+		var data []byte
+		if data, err = mergeJSON(old.Bytes(), file.Set); err != nil {
+			err = fmt.Errorf("the guest's %s: %w", file.Path, err)
+			return
+		}
+		write := "mkdir -p \"$(dirname " + path + ")\" && printf %s " + base64.StdEncoding.EncodeToString(data) + " | base64 -d > " + path
+		if err = exec(ctx, write, io.Discard); err != nil {
+			err = fmt.Errorf("writing the guest's %s: %w", file.Path, err)
+			return
+		}
+	}
+	return
+}
+
+// mergeJSON applies set to the JSON object data (empty: {}).
+func mergeJSON(data []byte, set func(m map[string]any)) (merged []byte, err error) {
+	m := map[string]any{}
+	if len(bytes.TrimSpace(data)) > 0 {
+		if err = json.Unmarshal(data, &m); err != nil {
+			err = fmt.Errorf("parsing: %w", err)
+			return
+		}
+	}
+	if m == nil { // the file holds null
+		m = map[string]any{}
+	}
+	set(m)
+	merged, err = json.MarshalIndent(m, "", "  ")
 	return
 }
 

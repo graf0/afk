@@ -100,7 +100,7 @@ func Remove(ctx context.Context, opts Options, force bool) (err error) {
 		err = fmt.Errorf("removing the state of Chat %s: %w", opts.Name, err)
 		return
 	}
-	say(opts.Out, "Chat %s removed (logs and branch %s on the Forge stay)", opts.Name, branch)
+	say(opts.Out, "Chat %s removed (logs and branch %s on the Forge, if exported, stay)", opts.Name, branch)
 	return
 }
 
