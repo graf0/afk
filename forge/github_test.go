@@ -143,7 +143,16 @@ func (fake *fakeGitHub) mux() (handler http.Handler) {
 		reply(w, http.StatusOK, fake.issueJSON(issue))
 	})
 	issue("PATCH /repos/o/r/issues/{n}", func(w http.ResponseWriter, r *http.Request, issue *seedIssue) {
-		issue.Open = body(r)["state"] != "closed"
+		in := body(r)
+		if state, ok := in["state"]; ok {
+			issue.Open = state != "closed"
+		}
+		if title, ok := in["title"].(string); ok {
+			issue.Title = title
+		}
+		if text, ok := in["body"].(string); ok {
+			issue.Body = text
+		}
 		reply(w, http.StatusOK, fake.issueJSON(issue))
 	})
 	issue("GET /repos/o/r/issues/{n}/comments", func(w http.ResponseWriter, r *http.Request, issue *seedIssue) {
@@ -382,11 +391,13 @@ func TestGitHubWrites(t *testing.T) {
 	if n, err := g.CreateIssue(t.Context(), "idea", "text", []string{"bug"}); err != nil || n != 42 {
 		t.Errorf("CreateIssue = %d, %v", n, err)
 	}
+	body := "text"
 	for _, err := range []error{
 		g.Comment(t.Context(), 42, "report"),
 		g.AddLabel(t.Context(), 42, "ready-for-human"),
 		g.RemoveLabel(t.Context(), 7, "ready for/agent"),
 		g.RemoveLabel(t.Context(), 8, "ready-for-agent"), // not on the issue: fine
+		g.EditIssue(t.Context(), 7, nil, &body),
 		g.UpdatePullBody(t.Context(), 42, "new body"),
 		g.CloseIssue(t.Context(), 7),
 	} {
@@ -401,6 +412,7 @@ func TestGitHubWrites(t *testing.T) {
 		`POST /repos/o/r/issues/42/labels {"labels":["ready-for-human"]}`,
 		`DELETE /repos/o/r/issues/7/labels/ready%20for%2Fagent`,
 		`DELETE /repos/o/r/issues/8/labels/ready-for-agent`,
+		`PATCH /repos/o/r/issues/7 {"body":"text"}`,
 		`PATCH /repos/o/r/pulls/42 {"body":"new body"}`,
 		`PATCH /repos/o/r/issues/7 {"state":"closed","state_reason":"completed"}`,
 	}

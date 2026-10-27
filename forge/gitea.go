@@ -560,6 +560,21 @@ func (g *Gitea) CloseIssue(ctx context.Context, n int) (err error) {
 	return
 }
 
+// EditIssue sets the title and the body of issue n; a nil one stays.
+func (g *Gitea) EditIssue(ctx context.Context, n int, title, body *string) (err error) {
+	in := map[string]string{}
+	if title != nil {
+		in["title"] = *title
+	}
+	if body != nil {
+		in["body"] = *body
+	}
+	if err = g.call(ctx, http.MethodPatch, fmt.Sprintf("/repos/%s/issues/%d", g.Repo, n), in, nil); err != nil {
+		err = fmt.Errorf("editing #%d: %w", n, err)
+	}
+	return
+}
+
 // CreateIssue opens an issue with labels, which the repository must have:
 // Gitea takes them by id.
 func (g *Gitea) CreateIssue(ctx context.Context, title, body string, labels []string) (n int, err error) {

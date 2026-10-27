@@ -320,10 +320,20 @@ func testContractWrites(t *testing.T, newFake newFakeForge) {
 		if err := f.RemoveLabel(t.Context(), 14, "needs-info"); err != nil { // not on the issue: fine
 			t.Errorf("RemoveLabel of a missing label: %v", err)
 		}
+		title, text := "New title", "New body"
+		if err := f.EditIssue(t.Context(), 7, &title, nil); err != nil {
+			t.Error(err)
+		}
+		if err := f.EditIssue(t.Context(), 7, nil, &text); err != nil {
+			t.Error(err)
+		}
 		if err := f.CloseIssue(t.Context(), 7); err != nil {
 			t.Error(err)
 		}
 		got := state().Issues[7]
+		if got.Title != title || got.Body != text {
+			t.Errorf("issue 7 after EditIssue: title %q, body %q", got.Title, got.Body)
+		}
 		if got.Open || !slices.Equal(got.Labels, []string{"bug", "needs-info"}) || got.Comments[len(got.Comments)-1] != "question" || len(got.Comments) != 151 {
 			t.Errorf("issue 7 = %+v", got)
 		}

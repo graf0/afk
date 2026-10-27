@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -47,7 +48,9 @@ const (
   afk-forge issue list [--label <label>] [--state open|closed|all]
   afk-forge issue create --title <title> [--body <text> | --body-file -] [--label <a,b>]...
   afk-forge issue comment <n> (--body <text> | --body-file -)
---body-file - reads the text from stdin; --label may repeat or list labels with commas`
+  afk-forge issue edit <n> [--add-label <a,b>]... [--remove-label <a,b>]... [--title <title>] [--body <text> | --body-file -]
+--body-file - reads the text from stdin; --label, --add-label and --remove-label may repeat or list labels with commas;
+--title and --body only on issues created by this Chat`
 )
 
 // --- host: the channel ---
@@ -80,6 +83,7 @@ func (s *forgeServer) handler() (handler http.Handler) {
 	mux.HandleFunc("GET /issues", s.list)
 	mux.HandleFunc("POST /issues", s.create)
 	mux.HandleFunc("POST /issues/{n}/comments", s.comment)
+	mux.HandleFunc("PATCH /issues/{n}", s.edit)
 	return mux
 }
 
@@ -123,7 +127,7 @@ func (s *forgeServer) create(w http.ResponseWriter, r *http.Request) {
 		Labels      []string
 	}
 	err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxForgeBody)).Decode(&in)
-	if err == nil && strings.TrimSpace(in.Title) == "" {
+	if err == nil && titleLine(in.Title) == "" {
 		err = errors.New("title: required")
 	}
 	if err != nil {
@@ -131,20 +135,10 @@ func (s *forgeServer) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	labels, warning := s.triageLabels(in.Labels)
-	known, err := s.Forge.Labels(r.Context())
-	if err == nil {
-		for _, label := range labels {
-			if !forge.ContainsLabel(known, label) {
-				err = fmt.Errorf("label %q does not exist in the repository", label)
-				break
-			}
-		}
-	}
+	err = s.checkLabels(r.Context(), labels)
 	var n int
 	if err == nil {
-		// One line: AgentText may add a truncation note on a line of its own.
-		title := strings.Join(strings.Fields(run.AgentText(in.Title)), " ")
-		n, err = s.Forge.CreateIssue(r.Context(), title, s.withFooter(in.Body), labels)
+		n, err = s.Forge.CreateIssue(r.Context(), titleLine(in.Title), s.withFooter(in.Body), labels)
 	}
 	op := fmt.Sprintf("create labels=%q", labels)
 	if warning != "" {
@@ -179,6 +173,125 @@ func (s *forgeServer) comment(w http.ResponseWriter, r *http.Request) {
 	s.reply(w, op, "", http.StatusBadGateway, s.Forge.Comment(r.Context(), n, s.withFooter(in.Body)))
 }
 
+// edit serves `issue edit <n>`: labels of any issue, title and body only of
+// an issue this Chat created (the body keeps the footer). Everything is
+// checked before the first write, but a Forge failure midway leaves the
+// earlier writes. No state changes, and a pull request is refused.
+func (s *forgeServer) edit(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		AddLabels, RemoveLabels []string
+		Title, Body             *string
+	}
+	n, err := strconv.Atoi(r.PathValue("n"))
+	if err != nil || n <= 0 {
+		s.reply(w, "edit "+r.PathValue("n"), "", http.StatusBadRequest, errors.New("invalid issue number"))
+		return
+	}
+	op := fmt.Sprintf("edit #%d", n)
+	err = json.NewDecoder(http.MaxBytesReader(w, r.Body, maxForgeBody)).Decode(&in)
+	add, warning := s.triageLabels(in.AddLabels)
+	// Removing ready-for-agent, given by a human, is fine: no triage here.
+	var remove []string
+	for _, label := range in.RemoveLabels {
+		if label = strings.TrimSpace(label); label != "" && !forge.ContainsLabel(remove, label) {
+			remove = append(remove, label)
+		}
+	}
+	if err == nil && len(add)+len(remove) == 0 && in.Title == nil && in.Body == nil {
+		err = errors.New("nothing to change")
+	}
+	if err == nil && in.Title != nil && titleLine(*in.Title) == "" {
+		err = errors.New("title: required")
+	}
+	for _, label := range add {
+		if err == nil && forge.ContainsLabel(remove, label) {
+			err = fmt.Errorf("label %q both added and removed", label)
+		}
+	}
+	if err != nil {
+		s.reply(w, op, "", http.StatusBadRequest, err)
+		return
+	}
+	op += fmt.Sprintf(" add=%q remove=%q", add, remove)
+	if in.Title != nil {
+		op += " title"
+	}
+	if in.Body != nil {
+		op += " body"
+	}
+	if warning != "" {
+		op += " (" + s.Labels.ReadyForAgent + " replaced)"
+	}
+	s.replyWarning(w, op, "", warning, http.StatusBadGateway, s.applyEdit(r.Context(), n, add, remove, in.Title, in.Body))
+}
+
+// applyEdit checks what edit may do, then does it.
+func (s *forgeServer) applyEdit(ctx context.Context, n int, add, remove []string, title, body *string) (err error) {
+	// Peek refuses a pull request.
+	if _, _, err = s.Forge.Peek(ctx, n); err != nil {
+		return
+	}
+	if title != nil || body != nil {
+		var own bool
+		if own, err = s.created(n); err != nil {
+			return
+		}
+		if !own {
+			err = fmt.Errorf("title and body: #%d was not created by this Chat, only its labels can change", n)
+			return
+		}
+	}
+	if err = s.checkLabels(ctx, add); err != nil {
+		return
+	}
+	if title != nil || body != nil {
+		if title != nil {
+			line := titleLine(*title)
+			title = &line
+		}
+		if body != nil {
+			signed := s.withFooter(*body)
+			body = &signed
+		}
+		if err = s.Forge.EditIssue(ctx, n, title, body); err != nil {
+			return
+		}
+	}
+	for _, label := range add {
+		if err = s.Forge.AddLabel(ctx, n, label); err != nil {
+			return
+		}
+	}
+	for _, label := range remove {
+		if err = s.Forge.RemoveLabel(ctx, n, label); err != nil {
+			return
+		}
+	}
+	return
+}
+
+// titleLine is title sanitized like the Agent's text of a Run, on one line:
+// AgentText may add a truncation note on a line of its own.
+func titleLine(title string) (line string) {
+	line = strings.Join(strings.Fields(run.AgentText(title)), " ")
+	return
+}
+
+// checkLabels fails on a label the repository doesn't have.
+func (s *forgeServer) checkLabels(ctx context.Context, labels []string) (err error) {
+	known, err := s.Forge.Labels(ctx)
+	if err != nil {
+		return
+	}
+	for _, label := range labels {
+		if !forge.ContainsLabel(known, label) {
+			err = fmt.Errorf("label %q does not exist in the repository", label)
+			return
+		}
+	}
+	return
+}
+
 // triageLabels replaces ready-for-agent with needs-triage (the names of the
 // Project's [labels]) and says so in warning.
 func (s *forgeServer) triageLabels(labels []string) (out []string, warning string) {
@@ -198,9 +311,25 @@ func (s *forgeServer) triageLabels(labels []string) (out []string, warning strin
 }
 
 // withFooter sanitizes text like the Agent's text of a Run and signs it with
-// the Chat, after any truncation so the footer always stays.
+// the Chat, after any truncation so the footer always stays. A footer of the
+// Chat already ending the text (an edit of a signed body) is not doubled.
 func (s *forgeServer) withFooter(text string) (signed string) {
-	signed = run.AgentText(text) + "\n\n— z Chat " + s.Chat
+	footer := "— z Chat " + s.Chat
+	text, found := strings.CutSuffix(strings.TrimRight(text, " \t\r\n"), footer)
+	if found {
+		text = strings.TrimRight(text, " \t\r\n")
+	}
+	signed = run.AgentText(text) + "\n\n" + footer
+	return
+}
+
+// created reports whether the Chat created issue n.
+func (s *forgeServer) created(n int) (own bool, err error) {
+	data, err := os.ReadFile(s.IssuesPath)
+	if errors.Is(err, fs.ErrNotExist) {
+		err = nil
+	}
+	own = slices.Contains(strings.Fields(string(data)), strconv.Itoa(n))
 	return
 }
 
@@ -312,9 +441,9 @@ func RunForge(ctx context.Context, socket string, args []string, stdin io.Reader
 		var labels []string
 		fs, text := textFlags("issue create", &body, stdin)
 		fs.StringVar(&title, "title", "", "")
-		fs.Func("label", "", func(value string) error {
+		fs.Func("label", "", func(value string) (err error) {
 			labels = append(labels, strings.Split(value, ",")...)
-			return nil
+			return
 		})
 		if err = fs.Parse(args[2:]); err != nil || fs.NArg() != 0 || strings.TrimSpace(title) == "" {
 			err = errors.New(forgeUsage)
@@ -324,6 +453,37 @@ func RunForge(ctx context.Context, socket string, args []string, stdin io.Reader
 			return
 		}
 		method, path, in = http.MethodPost, "/issues", map[string]any{"title": title, "body": body, "labels": labels}
+	case len(args) >= 3 && args[0] == "issue" && args[1] == "edit":
+		var body, title string
+		var add, remove []string
+		n, convErr := strconv.Atoi(args[2])
+		fs, text := textFlags("issue edit", &body, stdin)
+		fs.StringVar(&title, "title", "", "")
+		fs.Func("add-label", "", func(value string) (err error) {
+			add = append(add, strings.Split(value, ",")...)
+			return
+		})
+		fs.Func("remove-label", "", func(value string) (err error) {
+			remove = append(remove, strings.Split(value, ",")...)
+			return
+		})
+		if convErr != nil || n <= 0 || fs.Parse(args[3:]) != nil || fs.NArg() != 0 {
+			err = errors.New(forgeUsage)
+			return
+		}
+		set := map[string]bool{}
+		fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+		payload := map[string]any{"addLabels": add, "removeLabels": remove}
+		if set["title"] {
+			payload["title"] = title
+		}
+		if set["body"] || set["body-file"] {
+			if body, err = text(); err != nil {
+				return
+			}
+			payload["body"] = body
+		}
+		method, path, in = http.MethodPatch, "/issues/"+args[2], payload
 	case len(args) >= 3 && args[0] == "issue" && args[1] == "comment":
 		var body string
 		n, convErr := strconv.Atoi(args[2])

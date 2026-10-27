@@ -27,6 +27,30 @@ type fakeForge struct {
 	closed   int // the number of the one closed ticket
 	created  *[]forge.Ticket
 	comments *[]string // "#n: body"
+	pull     int       // the number of the one pull request
+	edits    *[]string // "#n title=… body=…", "#n +label", "#n -label"
+}
+
+func (f fakeForge) EditIssue(_ context.Context, n int, title, body *string) (err error) {
+	edit := fmt.Sprintf("#%d", n)
+	if title != nil {
+		edit += " title=" + *title
+	}
+	if body != nil {
+		edit += " body=" + *body
+	}
+	*f.edits = append(*f.edits, edit)
+	return
+}
+
+func (f fakeForge) AddLabel(_ context.Context, n int, label string) (err error) {
+	*f.edits = append(*f.edits, fmt.Sprintf("#%d +%s", n, label))
+	return
+}
+
+func (f fakeForge) RemoveLabel(_ context.Context, n int, label string) (err error) {
+	*f.edits = append(*f.edits, fmt.Sprintf("#%d -%s", n, label))
+	return
 }
 
 func (f fakeForge) Labels(context.Context) (names []string, err error) {
@@ -59,6 +83,10 @@ func (f fakeForge) Ticket(_ context.Context, n int) (ticket forge.Ticket, err er
 }
 
 func (f fakeForge) Peek(_ context.Context, n int) (ticket forge.Ticket, open bool, err error) {
+	if n == f.pull {
+		err = fmt.Errorf("#%d is a pull request, not a ticket", n)
+		return
+	}
 	for _, t := range f.tickets {
 		if t.Number == n {
 			t.Comments = nil
@@ -210,6 +238,69 @@ func TestRunForgeWrite(t *testing.T) {
 
 	log, _ := os.ReadFile(logPath)
 	for _, want := range []string{`create #100 labels=["bug" "needs-triage"] (ready-for-agent replaced): ok`, "create #101 labels=[]: ok", "comment #7: ok", "comment #8: ok", `create labels=["nope"]: error: label "nope" does not exist`} {
+		if !strings.Contains(string(log), want) {
+			t.Errorf("log lacks %q:\n%s", want, log)
+		}
+	}
+}
+
+func TestRunForgeEdit(t *testing.T) {
+	var edits []string
+	socket, logPath, issuesPath := serveFake(t, fakeForge{edits: &edits, pull: 9, closed: 3, tickets: []forge.Ticket{{Number: 3}, {Number: 4}}})
+	if err := os.WriteFile(issuesPath, []byte("4\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	call := func(stdin string, args ...string) (warning string, err error) {
+		var stderr bytes.Buffer
+		err = RunForge(t.Context(), socket, append([]string{"issue", "edit"}, args...), strings.NewReader(stdin), io.Discard, &stderr)
+		return stderr.String(), err
+	}
+
+	// Labels of a (closed) issue of someone else: ready-for-agent is replaced when added, removing it is fine.
+	warning, err := call("", "3", "--add-label", "bug, Ready-For-Agent,", "--remove-label", "ready-for-agent")
+	if err != nil || !strings.Contains(warning, "ready-for-agent zamieniony na needs-triage") {
+		t.Errorf("labels = %q, %v", warning, err)
+	}
+	if want := []string{"#3 +bug", "#3 +needs-triage", "#3 -ready-for-agent"}; !slices.Equal(edits, want) {
+		t.Errorf("edits = %q, want %q", edits, want)
+	}
+
+	// Title and body of an own issue; a footer already there is not doubled.
+	edits = nil
+	if _, err = call("New\n\n— z Chat chat-1\n", "4", "--title", "Two\nlines @bob", "--body-file", "-", "--add-label", "bug"); err != nil {
+		t.Error(err)
+	}
+	if _, err = call("", "4", "--body", "Plain"); err != nil {
+		t.Error(err)
+	}
+	want := []string{"#4 title=Two lines @\u200bbob body=New\n\n— z Chat chat-1", "#4 +bug", "#4 body=Plain\n\n— z Chat chat-1"}
+	if !slices.Equal(edits, want) {
+		t.Errorf("edits = %q, want %q", edits, want)
+	}
+
+	// Refused before anything is written, labels included.
+	edits = nil
+	for _, args := range [][]string{
+		{"3", "--body", "x", "--add-label", "bug"},
+		{"3", "--title", "x", "--remove-label", "bug"},
+		{"9", "--add-label", "bug"},
+		{"4", "--add-label", "nope"},
+		{"4", "--title", " "},
+		{"4", "--add-label", "bug", "--remove-label", "bug"},
+		{"3"},
+		{"x", "--add-label", "bug"},
+		{"4", "--body", "a", "--body-file", "-"},
+	} {
+		if _, err = call("", args...); err == nil {
+			t.Errorf("%v: want an error", args)
+		}
+	}
+	if len(edits) != 0 {
+		t.Errorf("refused calls wrote %q", edits)
+	}
+
+	log, _ := os.ReadFile(logPath)
+	for _, want := range []string{`edit #3 add=["bug" "needs-triage"] remove=["ready-for-agent"] (ready-for-agent replaced): ok`, `edit #4 add=["bug"] remove=[] title body: ok`, `edit #3 add=["bug"] remove=[] body: error: title and body: #3 was not created by this Chat`, "edit #9 add=[\"bug\"] remove=[]: error: #9 is a pull request"} {
 		if !strings.Contains(string(log), want) {
 			t.Errorf("log lacks %q:\n%s", want, log)
 		}

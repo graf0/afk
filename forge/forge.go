@@ -66,6 +66,8 @@ type Forge interface {
 	Comment(ctx context.Context, n int, body string) (err error)
 	// AddLabel adds label to issue or pull request n.
 	AddLabel(ctx context.Context, n int, label string) (err error)
+	// EditIssue sets the title and the body of issue n; a nil one stays.
+	EditIssue(ctx context.Context, n int, title, body *string) (err error)
 	// RemoveLabel removes label from issue or pull request n; a label it
 	// doesn't have is no error.
 	RemoveLabel(ctx context.Context, n int, label string) (err error)

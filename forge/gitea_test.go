@@ -193,7 +193,16 @@ func (fake *fakeGitea) mux() (handler http.Handler) {
 		return
 	}
 	issue("PATCH issues/{n}", func(w http.ResponseWriter, r *http.Request, issue *seedIssue) {
-		issue.Open = body(r)["state"] != "closed"
+		in := body(r)
+		if state, ok := in["state"]; ok {
+			issue.Open = state != "closed"
+		}
+		if title, ok := in["title"].(string); ok {
+			issue.Title = title
+		}
+		if text, ok := in["body"].(string); ok {
+			issue.Body = text
+		}
 		reply(w, http.StatusCreated, issueJSON(issue))
 	})
 	issue("POST issues/{n}/comments", func(w http.ResponseWriter, r *http.Request, issue *seedIssue) {
