@@ -321,6 +321,7 @@ type remoteOnly struct {
 
 func (f remoteOnly) Remote() (remote forge.Remote) { return f.remote }
 
-func (f remoteOnly) List(_ context.Context, label, state string) (tickets []forge.Ticket, err error) {
-	return []forge.Ticket{{Number: 1, Title: "Itest ticket", Labels: []string{"bug"}}}, nil
+func (f remoteOnly) List(_ context.Context, label string, state forge.State) (tickets []forge.Ticket, err error) {
+	tickets = []forge.Ticket{{Number: 1, Title: "Itest ticket", Labels: []string{"bug"}}}
+	return
 }

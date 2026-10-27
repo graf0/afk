@@ -6,6 +6,7 @@ package forge
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"os"
 	"regexp"
@@ -23,6 +24,24 @@ var (
 	issueRef  = regexp.MustCompile(`#(\d+)`)
 )
 
+// State is which issues List returns.
+type State string
+
+const (
+	StateOpen   State = "open"
+	StateClosed State = "closed"
+	StateAll    State = "all"
+)
+
+// ParseState validates s as a State.
+func ParseState(s string) (state State, err error) {
+	state = State(s)
+	if state != StateOpen && state != StateClosed && state != StateAll {
+		err = errors.New("state: want open, closed or all")
+	}
+	return
+}
+
 // Forge is what afk needs of the Project's Forge: tickets, Specs, the pull
 // request of a Run and the git remote its branch is pushed to. GitHub is the
 // first implementation; Gitea is the second (Spec #21), which is
@@ -38,7 +57,7 @@ type Forge interface {
 	ListLabeled(ctx context.Context, label string) (numbers []int, err error)
 	// List returns the issues (no pull requests) in state (open, closed or
 	// all), with label unless it is empty, ascending, without comments.
-	List(ctx context.Context, label, state string) (tickets []Ticket, err error)
+	List(ctx context.Context, label string, state State) (tickets []Ticket, err error)
 	// Labels lists the names of the labels the repository has.
 	Labels(ctx context.Context) (names []string, err error)
 

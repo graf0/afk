@@ -176,7 +176,7 @@ func testContractReads(t *testing.T, newFake newFakeForge) {
 
 	t.Run("List", func(t *testing.T) {
 		f, _ := forge(t)
-		numbersOf := func(label, state string) (numbers []int) {
+		numbersOf := func(label string, state State) (numbers []int) {
 			tickets, err := f.List(t.Context(), label, state)
 			if err != nil {
 				t.Fatalf("List(%q, %q): %v", label, state, err)
@@ -188,21 +188,22 @@ func testContractReads(t *testing.T, newFake newFakeForge) {
 		}
 		// No pull requests (#8), ascending.
 		for _, tc := range []struct {
-			label, state string
-			want         []int
+			label string
+			state State
+			want  []int
 		}{
-			{"ready-for-agent", "open", []int{7, 11, 14}},
-			{"ready-for-agent", "closed", []int{9}},
-			{"ready-for-agent", "all", []int{7, 9, 11, 14}},
-			{"", "closed", []int{9, 13, 20}},
-			{"needs-triage", "open", []int{12}},
-			{"nothing", "all", nil},
+			{"ready-for-agent", StateOpen, []int{7, 11, 14}},
+			{"ready-for-agent", StateClosed, []int{9}},
+			{"ready-for-agent", StateAll, []int{7, 9, 11, 14}},
+			{"", StateClosed, []int{9, 13, 20}},
+			{"needs-triage", StateOpen, []int{12}},
+			{"nothing", StateAll, nil},
 		} {
 			if got := numbersOf(tc.label, tc.state); !slices.Equal(got, tc.want) {
 				t.Errorf("List(%q, %q) = %v, want %v", tc.label, tc.state, got, tc.want)
 			}
 		}
-		if tickets, _ := f.List(t.Context(), "bug", "open"); len(tickets) != 1 || tickets[0].Title != "Do it" || !slices.Equal(tickets[0].Labels, []string{"bug", "ready-for-agent"}) {
+		if tickets, _ := f.List(t.Context(), "bug", StateOpen); len(tickets) != 1 || tickets[0].Title != "Do it" || !slices.Equal(tickets[0].Labels, []string{"bug", "ready-for-agent"}) {
 			t.Errorf("List(bug) = %+v", tickets)
 		}
 	})
@@ -486,5 +487,18 @@ func testRemote(t *testing.T, user string, remoteOf func(gitURL string) Remote) 
 	want := []string{"/o/r.git/info/refs " + basic, "/x/r.git/info/refs ", "/moved/r.git/info/refs " + basic}
 	if got := requests(); !slices.Equal(got, want) {
 		t.Errorf("requests with Authorization = %q, want %q", got, want)
+	}
+}
+
+func TestParseState(t *testing.T) {
+	for _, s := range []string{"open", "closed", "all"} {
+		if state, err := ParseState(s); err != nil || string(state) != s {
+			t.Errorf("ParseState(%q) = %q, %v", s, state, err)
+		}
+	}
+	for _, s := range []string{"", "bad", "Open"} {
+		if _, err := ParseState(s); err == nil {
+			t.Errorf("ParseState(%q): want an error", s)
+		}
 	}
 }

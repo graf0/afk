@@ -28,7 +28,7 @@ Details and rationale: `docs/workflow.md` (`afk-forge`), ADR-0012. Flags: `afk-f
 - **List issues**: `afk-forge issue list [--label <label>] [--state open|closed|all]` (default `open`). Need body or comments of each? `issue view` per number.
 - **Comment on an issue**: `afk-forge issue comment <number> (--body "..." | --body-file -)`. Any issue.
 - **Apply / remove labels**: `afk-forge issue edit <number> --add-label a,b --remove-label c`. Any issue.
-- **Edit title / body**: `afk-forge issue edit <number> --title "..." (--body "..." | --body-file -)`, only on issues this Chat created.
+- **Edit title / body**: `afk-forge issue edit <number> --title "..." (--body "..." | --body-file -)`, only on issues this Chat created, and only while they are not `ready-for-agent` (a human approved that text). Labels of such an issue stay editable.
 - **Sub-issue of a parent**: _host only_. Put `Part of #<parent>` at the top of the child body. The `spec` label is allowed on create/edit.
 - **Close**: _host only_.
 - **Blocking, assignees, PRs**: _host only_ (see below).

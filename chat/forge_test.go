@@ -20,7 +20,8 @@ import (
 )
 
 // fakeForge is a Forge of which the channel uses Peek, Ticket, List, Labels,
-// CreateIssue and Comment; the last two write to the pointed lists.
+// CreateIssue, Comment, EditIssue, AddLabel and RemoveLabel; the writes go to
+// the pointed lists.
 type fakeForge struct {
 	forge.Forge
 	tickets  []forge.Ticket
@@ -54,7 +55,8 @@ func (f fakeForge) RemoveLabel(_ context.Context, n int, label string) (err erro
 }
 
 func (f fakeForge) Labels(context.Context) (names []string, err error) {
-	return []string{"bug", "needs-triage", "ready-for-agent"}, nil
+	names = []string{"bug", "needs-triage", "ready-for-agent"}
+	return
 }
 
 func (f fakeForge) CreateIssue(_ context.Context, title, body string, labels []string) (n int, err error) {
@@ -75,7 +77,8 @@ func (f fakeForge) Ticket(_ context.Context, n int) (ticket forge.Ticket, err er
 	}
 	for _, t := range f.tickets {
 		if t.Number == n {
-			return t, nil
+			ticket = t
+			return
 		}
 	}
 	err = errors.New("no such ticket")
@@ -90,20 +93,21 @@ func (f fakeForge) Peek(_ context.Context, n int) (ticket forge.Ticket, open boo
 	for _, t := range f.tickets {
 		if t.Number == n {
 			t.Comments = nil
-			return t, n != f.closed, nil
+			ticket, open = t, n != f.closed
+			return
 		}
 	}
 	err = errors.New("no such ticket")
 	return
 }
 
-func (f fakeForge) List(_ context.Context, label, state string) (tickets []forge.Ticket, err error) {
+func (f fakeForge) List(_ context.Context, label string, state forge.State) (tickets []forge.Ticket, err error) {
 	for _, t := range f.tickets {
 		if label == "" || forge.ContainsLabel(t.Labels, label) {
 			tickets = append(tickets, t)
 		}
 	}
-	if state == "closed" {
+	if state == forge.StateClosed {
 		tickets = nil
 	}
 	return
@@ -173,7 +177,7 @@ func TestRunForge(t *testing.T) {
 
 func TestRunForgeNoChannel(t *testing.T) {
 	err := RunForge(t.Context(), filepath.Join(t.TempDir(), "none.sock"), []string{"issue", "list"}, nil, &bytes.Buffer{}, io.Discard)
-	if err == nil || !strings.Contains(err.Error(), "kanał do afk niedostępny") {
+	if err == nil || !strings.Contains(err.Error(), "no channel to afk") {
 		t.Errorf("err = %v", err)
 	}
 }
@@ -181,7 +185,7 @@ func TestRunForgeNoChannel(t *testing.T) {
 func TestRunForgeWrite(t *testing.T) {
 	var created []forge.Ticket
 	var comments []string
-	socket, logPath, issuesPath := serveFake(t, fakeForge{created: &created, comments: &comments})
+	socket, logPath, issuesPath := serveFake(t, fakeForge{created: &created, comments: &comments, pull: 11, tickets: []forge.Ticket{{Number: 7}, {Number: 8}, {Number: 9}}})
 	call := func(stdin string, args ...string) (out, warning string, err error) {
 		var stdout, stderr bytes.Buffer
 		err = RunForge(t.Context(), socket, args, strings.NewReader(stdin), &stdout, &stderr)
@@ -189,7 +193,7 @@ func TestRunForgeWrite(t *testing.T) {
 	}
 
 	out, warning, err := call("", "issue", "create", "--title", "Idea @bob", "--body", "Fixes #3 <!-- x -->", "--label", "bug, Ready-For-Agent,", "--label", "needs-triage")
-	if err != nil || out != "#100\n" || !strings.Contains(warning, "ready-for-agent zamieniony na needs-triage") {
+	if err != nil || out != "#100\n" || !strings.Contains(warning, "ready-for-agent replaced with needs-triage") {
 		t.Errorf("create = %q, %q, %v", out, warning, err)
 	}
 	if _, warning, err = call("From stdin", "issue", "create", "--title", "Second", "--body-file", "-"); err != nil || warning != "" {
@@ -227,6 +231,7 @@ func TestRunForgeWrite(t *testing.T) {
 		{"issue", "create", "--body", "no title"},
 		{"issue", "comment", "x", "--body", "b"},
 		{"issue", "comment", "7", "--body", " "},
+		{"issue", "comment", "11", "--body", "on a pull request"},
 	} {
 		if _, _, err = call("", args...); err == nil {
 			t.Errorf("%v: want an error", args)
@@ -237,7 +242,7 @@ func TestRunForgeWrite(t *testing.T) {
 	}
 
 	log, _ := os.ReadFile(logPath)
-	for _, want := range []string{`create #100 labels=["bug" "needs-triage"] (ready-for-agent replaced): ok`, "create #101 labels=[]: ok", "comment #7: ok", "comment #8: ok", `create labels=["nope"]: error: label "nope" does not exist`} {
+	for _, want := range []string{`create #100 labels=["bug" "needs-triage"] (ready-for-agent replaced): ok`, "create #101 labels=[]: ok", "comment #7: ok", "comment #8: ok", "comment #11: error: #11 is a pull request", `create labels=["nope"]: error: label "nope" does not exist`} {
 		if !strings.Contains(string(log), want) {
 			t.Errorf("log lacks %q:\n%s", want, log)
 		}
@@ -246,8 +251,8 @@ func TestRunForgeWrite(t *testing.T) {
 
 func TestRunForgeEdit(t *testing.T) {
 	var edits []string
-	socket, logPath, issuesPath := serveFake(t, fakeForge{edits: &edits, pull: 9, closed: 3, tickets: []forge.Ticket{{Number: 3}, {Number: 4}}})
-	if err := os.WriteFile(issuesPath, []byte("4\n"), 0o600); err != nil {
+	socket, logPath, issuesPath := serveFake(t, fakeForge{edits: &edits, pull: 9, closed: 3, tickets: []forge.Ticket{{Number: 3}, {Number: 4}, {Number: 6, Labels: []string{"Ready-For-Agent"}}}})
+	if err := os.WriteFile(issuesPath, []byte("4\n6\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	call := func(stdin string, args ...string) (warning string, err error) {
@@ -258,7 +263,7 @@ func TestRunForgeEdit(t *testing.T) {
 
 	// Labels of a (closed) issue of someone else: ready-for-agent is replaced when added, removing it is fine.
 	warning, err := call("", "3", "--add-label", "bug, Ready-For-Agent,", "--remove-label", "ready-for-agent")
-	if err != nil || !strings.Contains(warning, "ready-for-agent zamieniony na needs-triage") {
+	if err != nil || !strings.Contains(warning, "ready-for-agent replaced with needs-triage") {
 		t.Errorf("labels = %q, %v", warning, err)
 	}
 	if want := []string{"#3 +bug", "#3 +needs-triage", "#3 -ready-for-agent"}; !slices.Equal(edits, want) {
@@ -285,6 +290,9 @@ func TestRunForgeEdit(t *testing.T) {
 		{"3", "--title", "x", "--remove-label", "bug"},
 		{"9", "--add-label", "bug"},
 		{"4", "--add-label", "nope"},
+		{"6", "--body", "x"},
+		{"6", "--title", "x", "--add-label", "bug"},
+		{"6", "--remove-label", "ready-for-agent", "--body", "x"},
 		{"4", "--title", " "},
 		{"4", "--add-label", "bug", "--remove-label", "bug"},
 		{"3"},
@@ -299,8 +307,45 @@ func TestRunForgeEdit(t *testing.T) {
 		t.Errorf("refused calls wrote %q", edits)
 	}
 
+	// The labels of an own ready-for-agent issue stay editable, ready-for-agent included.
+	if _, err = call("", "6", "--remove-label", "ready-for-agent", "--add-label", "bug"); err != nil {
+		t.Error(err)
+	}
+	if want := []string{"#6 +bug", "#6 -ready-for-agent"}; !slices.Equal(edits, want) {
+		t.Errorf("edits = %q, want %q", edits, want)
+	}
+
 	log, _ := os.ReadFile(logPath)
-	for _, want := range []string{`edit #3 add=["bug" "needs-triage"] remove=["ready-for-agent"] (ready-for-agent replaced): ok`, `edit #4 add=["bug"] remove=[] title body: ok`, `edit #3 add=["bug"] remove=[] body: error: title and body: #3 was not created by this Chat`, "edit #9 add=[\"bug\"] remove=[]: error: #9 is a pull request"} {
+	for _, want := range []string{"edit #6 add=[] remove=[] body: error: title and body: #6 is ready-for-agent", `edit #3 add=["bug" "needs-triage"] remove=["ready-for-agent"] (ready-for-agent replaced): ok`, `edit #4 add=["bug"] remove=[] title body: ok`, `edit #3 add=["bug"] remove=[] body: error: title and body: #3 was not created by this Chat`, "edit #9 add=[\"bug\"] remove=[]: error: #9 is a pull request"} {
+		if !strings.Contains(string(log), want) {
+			t.Errorf("log lacks %q:\n%s", want, log)
+		}
+	}
+}
+
+func TestForgeUnknownRoute(t *testing.T) {
+	socket, logPath, _ := serveFake(t, fakeForge{})
+	client := &http.Client{Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (conn net.Conn, err error) {
+		conn, err = (&net.Dialer{}).DialContext(ctx, "unix", socket)
+		return
+	}}}
+	// A known path with another method falls to "/" as well: 404, not 405.
+	for _, tc := range []struct{ method, path string }{{"DELETE", "/issues/3"}, {"GET", "/nope"}} {
+		req, err := http.NewRequestWithContext(t.Context(), tc.method, "http://afk"+tc.path, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound {
+			t.Errorf("%s %s: status %d, want 404", tc.method, tc.path, resp.StatusCode)
+		}
+	}
+	log, _ := os.ReadFile(logPath)
+	for _, want := range []string{"DELETE /issues/3: error: no such route", "GET /nope: error: no such route"} {
 		if !strings.Contains(string(log), want) {
 			t.Errorf("log lacks %q:\n%s", want, log)
 		}

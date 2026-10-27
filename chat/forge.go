@@ -36,24 +36,55 @@ const (
 	// ForgeSocket is where the channel to afk appears inside the guest.
 	ForgeSocket = forgeSocketDir + "/afk.sock"
 
+	// issuesName is the file of the Chat's state with the numbers of the issues it created, a line each.
+	issuesName = "issues"
+)
+
+// --- protocol: what the guest sends and the host answers ---
+
+// createRequest is the body of POST /issues.
+type createRequest struct {
+	Title  string   `json:"title"`
+	Body   string   `json:"body"`
+	Labels []string `json:"labels"`
+}
+
+// commentRequest is the body of POST /issues/{n}/comments.
+type commentRequest struct {
+	Body string `json:"body"`
+}
+
+// editRequest is the body of PATCH /issues/{n}; a nil Title or Body is left as it is.
+type editRequest struct {
+	AddLabels    []string `json:"addLabels"`
+	RemoveLabels []string `json:"removeLabels"`
+	Title        *string  `json:"title,omitempty"`
+	Body         *string  `json:"body,omitempty"`
+}
+
+// forgeReply is the one JSON document the host answers each call with.
+type forgeReply struct {
+	Output  string `json:"output,omitempty"`
+	Warning string `json:"warning,omitempty"`
+	Error   string `json:"error,omitempty"`
+}
+
+// issueNumber parses the number of an issue.
+func issueNumber(s string) (n int, err error) {
+	n, err = strconv.Atoi(s)
+	if err != nil || n <= 0 {
+		err = errors.New("invalid issue number")
+	}
+	return
+}
+
+// --- host: the channel ---
+
+const (
 	forgeSocketDir = "/run/afk"
 
 	maxForgeBody = 1 << 20
-
-	// issuesName is the file of the Chat's state with the numbers of the issues it created, a line each.
-	issuesName = "issues"
-
-	forgeUsage = `usage:
-  afk-forge issue view <n>
-  afk-forge issue list [--label <label>] [--state open|closed|all]
-  afk-forge issue create --title <title> [--body <text> | --body-file -] [--label <a,b>]...
-  afk-forge issue comment <n> (--body <text> | --body-file -)
-  afk-forge issue edit <n> [--add-label <a,b>]... [--remove-label <a,b>]... [--title <title>] [--body <text> | --body-file -]
---body-file - reads the text from stdin; --label, --add-label and --remove-label may repeat or list labels with commas;
---title and --body only on issues created by this Chat`
 )
-
-// --- host: the channel ---
 
 // forgeChannel is what a Chat's afk-forge works on: the Project's Forge and
 // labels, the Chat's name (the footer of what it writes) and the file in its
@@ -66,8 +97,7 @@ type forgeChannel struct {
 }
 
 // forgeServer answers the guest's afk-forge calls with the Project's Forge,
-// one JSON document per call: {"output": …}, {"error": …}, and a "warning"
-// for the guest's stderr. Every call goes to log.
+// one forgeReply per call. Every call goes to log, unknown routes too.
 type forgeServer struct {
 	forgeChannel
 	log *log.Logger
@@ -84,14 +114,19 @@ func (s *forgeServer) handler() (handler http.Handler) {
 	mux.HandleFunc("POST /issues", s.create)
 	mux.HandleFunc("POST /issues/{n}/comments", s.comment)
 	mux.HandleFunc("PATCH /issues/{n}", s.edit)
+	// Patterns with a method win over "/", but "/" matches every method: a
+	// known path with another method lands here too (404, not the mux's 405).
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		s.reply(w, r.Method+" "+r.URL.Path, "", "", http.StatusNotFound, errors.New("no such route"))
+	})
 	return mux
 }
 
 // view serves `issue view <n>`: the ticket as the TICKET.md of a Run.
 func (s *forgeServer) view(w http.ResponseWriter, r *http.Request) {
-	n, err := strconv.Atoi(r.PathValue("n"))
-	if err != nil || n <= 0 {
-		s.reply(w, "view "+r.PathValue("n"), "", http.StatusBadRequest, errors.New("invalid issue number"))
+	n, err := issueNumber(r.PathValue("n"))
+	if err != nil {
+		s.reply(w, "view "+r.PathValue("n"), "", "", http.StatusBadRequest, err)
 		return
 	}
 	// Ticket refuses closed issues, which `issue list --state closed` shows: those come without comments.
@@ -99,15 +134,16 @@ func (s *forgeServer) view(w http.ResponseWriter, r *http.Request) {
 	if err == nil && open {
 		ticket, err = s.Forge.Ticket(r.Context(), n)
 	}
-	s.reply(w, fmt.Sprintf("view #%d", n), agent.Sanitize(agent.TicketFile(ticket)), http.StatusBadGateway, err)
+	s.reply(w, fmt.Sprintf("view #%d", n), agent.Sanitize(agent.TicketFile(ticket)), "", http.StatusBadGateway, err)
 }
 
 // list serves `issue list`: a line `#N  [labels]  title` per issue.
 func (s *forgeServer) list(w http.ResponseWriter, r *http.Request) {
-	label, state := r.URL.Query().Get("label"), r.URL.Query().Get("state")
+	label := r.URL.Query().Get("label")
+	state, err := forge.ParseState(r.URL.Query().Get("state"))
 	op := fmt.Sprintf("list label=%q state=%s", label, state)
-	if state != "open" && state != "closed" && state != "all" {
-		s.reply(w, op, "", http.StatusBadRequest, errors.New("state: want open, closed or all"))
+	if err != nil {
+		s.reply(w, op, "", "", http.StatusBadRequest, err)
 		return
 	}
 	tickets, err := s.Forge.List(r.Context(), label, state)
@@ -115,50 +151,46 @@ func (s *forgeServer) list(w http.ResponseWriter, r *http.Request) {
 	for _, ticket := range tickets {
 		fmt.Fprintf(&b, "#%d  [%s]  %s\n", ticket.Number, strings.Join(ticket.Labels, ", "), ticket.Title)
 	}
-	s.reply(w, op, agent.Sanitize(b.String()), http.StatusBadGateway, err)
+	s.reply(w, op, agent.Sanitize(b.String()), "", http.StatusBadGateway, err)
 }
 
 // create serves `issue create`: the issue gets the footer, and the Chat notes
 // its number. ready-for-agent becomes needs-triage: readiness for the Factory
 // is for a human to give.
 func (s *forgeServer) create(w http.ResponseWriter, r *http.Request) {
-	var in struct {
-		Title, Body string
-		Labels      []string
-	}
+	var in createRequest
 	err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxForgeBody)).Decode(&in)
 	if err == nil && titleLine(in.Title) == "" {
 		err = errors.New("title: required")
 	}
 	if err != nil {
-		s.reply(w, "create", "", http.StatusBadRequest, err)
+		s.reply(w, "create", "", "", http.StatusBadRequest, err)
 		return
 	}
-	labels, warning := s.triageLabels(in.Labels)
+	labels, replaced := s.triageLabels(in.Labels)
 	err = s.checkLabels(r.Context(), labels)
 	var n int
 	if err == nil {
 		n, err = s.Forge.CreateIssue(r.Context(), titleLine(in.Title), s.withFooter(in.Body), labels)
 	}
-	op := fmt.Sprintf("create labels=%q", labels)
-	if warning != "" {
-		op += " (" + s.Labels.ReadyForAgent + " replaced)"
-	}
+	op := "create"
 	if err == nil {
-		op = fmt.Sprintf("create #%d", n) + strings.TrimPrefix(op, "create")
+		op = fmt.Sprintf("create #%d", n)
 		if err = s.noteIssue(n); err != nil {
 			err = fmt.Errorf("issue #%d created, but not noted in the Chat: %w", n, err)
 		}
 	}
-	s.replyWarning(w, op, fmt.Sprintf("#%d\n", n), warning, http.StatusBadGateway, err)
+	op, warning := s.replacedNote(op+fmt.Sprintf(" labels=%q", labels), replaced)
+	s.reply(w, op, fmt.Sprintf("#%d\n", n), warning, http.StatusBadGateway, err)
 }
 
-// comment serves `issue comment <n>`: the comment gets the footer.
+// comment serves `issue comment <n>`: the comment gets the footer, and a pull
+// request is refused.
 func (s *forgeServer) comment(w http.ResponseWriter, r *http.Request) {
-	var in struct{ Body string }
-	n, err := strconv.Atoi(r.PathValue("n"))
-	if err != nil || n <= 0 {
-		s.reply(w, "comment "+r.PathValue("n"), "", http.StatusBadRequest, errors.New("invalid issue number"))
+	var in commentRequest
+	n, err := issueNumber(r.PathValue("n"))
+	if err != nil {
+		s.reply(w, "comment "+r.PathValue("n"), "", "", http.StatusBadRequest, err)
 		return
 	}
 	op := fmt.Sprintf("comment #%d", n)
@@ -167,36 +199,33 @@ func (s *forgeServer) comment(w http.ResponseWriter, r *http.Request) {
 		err = errors.New("body: required")
 	}
 	if err != nil {
-		s.reply(w, op, "", http.StatusBadRequest, err)
+		s.reply(w, op, "", "", http.StatusBadRequest, err)
 		return
 	}
-	s.reply(w, op, "", http.StatusBadGateway, s.Forge.Comment(r.Context(), n, s.withFooter(in.Body)))
+	// Peek refuses a pull request.
+	if _, _, err = s.Forge.Peek(r.Context(), n); err == nil {
+		err = s.Forge.Comment(r.Context(), n, s.withFooter(in.Body))
+	}
+	s.reply(w, op, "", "", http.StatusBadGateway, err)
 }
 
 // edit serves `issue edit <n>`: labels of any issue, title and body only of
-// an issue this Chat created (the body keeps the footer). Everything is
-// checked before the first write, but a Forge failure midway leaves the
-// earlier writes. No state changes, and a pull request is refused.
+// an issue this Chat created that is not ready-for-agent (the body keeps the
+// footer). Everything is checked before the first write, but a Forge failure
+// midway leaves the earlier writes. No state changes, and a pull request is
+// refused.
 func (s *forgeServer) edit(w http.ResponseWriter, r *http.Request) {
-	var in struct {
-		AddLabels, RemoveLabels []string
-		Title, Body             *string
-	}
-	n, err := strconv.Atoi(r.PathValue("n"))
-	if err != nil || n <= 0 {
-		s.reply(w, "edit "+r.PathValue("n"), "", http.StatusBadRequest, errors.New("invalid issue number"))
+	var in editRequest
+	n, err := issueNumber(r.PathValue("n"))
+	if err != nil {
+		s.reply(w, "edit "+r.PathValue("n"), "", "", http.StatusBadRequest, err)
 		return
 	}
 	op := fmt.Sprintf("edit #%d", n)
 	err = json.NewDecoder(http.MaxBytesReader(w, r.Body, maxForgeBody)).Decode(&in)
-	add, warning := s.triageLabels(in.AddLabels)
+	add, replaced := s.triageLabels(in.AddLabels)
 	// Removing ready-for-agent, given by a human, is fine: no triage here.
-	var remove []string
-	for _, label := range in.RemoveLabels {
-		if label = strings.TrimSpace(label); label != "" && !forge.ContainsLabel(remove, label) {
-			remove = append(remove, label)
-		}
-	}
+	remove := cleanLabels(in.RemoveLabels)
 	if err == nil && len(add)+len(remove) == 0 && in.Title == nil && in.Body == nil {
 		err = errors.New("nothing to change")
 	}
@@ -209,7 +238,7 @@ func (s *forgeServer) edit(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err != nil {
-		s.reply(w, op, "", http.StatusBadRequest, err)
+		s.reply(w, op, "", "", http.StatusBadRequest, err)
 		return
 	}
 	op += fmt.Sprintf(" add=%q remove=%q", add, remove)
@@ -219,16 +248,15 @@ func (s *forgeServer) edit(w http.ResponseWriter, r *http.Request) {
 	if in.Body != nil {
 		op += " body"
 	}
-	if warning != "" {
-		op += " (" + s.Labels.ReadyForAgent + " replaced)"
-	}
-	s.replyWarning(w, op, "", warning, http.StatusBadGateway, s.applyEdit(r.Context(), n, add, remove, in.Title, in.Body))
+	op, warning := s.replacedNote(op, replaced)
+	s.reply(w, op, "", warning, http.StatusBadGateway, s.applyEdit(r.Context(), n, add, remove, in.Title, in.Body))
 }
 
 // applyEdit checks what edit may do, then does it.
 func (s *forgeServer) applyEdit(ctx context.Context, n int, add, remove []string, title, body *string) (err error) {
 	// Peek refuses a pull request.
-	if _, _, err = s.Forge.Peek(ctx, n); err != nil {
+	ticket, _, err := s.Forge.Peek(ctx, n)
+	if err != nil {
 		return
 	}
 	if title != nil || body != nil {
@@ -238,6 +266,12 @@ func (s *forgeServer) applyEdit(ctx context.Context, n int, add, remove []string
 		}
 		if !own {
 			err = fmt.Errorf("title and body: #%d was not created by this Chat, only its labels can change", n)
+			return
+		}
+		// A human approved this text with the label: changing it would skip the review.
+		// The label as it is before any write counts, also when this call removes it.
+		if ticket.HasLabel(s.Labels.ReadyForAgent) {
+			err = fmt.Errorf("title and body: #%d is %s, only its labels can change", n, s.Labels.ReadyForAgent)
 			return
 		}
 	}
@@ -270,17 +304,11 @@ func (s *forgeServer) applyEdit(ctx context.Context, n int, add, remove []string
 	return
 }
 
-// titleLine is title sanitized like the Agent's text of a Run, on one line:
-// AgentText may add a truncation note on a line of its own.
-func titleLine(title string) (line string) {
-	line = strings.Join(strings.Fields(run.AgentText(title)), " ")
-	return
-}
-
 // checkLabels fails on a label the repository doesn't have.
 func (s *forgeServer) checkLabels(ctx context.Context, labels []string) (err error) {
 	known, err := s.Forge.Labels(ctx)
 	if err != nil {
+		err = fmt.Errorf("listing the labels of the repository: %w", err)
 		return
 	}
 	for _, label := range labels {
@@ -292,20 +320,26 @@ func (s *forgeServer) checkLabels(ctx context.Context, labels []string) (err err
 	return
 }
 
-// triageLabels replaces ready-for-agent with needs-triage (the names of the
-// Project's [labels]) and says so in warning.
-func (s *forgeServer) triageLabels(labels []string) (out []string, warning string) {
-	for _, label := range labels {
-		if label = strings.TrimSpace(label); label == "" {
-			continue
-		}
+// triageLabels cleans labels and replaces ready-for-agent with needs-triage
+// (the names of the Project's [labels]); replaced says it did.
+func (s *forgeServer) triageLabels(labels []string) (out []string, replaced bool) {
+	labels = cleanLabels(labels)
+	for i, label := range labels {
 		if strings.EqualFold(label, s.Labels.ReadyForAgent) {
-			warning = fmt.Sprintf("label %s zamieniony na %s: gotowość dla Factory nadaje człowiek", s.Labels.ReadyForAgent, s.Labels.NeedsTriage)
-			label = s.Labels.NeedsTriage
+			labels[i], replaced = s.Labels.NeedsTriage, true
 		}
-		if !forge.ContainsLabel(out, label) {
-			out = append(out, label)
-		}
+	}
+	out = cleanLabels(labels)
+	return
+}
+
+// replacedNote marks op as having its ready-for-agent replaced, when it was,
+// and words the warning for the guest's stderr.
+func (s *forgeServer) replacedNote(op string, replaced bool) (noted, warning string) {
+	noted = op
+	if replaced {
+		noted += " (" + s.Labels.ReadyForAgent + " replaced)"
+		warning = fmt.Sprintf("label %s replaced with %s: only a human makes an issue ready for the Factory", s.Labels.ReadyForAgent, s.Labels.NeedsTriage)
 	}
 	return
 }
@@ -337,28 +371,46 @@ func (s *forgeServer) created(n int) (own bool, err error) {
 func (s *forgeServer) noteIssue(n int) (err error) {
 	file, err := os.OpenFile(s.IssuesPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
+		err = fmt.Errorf("opening %s: %w", s.IssuesPath, err)
 		return
 	}
 	_, err = fmt.Fprintln(file, n)
-	return errors.Join(err, file.Close())
+	err = errors.Join(err, file.Close())
+	if err != nil {
+		err = fmt.Errorf("writing %s: %w", s.IssuesPath, err)
+	}
+	return
 }
 
-// reply logs the call and answers with output, or with failure (status) when err is set.
-func (s *forgeServer) reply(w http.ResponseWriter, op, output string, failure int, err error) {
-	s.replyWarning(w, op, output, "", failure, err)
-}
-
-// replyWarning is reply with a warning for the guest's stderr.
-func (s *forgeServer) replyWarning(w http.ResponseWriter, op, output, warning string, failure int, err error) {
-	body := map[string]string{"output": output, "warning": warning}
+// reply logs the call and answers with output and a warning for the guest's
+// stderr, or with failure (status) when err is set.
+func (s *forgeServer) reply(w http.ResponseWriter, op, output, warning string, failure int, err error) {
+	body := forgeReply{Output: output, Warning: warning}
 	if err != nil {
 		s.log.Printf("%s: error: %v", op, err)
 		w.WriteHeader(failure)
-		body = map[string]string{"error": agent.Sanitize(err.Error())}
+		body = forgeReply{Error: agent.Sanitize(err.Error())}
 	} else {
 		s.log.Printf("%s: ok", op)
 	}
 	_ = json.NewEncoder(w).Encode(body)
+}
+
+// titleLine is title sanitized like the Agent's text of a Run, on one line:
+// AgentText may add a truncation note on a line of its own.
+func titleLine(title string) (line string) {
+	line = strings.Join(strings.Fields(run.AgentText(title)), " ")
+	return
+}
+
+// cleanLabels trims labels, drops the empty ones and the repeated (ignoring case).
+func cleanLabels(labels []string) (out []string) {
+	for _, label := range labels {
+		if label = strings.TrimSpace(label); label != "" && !forge.ContainsLabel(out, label) {
+			out = append(out, label)
+		}
+	}
+	return
 }
 
 // serveForge puts this binary in the guest as afk-forge and serves the
@@ -414,6 +466,15 @@ func serveForge(ctx context.Context, client *ssh.Client, ch forgeChannel, logPat
 
 // --- guest: afk-forge ---
 
+const forgeUsage = `usage:
+  afk-forge issue view <n>
+  afk-forge issue list [--label <label>] [--state open|closed|all]
+  afk-forge issue create --title <title> [--body <text> | --body-file -] [--label <a,b>]...
+  afk-forge issue comment <n> (--body <text> | --body-file -)
+  afk-forge issue edit <n> [--add-label <a,b>]... [--remove-label <a,b>]... [--title <title>] [--body <text> | --body-file -]
+--body-file - reads the text from stdin; --label, --add-label and --remove-label may repeat or list labels with commas;
+--title and --body only on issues created by this Chat that are not ready-for-agent`
+
 // RunForge executes `afk-forge args` against the channel at socket and writes
 // the result to stdout and the channel's warning to stderr; stdin is the text
 // of --body-file -.
@@ -421,74 +482,67 @@ func RunForge(ctx context.Context, socket string, args []string, stdin io.Reader
 	method, path, in := http.MethodGet, "", any(nil)
 	switch {
 	case len(args) == 3 && args[0] == "issue" && args[1] == "view":
-		if n, convErr := strconv.Atoi(args[2]); convErr != nil || n <= 0 {
+		if _, err = issueNumber(args[2]); err != nil {
 			err = errors.New(forgeUsage)
 			return
 		}
 		path = "/issues/" + args[2]
 	case len(args) >= 2 && args[0] == "issue" && args[1] == "list":
-		fs := flag.NewFlagSet("issue list", flag.ContinueOnError)
-		fs.SetOutput(io.Discard)
-		label := fs.String("label", "", "")
-		state := fs.String("state", "open", "")
-		if err = fs.Parse(args[2:]); err != nil || fs.NArg() != 0 {
+		flags := flag.NewFlagSet("issue list", flag.ContinueOnError)
+		flags.SetOutput(io.Discard)
+		label := flags.String("label", "", "")
+		state := flags.String("state", string(forge.StateOpen), "")
+		if err = flags.Parse(args[2:]); err == nil && flags.NArg() == 0 {
+			_, err = forge.ParseState(*state)
+		}
+		if err != nil || flags.NArg() != 0 {
 			err = errors.New(forgeUsage)
 			return
 		}
 		path = "/issues?label=" + url.QueryEscape(*label) + "&state=" + url.QueryEscape(*state)
 	case len(args) >= 2 && args[0] == "issue" && args[1] == "create":
-		var title, body string
-		var labels []string
-		fs, text := textFlags("issue create", &body, stdin)
-		fs.StringVar(&title, "title", "", "")
-		fs.Func("label", "", func(value string) (err error) {
-			labels = append(labels, strings.Split(value, ",")...)
-			return
-		})
-		if err = fs.Parse(args[2:]); err != nil || fs.NArg() != 0 || strings.TrimSpace(title) == "" {
+		var body string
+		req := createRequest{}
+		flags, text := textFlags("issue create", &body, stdin)
+		flags.StringVar(&req.Title, "title", "", "")
+		labelsFlag(flags, "label", &req.Labels)
+		if err = flags.Parse(args[2:]); err != nil || flags.NArg() != 0 || strings.TrimSpace(req.Title) == "" {
 			err = errors.New(forgeUsage)
 			return
 		}
-		if body, err = text(); err != nil {
+		if req.Body, err = text(); err != nil {
 			return
 		}
-		method, path, in = http.MethodPost, "/issues", map[string]any{"title": title, "body": body, "labels": labels}
+		method, path, in = http.MethodPost, "/issues", req
 	case len(args) >= 3 && args[0] == "issue" && args[1] == "edit":
 		var body, title string
-		var add, remove []string
-		n, convErr := strconv.Atoi(args[2])
-		fs, text := textFlags("issue edit", &body, stdin)
-		fs.StringVar(&title, "title", "", "")
-		fs.Func("add-label", "", func(value string) (err error) {
-			add = append(add, strings.Split(value, ",")...)
-			return
-		})
-		fs.Func("remove-label", "", func(value string) (err error) {
-			remove = append(remove, strings.Split(value, ",")...)
-			return
-		})
-		if convErr != nil || n <= 0 || fs.Parse(args[3:]) != nil || fs.NArg() != 0 {
+		req := editRequest{}
+		_, convErr := issueNumber(args[2])
+		flags, text := textFlags("issue edit", &body, stdin)
+		flags.StringVar(&title, "title", "", "")
+		labelsFlag(flags, "add-label", &req.AddLabels)
+		labelsFlag(flags, "remove-label", &req.RemoveLabels)
+		if convErr != nil || flags.Parse(args[3:]) != nil || flags.NArg() != 0 {
 			err = errors.New(forgeUsage)
 			return
 		}
 		set := map[string]bool{}
-		fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
-		payload := map[string]any{"addLabels": add, "removeLabels": remove}
+		flags.Visit(func(f *flag.Flag) { set[f.Name] = true })
 		if set["title"] {
-			payload["title"] = title
+			req.Title = &title
 		}
 		if set["body"] || set["body-file"] {
 			if body, err = text(); err != nil {
 				return
 			}
-			payload["body"] = body
+			req.Body = &body
 		}
-		method, path, in = http.MethodPatch, "/issues/"+args[2], payload
+		method, path, in = http.MethodPatch, "/issues/"+args[2], req
 	case len(args) >= 3 && args[0] == "issue" && args[1] == "comment":
 		var body string
-		n, convErr := strconv.Atoi(args[2])
-		fs, text := textFlags("issue comment", &body, stdin)
-		if convErr != nil || n <= 0 || fs.Parse(args[3:]) != nil || fs.NArg() != 0 {
+		_, convErr := issueNumber(args[2])
+		flags, text := textFlags("issue comment", &body, stdin)
+		if convErr != nil || flags.Parse(args[3:]) != nil || flags.NArg() != 0 {
 			err = errors.New(forgeUsage)
 			return
 		}
@@ -499,7 +553,7 @@ func RunForge(ctx context.Context, socket string, args []string, stdin io.Reader
 			err = errors.New(forgeUsage)
 			return
 		}
-		method, path, in = http.MethodPost, "/issues/"+args[2]+"/comments", map[string]string{"body": body}
+		method, path, in = http.MethodPost, "/issues/"+args[2]+"/comments", commentRequest{Body: body}
 	default:
 		err = errors.New(forgeUsage)
 		return
@@ -507,25 +561,27 @@ func RunForge(ctx context.Context, socket string, args []string, stdin io.Reader
 
 	client := &http.Client{Timeout: time.Minute, Transport: &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (conn net.Conn, err error) {
-			return (&net.Dialer{}).DialContext(ctx, "unix", socket)
+			conn, err = (&net.Dialer{}).DialContext(ctx, "unix", socket)
+			return
 		},
 	}}
 	var payload io.Reader
 	if in != nil {
 		var data []byte
 		if data, err = json.Marshal(in); err != nil {
+			err = fmt.Errorf("encoding the request: %w", err)
 			return
 		}
 		payload = bytes.NewReader(data)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, "http://afk"+path, payload)
 	if err != nil {
+		err = fmt.Errorf("building the request: %w", err)
 		return
 	}
 	resp, err := client.Do(req)
 	if errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ECONNREFUSED) {
-		// Polish, as the ticket words it: the reader is the human in the Chat.
-		err = errors.New("kanał do afk niedostępny (działa tylko w sesji `afk chat attach`)")
+		err = errors.New("no channel to afk (works only in an `afk chat attach` session)")
 		return
 	}
 	if err != nil {
@@ -533,7 +589,7 @@ func RunForge(ctx context.Context, socket string, args []string, stdin io.Reader
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()
-	var reply struct{ Output, Warning, Error string }
+	var reply forgeReply
 	if err = json.NewDecoder(resp.Body).Decode(&reply); err != nil {
 		err = fmt.Errorf("reading the reply of afk: %w", err)
 		return
@@ -551,11 +607,11 @@ func RunForge(ctx context.Context, socket string, args []string, stdin io.Reader
 
 // textFlags is the flag set of a command that takes a text: --body, or
 // --body-file - for stdin. text returns it once the set is parsed.
-func textFlags(name string, body *string, stdin io.Reader) (fs *flag.FlagSet, text func() (text string, err error)) {
-	fs = flag.NewFlagSet(name, flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-	fs.StringVar(body, "body", "", "")
-	file := fs.String("body-file", "", "")
+func textFlags(name string, body *string, stdin io.Reader) (flags *flag.FlagSet, text func() (text string, err error)) {
+	flags = flag.NewFlagSet(name, flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	flags.StringVar(body, "body", "", "")
+	file := flags.String("body-file", "", "")
 	text = func() (text string, err error) {
 		switch {
 		case *file == "":
@@ -570,4 +626,12 @@ func textFlags(name string, body *string, stdin io.Reader) (fs *flag.FlagSet, te
 		return
 	}
 	return
+}
+
+// labelsFlag defines flag name, which may repeat and list labels with commas.
+func labelsFlag(flags *flag.FlagSet, name string, labels *[]string) {
+	flags.Func(name, "", func(value string) (err error) {
+		*labels = append(*labels, strings.Split(value, ",")...)
+		return
+	})
 }

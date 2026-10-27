@@ -246,7 +246,7 @@ func (g *Gitea) ticketOf(ctx context.Context, issue giteaIssue) (ticket Ticket, 
 // ListLabeled returns the numbers of the open issues with label, ascending.
 // The list lags behind labels changed a moment ago: Peek decides.
 func (g *Gitea) ListLabeled(ctx context.Context, label string) (numbers []int, err error) {
-	issues, err := g.list(ctx, label, "open")
+	issues, err := g.list(ctx, label, StateOpen)
 	if err != nil {
 		err = fmt.Errorf("listing tickets labeled %q: %w", label, err)
 		return
@@ -261,8 +261,8 @@ func (g *Gitea) ListLabeled(ctx context.Context, label string) (numbers []int, e
 // empty, ascending, with their bodies. Gitea may drop a filter it does not
 // know, and whether names match regardless of case depends on its database:
 // the label is checked here as well.
-func (g *Gitea) list(ctx context.Context, label, state string) (issues []giteaIssue, err error) {
-	listed, err := giteaList(ctx, g, "/repos/"+g.Repo+"/issues?state="+url.QueryEscape(state)+"&type=issues&labels="+url.QueryEscape(label)+"&", func(i giteaIssue) int { return i.Number })
+func (g *Gitea) list(ctx context.Context, label string, state State) (issues []giteaIssue, err error) {
+	listed, err := giteaList(ctx, g, "/repos/"+g.Repo+"/issues?state="+url.QueryEscape(string(state))+"&type=issues&labels="+url.QueryEscape(label)+"&", func(i giteaIssue) int { return i.Number })
 	if err != nil {
 		return
 	}
@@ -277,7 +277,7 @@ func (g *Gitea) list(ctx context.Context, label, state string) (issues []giteaIs
 
 // List returns the issues in state (open, closed or all), with label unless it
 // is empty, ascending, without comments.
-func (g *Gitea) List(ctx context.Context, label, state string) (tickets []Ticket, err error) {
+func (g *Gitea) List(ctx context.Context, label string, state State) (tickets []Ticket, err error) {
 	issues, err := g.list(ctx, label, state)
 	if err != nil {
 		err = fmt.Errorf("listing %s tickets labeled %q: %w", state, label, err)
@@ -379,7 +379,7 @@ func (g *Gitea) parentOf(ctx context.Context, n int) (parent int, err error) {
 	if g.SpecLabel == "" {
 		return
 	}
-	specs, err := g.list(ctx, g.SpecLabel, "open")
+	specs, err := g.list(ctx, g.SpecLabel, StateOpen)
 	if err != nil {
 		err = fmt.Errorf("looking for the Spec of #%d: %w", n, err)
 		return
