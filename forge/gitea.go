@@ -246,7 +246,7 @@ func (g *Gitea) ticketOf(ctx context.Context, issue giteaIssue) (ticket Ticket, 
 // ListLabeled returns the numbers of the open issues with label, ascending.
 // The list lags behind labels changed a moment ago: Peek decides.
 func (g *Gitea) ListLabeled(ctx context.Context, label string) (numbers []int, err error) {
-	issues, err := g.listOpen(ctx, label)
+	issues, err := g.list(ctx, label, "open")
 	if err != nil {
 		err = fmt.Errorf("listing tickets labeled %q: %w", label, err)
 		return
@@ -257,21 +257,35 @@ func (g *Gitea) ListLabeled(ctx context.Context, label string) (numbers []int, e
 	return
 }
 
-// listOpen returns the open issues (no pull requests) with label, ascending,
-// with their bodies. Gitea may drop a filter it does not know, and whether
-// names match regardless of case depends on its database: the label is
-// checked here as well.
-func (g *Gitea) listOpen(ctx context.Context, label string) (issues []giteaIssue, err error) {
-	listed, err := giteaList(ctx, g, "/repos/"+g.Repo+"/issues?state=open&type=issues&labels="+url.QueryEscape(label)+"&", func(i giteaIssue) int { return i.Number })
+// list returns the issues in state (no pull requests) with label unless it is
+// empty, ascending, with their bodies. Gitea may drop a filter it does not
+// know, and whether names match regardless of case depends on its database:
+// the label is checked here as well.
+func (g *Gitea) list(ctx context.Context, label, state string) (issues []giteaIssue, err error) {
+	listed, err := giteaList(ctx, g, "/repos/"+g.Repo+"/issues?state="+url.QueryEscape(state)+"&type=issues&labels="+url.QueryEscape(label)+"&", func(i giteaIssue) int { return i.Number })
 	if err != nil {
 		return
 	}
 	for _, issue := range listed {
-		if issue.PullRequest == nil && ContainsLabel(issue.ticket().Labels, label) {
+		if issue.PullRequest == nil && (label == "" || ContainsLabel(issue.ticket().Labels, label)) {
 			issues = append(issues, issue)
 		}
 	}
 	slices.SortFunc(issues, func(a, b giteaIssue) int { return a.Number - b.Number })
+	return
+}
+
+// List returns the issues in state (open, closed or all), with label unless it
+// is empty, ascending, without comments.
+func (g *Gitea) List(ctx context.Context, label, state string) (tickets []Ticket, err error) {
+	issues, err := g.list(ctx, label, state)
+	if err != nil {
+		err = fmt.Errorf("listing %s tickets labeled %q: %w", state, label, err)
+		return
+	}
+	for _, issue := range issues {
+		tickets = append(tickets, issue.ticket())
+	}
 	return
 }
 
@@ -365,7 +379,7 @@ func (g *Gitea) parentOf(ctx context.Context, n int) (parent int, err error) {
 	if g.SpecLabel == "" {
 		return
 	}
-	specs, err := g.listOpen(ctx, g.SpecLabel)
+	specs, err := g.list(ctx, g.SpecLabel, "open")
 	if err != nil {
 		err = fmt.Errorf("looking for the Spec of #%d: %w", n, err)
 		return

@@ -179,20 +179,30 @@ func (g *GitHub) Peek(ctx context.Context, n int) (ticket Ticket, open bool, err
 // ListLabeled returns the numbers of the open issues with label, ascending.
 // The list lags behind labels changed a moment ago: Peek decides.
 func (g *GitHub) ListLabeled(ctx context.Context, label string) (numbers []int, err error) {
+	tickets, err := g.List(ctx, label, "open")
+	for _, ticket := range tickets {
+		numbers = append(numbers, ticket.Number)
+	}
+	return
+}
+
+// List returns the issues in state (open, closed or all), with label unless it
+// is empty, ascending, without comments.
+func (g *GitHub) List(ctx context.Context, label, state string) (tickets []Ticket, err error) {
 	for page := 1; ; page++ {
 		var issues []githubIssue
-		path := fmt.Sprintf("/repos/%s/issues?state=open&labels=%s&per_page=%d&page=%d", g.Repo, url.QueryEscape(label), perPage, page)
+		path := fmt.Sprintf("/repos/%s/issues?state=%s&labels=%s&per_page=%d&page=%d", g.Repo, url.QueryEscape(state), url.QueryEscape(label), perPage, page)
 		if err = g.get(ctx, path, &issues); err != nil {
-			err = fmt.Errorf("listing tickets labeled %q: %w", label, err)
+			err = fmt.Errorf("listing %s tickets labeled %q: %w", state, label, err)
 			return
 		}
 		for _, issue := range issues {
 			if issue.PullRequest == nil {
-				numbers = append(numbers, issue.Number)
+				tickets = append(tickets, issue.ticket())
 			}
 		}
 		if len(issues) < perPage {
-			slices.Sort(numbers)
+			slices.SortFunc(tickets, func(a, b Ticket) int { return a.Number - b.Number })
 			return
 		}
 	}

@@ -36,6 +36,9 @@ type Forge interface {
 	Peek(ctx context.Context, n int) (ticket Ticket, open bool, err error)
 	// ListLabeled returns the numbers of the open issues with label, ascending.
 	ListLabeled(ctx context.Context, label string) (numbers []int, err error)
+	// List returns the issues (no pull requests) in state (open, closed or
+	// all), with label unless it is empty, ascending, without comments.
+	List(ctx context.Context, label, state string) (tickets []Ticket, err error)
 	// Labels lists the names of the labels the repository has.
 	Labels(ctx context.Context) (names []string, err error)
 

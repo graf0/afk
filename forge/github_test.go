@@ -198,14 +198,16 @@ func (fake *fakeGitHub) mux() (handler http.Handler) {
 	mux.HandleFunc("GET /repos/o/r/issues", func(w http.ResponseWriter, r *http.Request) {
 		fake.mu.Lock()
 		defer fake.mu.Unlock()
-		if r.URL.Query().Get("state") != "open" {
+		query := r.URL.Query()
+		if !slices.Contains([]string{"open", "closed", "all"}, query.Get("state")) {
 			reply(w, http.StatusBadRequest, map[string]string{"message": "state"})
 			return
 		}
-		// Descending, pull requests included: ListLabeled sorts and filters.
+		// Descending, pull requests included: ListLabeled and List sort and filter.
 		var matching []*seedIssue
 		for _, issue := range fake.issues {
-			if issue.Open && slices.Contains(issue.Labels, r.URL.Query().Get("labels")) {
+			if (query.Get("state") == "all" || issue.Open == (query.Get("state") == "open")) &&
+				(query.Get("labels") == "" || slices.Contains(issue.Labels, query.Get("labels"))) {
 				matching = append(matching, issue)
 			}
 		}

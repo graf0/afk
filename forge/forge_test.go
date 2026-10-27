@@ -173,6 +173,39 @@ func testContractReads(t *testing.T, newFake newFakeForge) {
 		}
 	})
 
+	t.Run("List", func(t *testing.T) {
+		f, _ := forge(t)
+		numbersOf := func(label, state string) (numbers []int) {
+			tickets, err := f.List(t.Context(), label, state)
+			if err != nil {
+				t.Fatalf("List(%q, %q): %v", label, state, err)
+			}
+			for _, ticket := range tickets {
+				numbers = append(numbers, ticket.Number)
+			}
+			return
+		}
+		// No pull requests (#8), ascending.
+		for _, tc := range []struct {
+			label, state string
+			want         []int
+		}{
+			{"ready-for-agent", "open", []int{7, 11, 14}},
+			{"ready-for-agent", "closed", []int{9}},
+			{"ready-for-agent", "all", []int{7, 9, 11, 14}},
+			{"", "closed", []int{9, 13, 20}},
+			{"needs-triage", "open", []int{12}},
+			{"nothing", "all", nil},
+		} {
+			if got := numbersOf(tc.label, tc.state); !slices.Equal(got, tc.want) {
+				t.Errorf("List(%q, %q) = %v, want %v", tc.label, tc.state, got, tc.want)
+			}
+		}
+		if tickets, _ := f.List(t.Context(), "bug", "open"); len(tickets) != 1 || tickets[0].Title != "Do it" || !slices.Equal(tickets[0].Labels, []string{"bug", "ready-for-agent"}) {
+			t.Errorf("List(bug) = %+v", tickets)
+		}
+	})
+
 	t.Run("Labels", func(t *testing.T) {
 		f, _ := forge(t)
 		names, err := f.Labels(t.Context())

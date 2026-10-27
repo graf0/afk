@@ -166,7 +166,7 @@ func (fake *fakeGitea) mux() (handler http.Handler) {
 		query := r.URL.Query()
 		var listed []*seedIssue
 		for _, issue := range fake.issues {
-			ok := (query.Get("state") != "open" || issue.Open) &&
+			ok := (query.Get("state") == "all" || issue.Open == (query.Get("state") != "closed")) &&
 				(query.Get("type") != "issues" || !issue.IsPull) &&
 				(fake.ignoreLabels || query.Get("labels") == "" || slices.Contains(issue.Labels, query.Get("labels")))
 			if ok {

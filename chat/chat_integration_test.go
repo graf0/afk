@@ -4,6 +4,7 @@ package chat
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -51,6 +52,7 @@ public=$(curl -s -m 20 -o /dev/null -w '%{http_code}' https://example.com/ || tr
 private=$(curl -s -m 20 -o /dev/null -w '%{http_connect}' https://10.99.0.1/ || true)
 [ "$public" != 000 ] || fail "public host unreachable"
 [ "$private" = 403 ] || fail "private address not denied: $private"
+[ "$(afk-forge issue list --label bug)" = "#1  [bug]  Itest ticket" ] || fail "afk-forge issue list"
 echo first > session-marker
 echo work > work.txt && git add work.txt && git commit -qm "work in the chat"
 sync # the VM is destroyed (power off) later
@@ -148,6 +150,15 @@ git rev-parse HEAD`
 	}
 	if !strings.Contains(string(denials), "10.99.0.1") {
 		t.Errorf("egress denials = %q, want the private address", denials)
+	}
+
+	forgeLogs, _ := filepath.Glob(filepath.Join(paths.StateDir, m.Project, "logs", "chat-itest-*-forge.txt"))
+	var forgeLog []byte
+	if len(forgeLogs) == 1 {
+		forgeLog, _ = os.ReadFile(forgeLogs[0])
+	}
+	if !strings.Contains(string(forgeLog), `list label="bug" state=open: ok`) {
+		t.Errorf("forge log = %q, want the afk-forge call", forgeLog)
 	}
 
 	// The second Chat of the name is refused, before any VM.
@@ -301,10 +312,15 @@ git rev-parse HEAD`
 	gone("itest2", "chat-itest2", filepath.Join(machine.DefaultRoot, "chats", "itest2"))
 }
 
-// remoteOnly is a Forge of which Chat uses only the remote.
+// remoteOnly is a Forge of which Chat uses only the remote, and the one ticket
+// afk-forge lists.
 type remoteOnly struct {
 	forge.Forge
 	remote forge.Remote
 }
 
 func (f remoteOnly) Remote() (remote forge.Remote) { return f.remote }
+
+func (f remoteOnly) List(_ context.Context, label, state string) (tickets []forge.Ticket, err error) {
+	return []forge.Ticket{{Number: 1, Title: "Itest ticket", Labels: []string{"bug"}}}, nil
+}
