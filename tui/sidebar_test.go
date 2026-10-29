@@ -91,3 +91,25 @@ func TestSidebarInitialErrorAndClean(t *testing.T) {
 		t.Errorf("render keeps control characters: %q", got)
 	}
 }
+
+func TestSidebarRenderFactory(t *testing.T) {
+	s := newSidebar(func() ([]Entry, error) {
+		return []Entry{
+			{Name: "factory/a", Project: "p", Kind: KindFactory, ID: "a", Running: true, Title: "#12 fix 3m"},
+			{Name: "factory/b", Project: "p", Kind: KindFactory, ID: "b", Title: "#13 done", Exit: "exit 2"},
+		}, nil
+	}, actions{}, "", "factory/a")
+	want := "p\n> ● factory #12 fix 3m\n  ○ factory [exit 2] #13 done\n"
+	if got := s.render(); got != want {
+		t.Errorf("render:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestSidebarPartialList(t *testing.T) {
+	var opened []string
+	s := testSidebar("chat-a", &opened)
+	s.Update(entriesMsg{entries: []Entry{{Name: "chat-a"}}, err: errors.New("tmux down")})
+	if len(s.entries) != 1 || s.status != "tmux down" {
+		t.Errorf("entries %v, status %q", s.entries, s.status)
+	}
+}

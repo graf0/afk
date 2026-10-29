@@ -18,6 +18,8 @@ const (
 	modeChatMenu          // M-x on a Chat: export / remove / cancel
 	modeConfirmForce      // rm refused over unexported work: --force?
 	modeConfirmKill       // M-x on an abandoned Run: destroy the VM?
+	modeSelector          // M-F: the selector of the new Factory
+	modeConfirmStop       // M-x on a running Factory: interrupt it?
 )
 
 // op is what run does with an entry.
@@ -27,6 +29,9 @@ const (
 	opRemoveForce
 	opKill
 )
+
+// keyNewFactory is the key string of M-F, which tmux forwards.
+const keyNewFactory = "alt+shift+f"
 
 var errNoSelection = errors.New("no entry selected")
 
@@ -44,35 +49,62 @@ type resultMsg struct {
 // keyAction handles a key in the normal mode: the M-… shortcuts tmux forwards.
 func (s *sidebar) keyAction(key string) (cmd tea.Cmd) {
 	e, selected := s.selectedEntry()
-	if key != "alt+n" && !selected {
+	if key != "alt+n" && key != keyNewFactory && !selected {
 		s.notice = errNoSelection.Error()
 		return
 	}
 	switch key {
 	case "alt+n":
-		var target *Entry
-		if selected {
-			target = &e
-		}
-		project, err := projectFor(target, s.cwd)
-		if err != nil {
-			s.notice = err.Error()
-			return
-		}
-		s.dir, s.input = project, ""
-		cmd = s.enter(modeName, e)
+		cmd = s.startPrompt(modeName, e, selected)
+	case keyNewFactory:
+		cmd = s.startPrompt(modeSelector, e, selected)
 	case "alt+e":
 		cmd = s.run(e, opExport)
 	case "alt+x":
-		if e.Kind == machine.KindChat {
+		switch {
+		case e.Kind == machine.KindChat:
 			cmd = s.enter(modeChatMenu, e)
-		} else {
+		case e.Kind == KindFactory && e.Running:
+			cmd = s.enter(modeConfirmStop, e)
+		case e.Kind == KindFactory: // ended: nothing to lose
+			cmd = s.closeWindows(e, "closed")
+		default:
 			cmd = s.enter(modeConfirmKill, e)
 		}
 	case "alt+s":
+		if e.Kind == KindFactory {
+			s.notice = "a Factory has no shell; its Runs are in the VM list"
+			return
+		}
 		cmd = func() tea.Msg { return openedMsg{s.act.Shell(e)} }
 	}
 	return
+}
+
+// startPrompt opens the prompt m (the name of a Chat or the selector of a
+// Factory) for the Project of e when selected, else of the current directory.
+func (s *sidebar) startPrompt(m mode, e Entry, selected bool) (cmd tea.Cmd) {
+	var target *Entry
+	if selected {
+		target = &e
+	}
+	project, err := projectFor(target, s.cwd)
+	if err != nil {
+		s.notice = err.Error()
+		return
+	}
+	s.dir, s.input = project, ""
+	cmd = s.enter(m, e)
+	return
+}
+
+// editInput applies a key to the text typed in a prompt.
+func (s *sidebar) editInput(msg tea.KeyPressMsg) {
+	if msg.String() != "backspace" {
+		s.input += msg.Text
+	} else if r := []rune(s.input); len(r) > 0 {
+		s.input = string(r[:len(r)-1])
+	}
 }
 
 // modeKey handles a key while a prompt is open; s.target is the entry it was
@@ -91,12 +123,33 @@ func (s *sidebar) modeKey(msg tea.KeyPressMsg) (cmd tea.Cmd) {
 				return
 			}
 			cmd = tea.Sequence(s.leave(), func() tea.Msg { return openedMsg{s.act.NewChat(name, dir)} })
-		case "backspace":
-			if r := []rune(s.input); len(r) > 0 {
-				s.input = string(r[:len(r)-1])
-			}
 		default:
-			s.input += msg.Text
+			s.editInput(msg)
+		}
+	case modeSelector:
+		switch key {
+		case "esc":
+			cmd = s.leave()
+		case "enter":
+			selector, err := factorySelector(s.input)
+			if err != nil {
+				s.notice = err.Error()
+				return
+			}
+			dir := s.dir
+			cmd = tea.Sequence(s.leave(), func() tea.Msg { return openedMsg{s.act.NewFactory(dir, selector)} })
+		default:
+			s.editInput(msg)
+		}
+	case modeConfirmStop:
+		cmd = s.leave()
+		if key == "t" {
+			cmd = tea.Sequence(cmd, func() tea.Msg {
+				if err := s.act.Interrupt(e.Pane); err != nil {
+					return resultMsg{notice: err.Error()}
+				}
+				return resultMsg{notice: "interrupted " + e.ID}
+			})
 		}
 	case modeChatMenu:
 		switch key {
@@ -216,6 +269,10 @@ func (s *sidebar) promptText() (text string) {
 	switch s.mode {
 	case modeName:
 		text = "Nazwa Chatu: " + s.input + "▏ (Enter, Esc)"
+	case modeSelector:
+		text = "Selektor Factory [*]: " + s.input + "▏ (Enter, Esc)"
+	case modeConfirmStop:
+		text = fmt.Sprintf("Przerwać Factory %s (Ctrl-C; kolejne = twarde)? [t]ak / [n]ie", e.ID)
 	case modeChatMenu:
 		text = fmt.Sprintf("Chat %s: [e]ksportuj / [u]suń / [a]nuluj", e.ID)
 	case modeConfirmForce:

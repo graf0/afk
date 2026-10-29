@@ -14,19 +14,22 @@ import (
 
 	"github.com/graf0/afk/chat"
 	afkconfig "github.com/graf0/afk/config"
+	"github.com/graf0/afk/image"
 	"github.com/graf0/afk/machine"
 )
 
 // actions is what the sidebar does besides listing: tmux windows and `afk`
 // subcommands. Tests replace it.
 type actions struct {
-	Open    func(Entry) error
-	NewChat func(name, repo string) error // window running `afk chat new`, shown
-	Shell   func(Entry) error             // window running a shell in the VM, shown
-	Run     func(dir string, args ...string) (out string, code int, err error)
-	Detach  func(window string) error // ends the main pane (`afk chat attach`) and waits for it
-	Close   func(window string) error // selects home, kills the window
-	Focus   func(on bool)             // the keyboard goes to the sidebar pane for a prompt
+	Open       func(Entry) error
+	NewChat    func(name, repo string) error              // window running `afk chat new`, shown
+	NewFactory func(repo string, selector []string) error // window running `afk factory`, shown
+	Interrupt  func(pane string) error                    // Ctrl-C to the Factory pane (%N)
+	Shell      func(Entry) error                          // window running a shell in the VM, shown
+	Run        func(dir string, args ...string) (out string, code int, err error)
+	Detach     func(window string) error // ends the main pane (`afk chat attach`) and waits for it
+	Close      func(window string) error // selects home, kills the window
+	Focus      func(on bool)             // the keyboard goes to the sidebar pane for a prompt
 }
 
 // realActions runs the actions on the afk tmux server; subcommands are exe.
@@ -47,6 +50,31 @@ func realActions(ctx context.Context, exe string) (act actions) {
 			err = showWindow(ctx, vm, func() []string {
 				return windowArgs(exe, window{Name: vm, Current: vm, Dir: repo, Kind: string(machine.KindChat), Cmd: keepOnFailure(exe, "chat", "new", name)})
 			})
+			return
+		},
+		NewFactory: func(repo string, selector []string) (err error) {
+			cfg, err := afkconfig.Load(repo)
+			if err != nil {
+				err = fmt.Errorf("new Factory: %w", err)
+				return
+			}
+			project, err := image.ProjectName(cfg.Forge.Repo)
+			if err != nil {
+				err = fmt.Errorf("new Factory: %w", err)
+				return
+			}
+			// Millisecond ids: two Factories of a Project get two windows.
+			w, err := newFactoryWindow(exe, strconv.FormatInt(time.Now().UnixMilli(), 36), project, repo, selector)
+			if err != nil {
+				return
+			}
+			err = showWindow(ctx, w.Name, func() []string { return windowArgs(exe, w) })
+			return
+		},
+		Interrupt: func(pane string) (err error) {
+			if out, sendErr := tmux("send-keys", "-t", pane, "C-c"); sendErr != nil {
+				err = fmt.Errorf("interrupting the Factory in %s: %w: %s", pane, sendErr, out)
+			}
 			return
 		},
 		Shell: func(e Entry) (err error) {
@@ -163,6 +191,26 @@ func killArgs(e Entry) (args []string, err error) {
 		return
 	}
 	args = []string{"vm", "kill", e.Name}
+	return
+}
+
+// factorySelector turns what the user typed into the arguments of
+// `afk factory`: "*" (also for nothing) or ticket numbers, "#N" or "N". They
+// go to the command line as they are, so only numbers are let through.
+func factorySelector(input string) (selector []string, err error) {
+	fields := strings.Fields(input)
+	if len(fields) == 0 || len(fields) == 1 && fields[0] == "*" {
+		selector = []string{"*"}
+		return
+	}
+	for _, f := range fields {
+		n, convErr := strconv.Atoi(strings.TrimPrefix(f, "#"))
+		if convErr != nil || n <= 0 {
+			selector, err = nil, fmt.Errorf("selector: %q is no ticket number; use * or e.g. #12 #15", f)
+			return
+		}
+		selector = append(selector, strconv.Itoa(n))
+	}
 	return
 }
 

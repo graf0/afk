@@ -11,6 +11,10 @@ import (
 	"github.com/graf0/afk/machine"
 )
 
+// factoryPrefix starts the name of every Factory window; "/" is in no Chat or
+// Run name, and "shell/" is the other prefix.
+const factoryPrefix = "factory/"
+
 // openEntry shows the window of e in the afk tmux server, creating it first
 // when the Chat has none: the main pane runs `afk chat attach`, the sidebar
 // sits on its left. An abandoned Run gets a note; acting on it is a shell
@@ -20,26 +24,43 @@ func openEntry(ctx context.Context, exe string, e Entry) (err error) {
 		err = fmt.Errorf("opening %q: unusable name in the machine metadata", e.Name)
 		return
 	}
-	err = showWindow(ctx, e.Name, func() []string { return openArgs(exe, e) })
+	var create func() []string // a Factory window is made by M-F only
+	if e.Kind != KindFactory {
+		create = func() []string { return openArgs(exe, e) }
+	}
+	err = showWindow(ctx, e.Name, create)
 	return
 }
 
 // showWindow selects the window called name; a missing one is created first
-// with the tmux commands of create.
+// with the tmux commands of create (nil: the window must exist).
 func showWindow(ctx context.Context, name string, create func() []string) (err error) {
 	out, err := exec.CommandContext(ctx, "tmux", tmuxArgs("list-windows", "-t", session, "-F", "#{window_name}")...).Output()
 	if err != nil {
 		err = fmt.Errorf("listing tmux windows: %w", err)
 		return
 	}
-	var args []string
-	if !strings.Contains("\n"+string(out), "\n"+name+"\n") {
-		args = append(create(), ";")
+	args, err := showArgs(string(out), name, create)
+	if err != nil {
+		return
 	}
-	args = append(args, "select-window", "-t", windowTarget(name))
 	if out, err = exec.CommandContext(ctx, "tmux", tmuxArgs(args...)...).CombinedOutput(); err != nil {
 		err = fmt.Errorf("opening window %s: %w: %s", name, err, strings.TrimSpace(string(out)))
 	}
+	return
+}
+
+// showArgs is the tmux command selecting the window name, given the names of
+// the existing windows in list, one per line; create makes a missing one.
+func showArgs(list, name string, create func() []string) (args []string, err error) {
+	if !strings.Contains("\n"+list, "\n"+name+"\n") {
+		if create == nil {
+			err = fmt.Errorf("window %s is gone", name)
+			return
+		}
+		args = append(create(), ";")
+	}
+	args = append(args, "select-window", "-t", windowTarget(name))
 	return
 }
 
@@ -67,7 +88,12 @@ func openArgs(exe string, e Entry) (args []string) {
 type window struct {
 	Name, Current, Dir, Project, Kind string
 	Cmd                               []string
+	Options                           []option // applied to the main pane's window or pane
+	PaneTitle                         string   // the main pane's title until the program sets its own
 }
+
+// option is a tmux option of a window (Scope "-w") or of the main pane ("-p").
+type option struct{ Scope, Name, Value string }
 
 // windowArgs creates w in the background, the sidebar on its left.
 func windowArgs(exe string, w window) (args []string) {
@@ -84,8 +110,41 @@ func windowArgs(exe string, w window) (args []string) {
 	if safeArg(w.Project) {
 		args = append(args, ";", "set-option", "-w", "-t", target, "@afk-project", w.Project)
 	}
+	for _, o := range w.Options {
+		args = append(args, ";", "set-option", o.Scope, "-t", target, o.Name, o.Value)
+	}
+	if w.PaneTitle != "" {
+		args = append(args, ";", "select-pane", "-t", target, "-T", w.PaneTitle)
+	}
 	args = append(args, ";")
 	args = append(args, sidebarSplit(target, exe, w.Current)...)
+	return
+}
+
+// newFactoryWindow is the window of `afk factory selector...` (see
+// factorySelector) of the Project in repo, called factoryPrefix+id. The
+// options make it a Factory for the sidebar, keep its pane after the end
+// (tmux shows the exit code) and show the pane title (OSC 2) on a border,
+// not on the sidebar's.
+func newFactoryWindow(exe, id, project, repo string, selector []string) (w window, err error) {
+	_, ok := safeDir(repo)
+	if !ok || !safeArg(project) || !safeArg(id) {
+		err = fmt.Errorf("factory window in %q (Project %q): unusable path or name", repo, project)
+		return
+	}
+	name := factoryPrefix + id
+	w = window{
+		Name: name, Current: name, Dir: repo, Project: project, Kind: string(KindFactory),
+		Cmd:       append([]string{exe, "factory"}, selector...),
+		PaneTitle: "afk factory", // not the host name tmux starts with
+		Options: []option{
+			{"-w", "@afk-repo", repo},
+			{"-w", "pane-border-status", "top"},
+			{"-w", "pane-border-format", "#{?pane_at_left, ,#{pane_title}}"},
+			{"-p", "@afk-main", "1"},       // how the sidebar finds the pane, whatever its index
+			{"-p", "remain-on-exit", "on"}, // the sidebar pane is not kept
+		},
+	}
 	return
 }
 

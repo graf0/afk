@@ -74,3 +74,16 @@ func TestWindowArgsForShellAndNewChat(t *testing.T) {
 		t.Errorf("shell window has a kind: %s", got)
 	}
 }
+
+func TestFactorySelector(t *testing.T) {
+	for in, want := range map[string][]string{"": {"*"}, " * ": {"*"}, "#12 15": {"12", "15"}, "007": {"7"}} {
+		if got, err := factorySelector(in); err != nil || !slices.Equal(got, want) {
+			t.Errorf("factorySelector(%q) = %v, %v; want %v", in, got, err, want)
+		}
+	}
+	for _, in := range []string{"x", "* 1", "0", "-1", "#", "1;", "$(id)", "--force", "1 #"} {
+		if got, err := factorySelector(in); err == nil || got != nil {
+			t.Errorf("factorySelector(%q) = %v, %v; want an error", in, got, err)
+		}
+	}
+}

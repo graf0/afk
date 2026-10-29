@@ -29,6 +29,7 @@ func TestStartArgs(t *testing.T) {
 		"bind-key -n M-e send-keys -t :.0 M-e",
 		"bind-key -n M-x send-keys -t :.0 M-x",
 		"bind-key -n M-s send-keys -t :.0 M-s",
+		"bind-key -n M-F send-keys -t :.0 M-F",
 		"split-window -hbd -l 32 /bin/afk sidebar",
 	} {
 		if !strings.Contains(line, want) {

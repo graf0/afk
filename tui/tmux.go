@@ -109,7 +109,7 @@ func startArgs(exe string) (args []string) {
 }
 
 // config is the tmux configuration of afk, one command per element. M-Up,
-// M-Down, M-n, M-e, M-x and M-s need no prefix; they go to the sidebar (pane 0
+// M-Down, M-n, M-F, M-e, M-x and M-s need no prefix; they go to the sidebar (pane 0
 // of every window), which moves the selection, switches the window or acts on
 // the selected entry. Other keys reach the
 // Agent. The status line is off, the window is the sidebar and the Agent.
@@ -127,6 +127,7 @@ func config() (cmds [][]string) {
 		{"bind-key", "-n", "M-e", "send-keys", "-t", ":.0", "M-e"},
 		{"bind-key", "-n", "M-x", "send-keys", "-t", ":.0", "M-x"},
 		{"bind-key", "-n", "M-s", "send-keys", "-t", ":.0", "M-s"},
+		{"bind-key", "-n", "M-F", "send-keys", "-t", ":.0", "M-F"},
 	}
 	return
 }

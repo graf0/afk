@@ -80,7 +80,7 @@ func (s *sidebar) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 			cmd = s.move(-1)
 		case "down", "alt+down":
 			cmd = s.move(1)
-		case "alt+n", "alt+e", "alt+x", "alt+s":
+		case "alt+n", "alt+e", "alt+x", "alt+s", keyNewFactory:
 			cmd = s.keyAction(key)
 		}
 	case resultMsg:
@@ -97,7 +97,8 @@ func (s *sidebar) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 		s.status = ""
 		if msg.err != nil {
 			s.status = msg.err.Error()
-		} else {
+		}
+		if msg.err == nil || msg.entries != nil { // a partial list is still the list
 			s.entries = msg.entries
 			s.cursor = indexOf(s.entries, cmp.Or(s.selected(), s.own)) // own may have appeared only now
 		}
@@ -156,7 +157,7 @@ func (s *sidebar) View() (view tea.View) {
 func (s *sidebar) render() (out string) {
 	var b strings.Builder
 	if len(s.entries) == 0 {
-		b.WriteString("no Chats or abandoned Runs\n")
+		b.WriteString("no Chats, Factories or abandoned Runs\n")
 	}
 	var project string
 	for i, e := range s.entries {
@@ -171,7 +172,7 @@ func (s *sidebar) render() (out string) {
 		if e.Running {
 			state = "●"
 		}
-		fmt.Fprintf(&b, "%s\n", fit(clean(fmt.Sprintf("%s %s %s %s", mark, state, e.Kind, e.ID)), s.width))
+		fmt.Fprintf(&b, "%s\n", fit(clean(fmt.Sprintf("%s %s %s", mark, state, entryLabel(e))), s.width))
 	}
 	for _, text := range []string{s.status, s.notice, s.promptText()} {
 		if text != "" {
@@ -182,10 +183,23 @@ func (s *sidebar) render() (out string) {
 	return
 }
 
+// entryLabel is the text of an entry after its marks: kind and id; a Factory
+// shows its header, once ended with the exit code.
+func entryLabel(e Entry) (label string) {
+	label = fmt.Sprintf("%s %s", e.Kind, e.ID)
+	if e.Kind == KindFactory {
+		label = "factory " + cmp.Or(e.Title, e.ID)
+		if !e.Running {
+			label = fmt.Sprintf("factory [%s] %s", e.Exit, cmp.Or(e.Title, e.ID))
+		}
+	}
+	return
+}
+
 // RunSidebar runs the bubbletea program of the sidebar until it is quit.
 func RunSidebar(ctx context.Context, exe, own string) (err error) {
 	cwd, _ := os.Getwd()
-	model := newSidebar(listEntries, realActions(ctx, exe), cwd, own)
+	model := newSidebar(func() ([]Entry, error) { return listEntries(ctx) }, realActions(ctx, exe), cwd, own)
 	_, err = tea.NewProgram(model, tea.WithContext(ctx)).Run()
 	return
 }

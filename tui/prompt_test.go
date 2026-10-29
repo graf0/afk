@@ -17,20 +17,26 @@ import (
 
 // calls records what the sidebar did, in order, in events.
 type calls struct {
-	events  []string
-	runs    []string
-	closed  []string
-	chats   []string
-	shells  []string
-	focus   []bool
-	runOut  string
-	refused bool // a rm without --force is refused with exit code 3
+	events    []string
+	runs      []string
+	closed    []string
+	chats     []string
+	factories []string
+	shells    []string
+	focus     []bool
+	runOut    string
+	refused   bool // a rm without --force is refused with exit code 3
 }
 
 func (c *calls) actions() actions {
 	return actions{
 		NewChat: func(name, repo string) error { c.chats = append(c.chats, name+"@"+repo); return nil },
-		Shell:   func(e Entry) error { c.shells = append(c.shells, e.Name); return nil },
+		NewFactory: func(repo string, selector []string) error {
+			c.factories = append(c.factories, repo+" "+strings.Join(selector, ","))
+			return nil
+		},
+		Interrupt: func(w string) error { c.events = append(c.events, "interrupt "+w); return nil },
+		Shell:     func(e Entry) error { c.shells = append(c.shells, e.Name); return nil },
 		Run: func(dir string, args ...string) (string, int, error) {
 			c.runs = append(c.runs, dir+" "+strings.Join(args, " "))
 			c.events = append(c.events, "run "+strings.Join(args, " "))
@@ -214,5 +220,64 @@ func TestPromptRender(t *testing.T) {
 		if len([]rune(line)) > 20 {
 			t.Errorf("line %q wider than the pane", line)
 		}
+	}
+}
+
+func shiftAlt(r rune) tea.Key { return tea.Key{Code: r, Mod: tea.ModAlt | tea.ModShift} }
+
+func TestNewFactory(t *testing.T) {
+	c := &calls{}
+	s := promptSidebar(t, c, "/nonexistent", "")
+	drive(s, shiftAlt('f'))
+	if s.mode != modeNone || !strings.Contains(s.notice, "no Project") {
+		t.Errorf("no Project: mode %d, notice %q", s.mode, s.notice)
+	}
+	repo := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repo, ".afk.toml"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s = promptSidebar(t, c, repo, "afk-chat-x")
+	drive(s, shiftAlt('f'), char('x'), tea.Key{Code: tea.KeyEnter})
+	if s.mode != modeSelector || !strings.Contains(s.notice, "selector") {
+		t.Errorf("bad selector: mode %d, notice %q", s.mode, s.notice)
+	}
+	drive(s, tea.Key{Code: tea.KeyBackspace}, tea.Key{Code: tea.KeyEnter})
+	if !slices.Equal(c.factories, []string{repo + " *"}) || s.mode != modeNone {
+		t.Errorf("default selector: %v, mode %d", c.factories, s.mode)
+	}
+	drive(s, shiftAlt('f'), char('#'), char('1'), char('2'), char(' '), char('1'), char('5'), tea.Key{Code: tea.KeyEnter})
+	if !slices.Equal(c.factories, []string{repo + " *", repo + " 12,15"}) {
+		t.Errorf("selector: %v", c.factories)
+	}
+	drive(s, shiftAlt('f'), tea.Key{Code: tea.KeyEscape})
+	if s.mode != modeNone || len(c.factories) != 2 {
+		t.Errorf("esc: mode %d, %v", s.mode, c.factories)
+	}
+}
+
+func TestFactoryStop(t *testing.T) {
+	c := &calls{}
+	entries := []Entry{
+		{Name: "factory/a", Kind: KindFactory, ID: "a", Pane: "%7", Running: true},
+		{Name: "factory/b", Kind: KindFactory, ID: "b", Exit: "exit 1"},
+	}
+	s := newSidebar(func() ([]Entry, error) { return entries, nil }, c.actions(), "", "factory/a")
+	drive(s, alt('x'), char('n'))
+	if len(c.events) != 0 || s.mode != modeNone {
+		t.Errorf("declined: %v mode %d", c.events, s.mode)
+	}
+	drive(s, alt('x'), char('t'))
+	if !slices.Equal(c.events, []string{"interrupt %7"}) || len(c.closed) != 0 {
+		t.Errorf("running: events %v closed %v", c.events, c.closed)
+	}
+	s = newSidebar(func() ([]Entry, error) { return entries, nil }, c.actions(), "", "factory/b")
+	c.events = nil
+	drive(s, alt('x'))
+	if !slices.Equal(c.closed, []string{"shell/factory/b", "factory/b"}) || len(c.events) != 2 {
+		t.Errorf("ended: events %v closed %v", c.events, c.closed)
+	}
+	drive(s, alt('s'))
+	if len(c.shells) != 0 || !strings.Contains(s.notice, "no shell") {
+		t.Errorf("shell: %v %q", c.shells, s.notice)
 	}
 }
