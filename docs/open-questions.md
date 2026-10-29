@@ -26,7 +26,7 @@ Niesprawdzone albo nierozstrzygnięte. Po rozstrzygnięciu: przenieść wynik do
 
 - [ ] Czy skille `synced/` konta claude.ai synchronizują się same w VM przy tokenie z `setup-token` (jeśli tak — pojawią się w Chat/Factory mimo ADR-0009).
 - [ ] „Pack bomb” z VM: bundle wyniku ma limit 1 GiB, ale rozmiar po rozpakowaniu w Quarantine repo (delty, duże bloby) nie jest ograniczony — limit na obiekty (`fetch.unpackLimit`/`transfer` + kontrola rozmiaru), czy wystarczy kontrola miejsca na dysku?
-- [ ] Czy `M-…` dochodzi do tmux w popularnych terminalach (Alt jako Meta; na macOS wymaga „Option as Meta”). Kolizje z Claude Code rozstrzygnięte w `workflow.md` (TUI).
+- [ ] Czy `M-…` dochodzi do tmux w popularnych terminalach (Alt jako Meta; na macOS wymaga „Option as Meta”). Kolizje z Claude Code rozstrzygnięte w `workflow.md` (TUI). **Do sprawdzenia ręcznie (#51): `M-↑/↓` w co najmniej dwóch terminalach — wynik jeszcze nie wpisany.**
 
 ## go-libvirt
 

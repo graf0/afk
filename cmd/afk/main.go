@@ -87,6 +87,10 @@ func runCommand(ctx context.Context, abort <-chan struct{}, args []string, dir s
 		err = runChat(ctx, args[1:], dir, stdout)
 	case args[0] == "vm":
 		err = runVM(ctx, args[1:], dir, stdout)
+	case args[0] == "tui": // all Projects: no config of the current one
+		err = runTUI(ctx, args[1:])
+	case args[0] == "sidebar":
+		err = runSidebar(ctx, args[1:])
 	default:
 		err = fmt.Errorf("unknown command %q", args[0])
 	}
