@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
 	"strconv"
 	"strings"
+
+	"golang.org/x/term"
 
 	"github.com/graf0/afk/agent"
 	"github.com/graf0/afk/forge"
@@ -37,6 +40,10 @@ func runFactory(ctx context.Context, args []string, dir string, stdout io.Writer
 	gitForge, err := forge.New(ctx, base.Config, paths.StateDir)
 	if err != nil {
 		return
+	}
+	// OSC 2 only on a terminal: never into logs or redirections.
+	if file, ok := stdout.(*os.File); ok && term.IsTerminal(int(file.Fd())) {
+		stdout = run.NewTitle(file)
 	}
 	factory, err := run.NewFactory(ctx, base, gitForge, paths, claudeToken, selector, stdout)
 	if err != nil {

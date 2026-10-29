@@ -219,6 +219,7 @@ func (s *specRun) runChild(ctx context.Context, child forge.Ticket) (err error) 
 	r := s.run
 	r.Ticket, r.spec = child, &s.Ticket
 	s.say("child #%d %s", child.Number, agent.Sanitize(child.Title))
+	titleOf(s.Out).begin(fmt.Sprintf("#%d %s", child.Number, child.Title))
 	done, err := s.onBranch(ctx, child)
 	if err != nil || done {
 		if done {
@@ -351,6 +352,7 @@ func (s *specRun) finish(ctx context.Context) (err error) {
 	}
 	r := s.run
 	s.say("spec #%d: code review of %s", s.Ticket.Number, s.branch)
+	titleOf(s.Out).begin(fmt.Sprintf("#%d %s (review)", s.Ticket.Number, s.Ticket.Title))
 	logPath, err := r.openLog(s.branch + "-review")
 	if err != nil {
 		return
