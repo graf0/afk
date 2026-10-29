@@ -1,6 +1,8 @@
 package chat
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -95,5 +97,12 @@ func TestRemoveRefusals(t *testing.T) {
 	}
 	if _, err = os.Stat(chatDir); err != nil {
 		t.Errorf("a refused Remove touched the state: %v", err)
+	}
+}
+
+func TestForceRefusalIs(t *testing.T) {
+	err := fmt.Errorf("wrapped: %w", forceRefusal{errors.New("would lose x, use --force")})
+	if !errors.Is(err, ErrNeedsForce) || errors.Is(errors.New("in use (PID 1)"), ErrNeedsForce) {
+		t.Error("ErrNeedsForce matches wrongly")
 	}
 }

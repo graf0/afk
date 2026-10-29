@@ -20,42 +20,72 @@ func openEntry(ctx context.Context, exe string, e Entry) (err error) {
 		err = fmt.Errorf("opening %q: unusable name in the machine metadata", e.Name)
 		return
 	}
-	target := session + ":=" + e.Name
+	err = showWindow(ctx, e.Name, func() []string { return openArgs(exe, e) })
+	return
+}
+
+// showWindow selects the window called name; a missing one is created first
+// with the tmux commands of create.
+func showWindow(ctx context.Context, name string, create func() []string) (err error) {
 	out, err := exec.CommandContext(ctx, "tmux", tmuxArgs("list-windows", "-t", session, "-F", "#{window_name}")...).Output()
 	if err != nil {
 		err = fmt.Errorf("listing tmux windows: %w", err)
 		return
 	}
 	var args []string
-	if !strings.Contains("\n"+string(out), "\n"+e.Name+"\n") {
-		args = append(openArgs(exe, e, target), ";")
+	if !strings.Contains("\n"+string(out), "\n"+name+"\n") {
+		args = append(create(), ";")
 	}
-	args = append(args, "select-window", "-t", target)
+	args = append(args, "select-window", "-t", windowTarget(name))
 	if out, err = exec.CommandContext(ctx, "tmux", tmuxArgs(args...)...).CombinedOutput(); err != nil {
-		err = fmt.Errorf("opening window %s: %w: %s", e.Name, err, strings.TrimSpace(string(out)))
+		err = fmt.Errorf("opening window %s: %w: %s", name, err, strings.TrimSpace(string(out)))
 	}
 	return
 }
 
-// openArgs creates the window of e (called target) in the background: the
-// main pane, the options saying what it is, and the sidebar on its left.
-func openArgs(exe string, e Entry, target string) (args []string) {
-	args = []string{"new-window", "-d", "-t", session + ":", "-n", e.Name}
-	// The repo comes from libvirt metadata and tmux expands formats in -c.
-	if repo, ok := safeDir(e.Repo); ok {
-		args = append(args, "-c", repo)
+// windowTarget is the tmux target of the window called name, exactly.
+func windowTarget(name string) (target string) {
+	target = session + ":=" + name
+	return
+}
+
+// openArgs creates the window of e in the background: the main pane, the
+// options saying what it is, and the sidebar on its left.
+func openArgs(exe string, e Entry) (args []string) {
+	cmd := []string{exe, "chat", "attach", e.ID}
+	if e.Kind != machine.KindChat {
+		cmd = []string{"sh", "-c", `echo "Run $0 left in its VM: afk vm shell $0 / afk vm kill $0"; exec tail -f /dev/null`, e.Name}
 	}
-	if e.Kind == machine.KindChat {
-		args = append(args, exe, "chat", "attach", e.ID)
-	} else {
-		args = append(args, "sh", "-c", `echo "Run $0 left in its VM: afk vm shell $0 / afk vm kill $0"; exec tail -f /dev/null`, e.Name)
+	args = windowArgs(exe, window{Name: e.Name, Current: e.Name, Dir: e.Repo, Project: e.Project, Kind: string(e.Kind), Cmd: cmd})
+	return
+}
+
+// window describes a tmux window of afk: its main pane runs Cmd in Dir, its
+// sidebar shows the entry Current; Kind and Project, when not empty, are set
+// as the options @afk-kind and @afk-project. The strings come from libvirt
+// metadata or user input.
+type window struct {
+	Name, Current, Dir, Project, Kind string
+	Cmd                               []string
+}
+
+// windowArgs creates w in the background, the sidebar on its left.
+func windowArgs(exe string, w window) (args []string) {
+	target := windowTarget(w.Name)
+	args = []string{"new-window", "-d", "-t", session + ":", "-n", w.Name}
+	// tmux expands formats in -c.
+	if safe, ok := safeDir(w.Dir); ok {
+		args = append(args, "-c", safe)
 	}
-	args = append(args, ";", "set-option", "-w", "-t", target, "@afk-kind", string(e.Kind))
-	if safeArg(e.Project) {
-		args = append(args, ";", "set-option", "-w", "-t", target, "@afk-project", e.Project)
+	args = append(args, w.Cmd...)
+	if w.Kind != "" {
+		args = append(args, ";", "set-option", "-w", "-t", target, "@afk-kind", w.Kind)
+	}
+	if safeArg(w.Project) {
+		args = append(args, ";", "set-option", "-w", "-t", target, "@afk-project", w.Project)
 	}
 	args = append(args, ";")
-	args = append(args, sidebarSplit(target, exe, e.Name)...)
+	args = append(args, sidebarSplit(target, exe, w.Current)...)
 	return
 }
 

@@ -15,7 +15,7 @@ import (
 	"github.com/graf0/afk/run"
 )
 
-const chatUsage = "usage: afk chat new <name> [--model <model>] [--effort <low|medium|high|xhigh|max>] | afk chat attach <name> | afk chat export <name> | afk chat rm [--force] <name> | afk chat list"
+const chatUsage = "usage: afk chat new <name> [--model <model>] [--effort <low|medium|high|xhigh|max>] | afk chat attach <name> | afk chat export <name> | afk chat shell <name> | afk chat rm [--force] <name> | afk chat list"
 
 // runChat executes `afk chat <subcommand>`.
 func runChat(ctx context.Context, args []string, dir string, stdout io.Writer) (err error) {
@@ -38,6 +38,12 @@ func runChat(ctx context.Context, args []string, dir string, stdout io.Writer) (
 			return
 		}
 		err = chatExport(ctx, args[1], dir, stdout)
+	case "shell":
+		if len(args) != 2 {
+			err = errors.New(chatUsage)
+			return
+		}
+		err = chatShell(ctx, args[1], dir, stdout)
 	case "rm":
 		err = chatRm(ctx, args[1:], dir, stdout)
 	case "list":
@@ -124,6 +130,23 @@ func chatExport(ctx context.Context, name string, dir string, stdout io.Writer) 
 		return
 	}
 	err = chat.Export(ctx, chat.Options{Base: base, Name: name, Paths: paths, Forge: gitForge, Out: stdout})
+	return
+}
+
+// chatShell opens a shell in the VM of the Chat name.
+func chatShell(ctx context.Context, name, dir string, stdout io.Writer) (err error) {
+	if err = chat.ValidateName(name); err != nil {
+		return
+	}
+	paths, err := image.DefaultPaths()
+	if err != nil {
+		return
+	}
+	base, err := run.ReadBase(ctx, dir)
+	if err != nil {
+		return
+	}
+	err = chat.Shell(ctx, chat.Options{Base: base, Name: name, Paths: paths, Out: stdout})
 	return
 }
 

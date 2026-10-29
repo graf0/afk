@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -35,6 +36,9 @@ func main() {
 		// Config errors come one per line; each line gets the prefix.
 		for line := range strings.SplitSeq(strings.TrimSuffix(err.Error(), "\n"), "\n") {
 			fmt.Fprintf(os.Stderr, "%s: %s\n", name, line)
+		}
+		if errors.Is(err, chat.ErrNeedsForce) {
+			os.Exit(chat.ExitNeedsForce) // the TUI asks about --force
 		}
 		os.Exit(1)
 	}

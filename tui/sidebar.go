@@ -1,8 +1,10 @@
 package tui
 
 import (
+	"cmp"
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 	"unicode"
@@ -17,12 +19,19 @@ const refreshEvery = 3 * time.Second
 // window shows and open that entry's window, whose own sidebar starts on it.
 type sidebar struct {
 	list    func() ([]Entry, error)
-	open    func(Entry) error
+	act     actions
+	cwd     string // directory of the pane: the Project of M-n without a selection
 	own     string // the entry this window shows, empty in the home window
 	entries []Entry
 	cursor  int // index in entries; -1 when nothing is selected
 	status  string
 	width   int
+
+	mode   mode
+	target Entry  // the entry a prompt (not modeName) was opened for
+	input  string // the name typed in modeName
+	dir    string // the Project directory of the Chat being named
+	notice string // result of the last action; stays until the next key
 }
 
 type (
@@ -35,8 +44,8 @@ type (
 )
 
 // newSidebar makes a sidebar of list showing the entry own ("" for none).
-func newSidebar(list func() ([]Entry, error), open func(Entry) error, own string) (s *sidebar) {
-	s = &sidebar{list: list, open: open, own: own}
+func newSidebar(list func() ([]Entry, error), act actions, cwd, own string) (s *sidebar) {
+	s = &sidebar{list: list, act: act, cwd: cwd, own: own}
 	var err error
 	if s.entries, err = list(); err != nil {
 		s.status = err.Error()
@@ -61,11 +70,23 @@ func (s *sidebar) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 	case tea.WindowSizeMsg:
 		s.width = msg.Width
 	case tea.KeyPressMsg:
-		switch msg.String() {
+		if s.mode != modeNone {
+			cmd = s.modeKey(msg)
+			break
+		}
+		s.notice = ""
+		switch key := msg.String(); key {
 		case "up", "alt+up":
 			cmd = s.move(-1)
 		case "down", "alt+down":
 			cmd = s.move(1)
+		case "alt+n", "alt+e", "alt+x", "alt+s":
+			cmd = s.keyAction(key)
+		}
+	case resultMsg:
+		s.notice = msg.notice
+		if msg.askForce {
+			cmd = s.enter(modeConfirmForce, s.target)
 		}
 	case tickMsg:
 		cmd = func() tea.Msg {
@@ -78,7 +99,7 @@ func (s *sidebar) Update(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 			s.status = msg.err.Error()
 		} else {
 			s.entries = msg.entries
-			s.cursor = indexOf(s.entries, s.selected())
+			s.cursor = indexOf(s.entries, cmp.Or(s.selected(), s.own)) // own may have appeared only now
 		}
 		cmd = s.tick() // after the read, so slow libvirt never overlaps it
 	case openedMsg:
@@ -98,6 +119,14 @@ func (s *sidebar) selected() (name string) {
 	return
 }
 
+// selectedEntry is the entry under the cursor.
+func (s *sidebar) selectedEntry() (e Entry, ok bool) {
+	if ok = s.cursor >= 0 && s.cursor < len(s.entries); ok {
+		e = s.entries[s.cursor]
+	}
+	return
+}
+
 // move opens the neighbour entry (none shown: the first for Down, the last
 // for Up); at the ends nothing happens.
 func (s *sidebar) move(delta int) (cmd tea.Cmd) {
@@ -112,7 +141,7 @@ func (s *sidebar) move(delta int) (cmd tea.Cmd) {
 		return
 	}
 	entry := s.entries[next]
-	cmd = func() tea.Msg { return openedMsg{s.open(entry)} }
+	cmd = func() tea.Msg { return openedMsg{s.act.Open(entry)} }
 	return
 }
 
@@ -144,8 +173,10 @@ func (s *sidebar) render() (out string) {
 		}
 		fmt.Fprintf(&b, "%s\n", fit(clean(fmt.Sprintf("%s %s %s %s", mark, state, e.Kind, e.ID)), s.width))
 	}
-	if s.status != "" {
-		fmt.Fprintf(&b, "\n%s", fit(clean(s.status), s.width))
+	for _, text := range []string{s.status, s.notice, s.promptText()} {
+		if text != "" {
+			fmt.Fprintf(&b, "\n%s\n", wrap(clean(text), s.width))
+		}
 	}
 	out = b.String()
 	return
@@ -153,7 +184,8 @@ func (s *sidebar) render() (out string) {
 
 // RunSidebar runs the bubbletea program of the sidebar until it is quit.
 func RunSidebar(ctx context.Context, exe, own string) (err error) {
-	model := newSidebar(listEntries, func(e Entry) error { return openEntry(ctx, exe, e) }, own)
+	cwd, _ := os.Getwd()
+	model := newSidebar(listEntries, realActions(ctx, exe), cwd, own)
 	_, err = tea.NewProgram(model, tea.WithContext(ctx)).Run()
 	return
 }
@@ -174,6 +206,24 @@ func fit(line string, width int) (cut string) {
 	if r := []rune(line); width > 0 && len(r) > width {
 		cut = string(r[:width])
 	}
+	return
+}
+
+// wrap breaks text into lines of width runes (no break when width is unknown).
+func wrap(text string, width int) (wrapped string) {
+	if width <= 0 {
+		return text
+	}
+	var lines []string
+	for line := range strings.SplitSeq(text, "\n") {
+		r := []rune(line)
+		for len(r) > width {
+			lines = append(lines, string(r[:width]))
+			r = r[width:]
+		}
+		lines = append(lines, string(r))
+	}
+	wrapped = strings.Join(lines, "\n")
 	return
 }
 

@@ -18,7 +18,8 @@ func testSidebar(current string, opened *[]string) *sidebar {
 	}
 	return newSidebar(
 		func() ([]Entry, error) { return entries, nil },
-		func(e Entry) error { *opened = append(*opened, e.Name); return nil },
+		actions{Open: func(e Entry) error { *opened = append(*opened, e.Name); return nil }},
+		"",
 		current,
 	)
 }
@@ -81,7 +82,7 @@ func TestSidebarTickWaitsForRead(t *testing.T) {
 }
 
 func TestSidebarInitialErrorAndClean(t *testing.T) {
-	s := newSidebar(func() ([]Entry, error) { return nil, errors.New("no libvirt") }, nil, "")
+	s := newSidebar(func() ([]Entry, error) { return nil, errors.New("no libvirt") }, actions{}, "", "")
 	if s.status != "no libvirt" {
 		t.Errorf("status %q", s.status)
 	}

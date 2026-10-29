@@ -69,7 +69,7 @@ Strumień Agenta (stream-json) idzie do pliku logu w `~/.local/state/afk/<projec
 
 ## Chat
 
-`afk chat new <nazwa> [--model …] [--effort …]`, `attach <nazwa>`, `export <nazwa>`, `rm [--force] <nazwa>`, `list`. Nazwa wymagana: `[a-z0-9-]{1,32}`, nie zaczyna się od `-`, unikalna w Project; Chat o tej nazwie albo branch `chat-<nazwa>` na remote → odmowa przy tworzeniu.
+`afk chat new <nazwa> [--model …] [--effort …]`, `attach <nazwa>`, `export <nazwa>`, `shell <nazwa>` (bash w VM z tym samym Egress proxy, bez `afk-forge`, bez blokady Chat), `rm [--force] <nazwa>`, `list`. Nazwa wymagana: `[a-z0-9-]{1,32}`, nie zaczyna się od `-`, unikalna w Project; Chat o tej nazwie albo branch `chat-<nazwa>` na remote → odmowa przy tworzeniu.
 
 - Własna, długo żyjąca Sandbox VM; kod to snapshot gałęzi bazowej z chwili utworzenia, bez synchronizacji (świeży stan = nowy Chat). `setup` i `env` Tooli jak w Run (log `<log>-setup.txt`).
 - Claude Code interaktywnie na pty po ssh, `--dangerously-skip-permissions`; model z `[agent]` (do nadpisania `--model`), effort tylko flagą `--effort` (`claude --effort`); oba w metadanych VM. Brak Base image albo nieaktualny → budowany jak w Factory. Porażka przed startem `claude` usuwa VM, stan i refy Chat (zostają logi); po starcie Chat zostaje zawsze.
@@ -96,7 +96,7 @@ Na żądanie człowieka, wielokrotnie, bez `attach` (własne ssh; wyłączona VM
 
 ### Zamknięcie
 
-`afk chat rm [--force] <nazwa>` niszczy VM (domena, sieć, filtr, overlay), refy Quarantine `chat-<nazwa>` i stan Chat (`snapshot.json`, blokada). Logi i branch `chat-<nazwa>` na remote zostają. Bierze blokadę Chat: trzymana przez `attach` → odmowa z PID właściciela, także z `--force`.
+`afk chat rm [--force] <nazwa>` niszczy VM (domena, sieć, filtr, overlay), refy Quarantine `chat-<nazwa>` i stan Chat (`snapshot.json`, blokada). Logi i branch `chat-<nazwa>` na remote zostają. Bierze blokadę Chat: trzymana przez `attach` → odmowa z PID właściciela, także z `--force`.  Odmowy, które `--force` znosi, kończą się kodem wyjścia 3 (TUI pyta wtedy o `--force`).
 
 Bez `--force` odmawia, gdy w VM są niezacommitowane zmiany (także pliki nieśledzone) albo `HEAD` ma commity nieosiągalne z ostatniego eksportu (`snapshot.json`), a bez eksportu z bazy snapshotu (ref bazy w Quarantine repo); komunikat podaje liczbę ścieżek z niezacommitowanymi zmianami i liczbę oraz krótkie sha (do 5) takich commitów. `HEAD` poza historią eksportu (przepisana historia) też jest odmową; `HEAD` cofnięty za eksport nie (wszystko w nim wyeksportowano). Pliki ignorowane przez git i historia rozmowy `claude` w VM giną bez ostrzeżenia. Wyłączona VM jest startowana do sprawdzenia (ssh jak w `export`, bez Egress proxy) i po odmowie zostaje uruchomiona. `--force` nie sprawdza niczego i nie startuje VM.
 

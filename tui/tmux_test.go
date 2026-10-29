@@ -25,6 +25,10 @@ func TestStartArgs(t *testing.T) {
 		"-L afk -f /dev/null new-session -s afk",
 		"bind-key -n M-Up send-keys -t :.0 Up",
 		"bind-key -n M-Down send-keys -t :.0 Down",
+		"bind-key -n M-n send-keys -t :.0 M-n",
+		"bind-key -n M-e send-keys -t :.0 M-e",
+		"bind-key -n M-x send-keys -t :.0 M-x",
+		"bind-key -n M-s send-keys -t :.0 M-s",
 		"split-window -hbd -l 32 /bin/afk sidebar",
 	} {
 		if !strings.Contains(line, want) {

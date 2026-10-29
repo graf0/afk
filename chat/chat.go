@@ -279,6 +279,45 @@ func Attach(ctx context.Context, opts Options) (err error) {
 	return
 }
 
+// Shell opens a bash shell in the VM of the existing Chat opts.Name (started
+// when shut off), with the Chat's Egress proxy (AllowAll, denials logged like
+// Attach's) and without afk-forge. It takes no lock: it works beside an
+// attached session. Only opts.Base, Name, Paths and Out are used.
+func Shell(ctx context.Context, opts Options) (err error) {
+	project, stateDir, _, err := existingChat(opts)
+	if err != nil {
+		return
+	}
+	signer, err := image.SSHSigner(opts.Paths)
+	if err != nil {
+		return
+	}
+	conn, err := machine.Connect()
+	if err != nil {
+		return
+	}
+	defer func() { _ = conn.Close() }()
+	m, err := startVM(conn, project, opts.Name, opts.Out)
+	if err != nil {
+		return
+	}
+	_, _, closeLogs, denials, err := openLogs(stateDir, BranchPrefix+opts.Name+"-shell", opts.Out)
+	if err != nil {
+		return
+	}
+	defer closeLogs()
+	client, closeLink, err := link(ctx, m, signer, denials, forgeChannel{}, "")
+	if err != nil {
+		return
+	}
+	defer closeLink()
+	proxy := "http://" + machine.ProxyAddr
+	if err = machine.Interactive(ctx, client, "export http_proxy="+proxy+" https_proxy="+proxy+"; exec bash -l", ""); err != nil {
+		err = fmt.Errorf("shell in chat %s (VM %s): %w", opts.Name, m.Name, err)
+	}
+	return
+}
+
 // --- shared by the Chat's commands ---
 
 // existingChat returns the Project and the state directories of the Chat
@@ -378,7 +417,7 @@ func openLogs(stateDir, branch string, out io.Writer) (logs, logBase string, clo
 
 // link connects to m over ssh (waiting for the guest's sshd) and serves over
 // the connection the Egress proxy, AllowAll, and the Forge for afk-forge,
-// whose calls go to forgeLog. closeLink undoes all of it.
+// whose calls go to forgeLog (none without ch.Forge). closeLink undoes all of it.
 func link(ctx context.Context, m machine.Machine, signer ssh.Signer, denials io.Writer, ch forgeChannel, forgeLog string) (client *ssh.Client, closeLink func(), err error) {
 	sshCtx, cancel := context.WithTimeout(ctx, machine.SSHTimeout)
 	defer cancel()
@@ -390,11 +429,13 @@ func link(ctx context.Context, m machine.Machine, signer ssh.Signer, denials io.
 		_ = client.Close()
 		return
 	}
-	stopForge, err := serveForge(ctx, client, ch, forgeLog)
-	if err != nil {
-		stop()
-		_ = client.Close()
-		return
+	stopForge := func() {}
+	if ch.Forge != nil { // none: a shell, which has no afk-forge
+		if stopForge, err = serveForge(ctx, client, ch, forgeLog); err != nil {
+			stop()
+			_ = client.Close()
+			return
+		}
 	}
 	closeLink = func() {
 		stopForge()
