@@ -69,7 +69,7 @@ Strumień Agenta (stream-json) idzie do pliku logu w `~/.local/state/afk/<projec
 
 ## Chat
 
-`afk chat new <nazwa> [--model …] [--effort …]`, `attach <nazwa>`, `export <nazwa>`, `rm [--force] <nazwa>`, `list`. Nazwa wymagana: `[a-z0-9-]{1,32}`, nie zaczyna się od `-`, unikalna w Project; Chat o tej nazwie albo branch `chat-<nazwa>` na remote → odmowa przy tworzeniu.
+`afk chat new <nazwa> [--model …] [--effort …]`, `attach <nazwa>`, `export <nazwa>`, `shell <nazwa>` (bash w VM z tym samym Egress proxy, bez `afk-forge`, bez blokady Chat), `rm [--force] <nazwa>`, `list`. Nazwa wymagana: `[a-z0-9-]{1,32}`, nie zaczyna się od `-`, unikalna w Project; Chat o tej nazwie albo branch `chat-<nazwa>` na remote → odmowa przy tworzeniu.
 
 - Własna, długo żyjąca Sandbox VM; kod to snapshot gałęzi bazowej z chwili utworzenia, bez synchronizacji (świeży stan = nowy Chat). `setup` i `env` Tooli jak w Run (log `<log>-setup.txt`).
 - Claude Code interaktywnie na pty po ssh, `--dangerously-skip-permissions`; model z `[agent]` (do nadpisania `--model`), effort tylko flagą `--effort` (`claude --effort`); oba w metadanych VM. Brak Base image albo nieaktualny → budowany jak w Factory. Porażka przed startem `claude` usuwa VM, stan i refy Chat (zostają logi); po starcie Chat zostaje zawsze.
@@ -96,7 +96,7 @@ Na żądanie człowieka, wielokrotnie, bez `attach` (własne ssh; wyłączona VM
 
 ### Zamknięcie
 
-`afk chat rm [--force] <nazwa>` niszczy VM (domena, sieć, filtr, overlay), refy Quarantine `chat-<nazwa>` i stan Chat (`snapshot.json`, blokada). Logi i branch `chat-<nazwa>` na remote zostają. Bierze blokadę Chat: trzymana przez `attach` → odmowa z PID właściciela, także z `--force`.
+`afk chat rm [--force] <nazwa>` niszczy VM (domena, sieć, filtr, overlay), refy Quarantine `chat-<nazwa>` i stan Chat (`snapshot.json`, blokada). Logi i branch `chat-<nazwa>` na remote zostają. Bierze blokadę Chat: trzymana przez `attach` → odmowa z PID właściciela, także z `--force`.  Odmowy, które `--force` znosi, kończą się kodem wyjścia 3 (TUI pyta wtedy o `--force`).
 
 Bez `--force` odmawia, gdy w VM są niezacommitowane zmiany (także pliki nieśledzone) albo `HEAD` ma commity nieosiągalne z ostatniego eksportu (`snapshot.json`), a bez eksportu z bazy snapshotu (ref bazy w Quarantine repo); komunikat podaje liczbę ścieżek z niezacommitowanymi zmianami i liczbę oraz krótkie sha (do 5) takich commitów. `HEAD` poza historią eksportu (przepisana historia) też jest odmową; `HEAD` cofnięty za eksport nie (wszystko w nim wyeksportowano). Pliki ignorowane przez git i historia rozmowy `claude` w VM giną bez ostrzeżenia. Wyłączona VM jest startowana do sprawdzenia (ssh jak w `export`, bez Egress proxy) i po odmowie zostaje uruchomiona. `--force` nie sprawdza niczego i nie startuje VM.
 
@@ -116,7 +116,7 @@ Z `~/.claude` nigdy nie trafia do VM: `.credentials*`, `settings.json` (hooki, u
 
 ## TUI
 
-ADR-0008. `afk tui`: osobny serwer `tmux -L afk` z konfiguracją wbudowaną w `afk` (bez `~/.tmux.conf`), tmux ≥ 3.3 sprawdzany przy starcie (reszta `afk` działa bez tmux). Lewy panel: `afk sidebar` (bubbletea), pogrupowany po Project: Chaty i porzucone Runy (VM po porażce) wszystkich Project z metadanych domen libvirt, Factory z opcji okien tmux (`@afk-kind`, `@afk-project`, ustawiane przez TUI przy tworzeniu okna) — Factory uruchomiona poza TUI widać tylko przez VM jej Run. Każdy Chat i Factory to okno tmux z procesem `afk`; zamknięcie terminala ich nie przerywa (`detach`/`attach`). Metadane domeny i okna zawierają ścieżkę repo Project: `M-n` i `M-F` działają dla Project zaznaczonego wpisu, potem bieżącego katalogu, inaczej odmowa.
+ADR-0008. `afk tui`: osobny serwer `tmux -L afk` z konfiguracją wbudowaną w `afk` (bez `~/.tmux.conf`), tmux ≥ 3.3 sprawdzany przy starcie (reszta `afk` działa bez tmux). Lewy panel: `afk sidebar` (bubbletea), pogrupowany po Project: Chaty i porzucone Runy (VM po porażce) wszystkich Project z metadanych domen libvirt, Factory z opcji okien tmux (`@afk-kind`, `@afk-project`, `@afk-repo`, ustawiane przez TUI przy tworzeniu okna) — Factory uruchomiona poza TUI widać tylko przez VM jej Run. Każdy Chat i Factory to okno tmux z procesem `afk`; zamknięcie terminala ich nie przerywa (`detach`/`attach`). Metadane domeny i okna zawierają ścieżkę repo Project: `M-n` i `M-F` działają dla Project zaznaczonego wpisu, potem bieżącego katalogu, inaczej odmowa.
 
 Skróty bez prefiksu, reszta klawiszy idzie do Agenta. Zajęte przez Claude Code i do omijania: `M-f`, `M-b`, `M-d`, `M-y`, `M-p`, `M-t`, `M-o`, `M-v`, `M-m`, `M-Enter`; `M-↑/↓` przewija w Claude Code listę plików diff (jest też Ctrl+↑/↓).
 
@@ -125,9 +125,9 @@ Skróty bez prefiksu, reszta klawiszy idzie do Agenta. Zajęte przez Claude Code
 | `M-↑` / `M-↓` | poprzedni / następny wpis |
 | `M-n` | nowy Chat (pyta o nazwę) |
 | `M-F` | nowa Factory (pyta o selektor, domyślnie `*`) |
-| `M-x` | zamknij Chat (eksport / usuń / anuluj) / zabij Factory lub zamknij jej okno / zniszcz VM porzuconego Run |
+| `M-x` | zamknij Chat (eksport / usuń / anuluj) / Factory: działającą przerywa jak Ctrl-C po potwierdzeniu, zakończoną zamyka (okno) / zniszcz VM porzuconego Run |
 | `M-e` | eksport Chat |
-| `M-s` | shell w VM (Chat, porzucony Run) |
+| `M-s` | shell w VM (Chat, porzucony Run; przy Factory tylko komunikat) |
 
 Widok Factory: okno z `afk factory` — strumień bieżącego Run tylko do odczytu (tekst Agenta, jednolinijkowe wywołania narzędzi, zdarzenia `afk`: bramka, review, push). Nagłówek: `afk factory` na TTY co ok. 10 s ustawia tytuł sekwencją OSC 2 (numer i tytuł ticketu, wiek Run, czas od ostatniego zdarzenia), tmux pokazuje go przez `pane-border-status`. Okno ma `remain-on-exit`: po końcu Factory zostaje z wyjściem i kodem wyjścia do `M-x`.
 

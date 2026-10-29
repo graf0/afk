@@ -113,6 +113,7 @@ func NewFactory(ctx context.Context, base Base, gitForge forge.Forge, paths imag
 // and running the Factory again continues it. needs_info does not stop it.
 func (f *Factory) Run(ctx context.Context) (err error) {
 	f.handled, f.warned, f.preflighted = map[int]bool{}, map[int]bool{}, false
+	defer titleOf(f.Out).Start(ctx)()
 	if err = f.resumeLeftovers(ctx); err != nil {
 		return
 	}
@@ -413,7 +414,9 @@ func (f *Factory) take(ctx context.Context, ticket forge.Ticket, resume *Leftove
 	taken = true
 	f.handled[ticket.Number] = true
 	f.say("#%d %s", ticket.Number, ticket.Title)
+	titleOf(f.Out).begin(fmt.Sprintf("#%d %s", ticket.Number, ticket.Title))
 	err = f.Execute(ctx, base, ticket, resume)
+	titleOf(f.Out).end()
 	switch {
 	case err == nil:
 	case ctx.Err() != nil:

@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -35,6 +36,9 @@ func main() {
 		// Config errors come one per line; each line gets the prefix.
 		for line := range strings.SplitSeq(strings.TrimSuffix(err.Error(), "\n"), "\n") {
 			fmt.Fprintf(os.Stderr, "%s: %s\n", name, line)
+		}
+		if errors.Is(err, chat.ErrNeedsForce) {
+			os.Exit(chat.ExitNeedsForce) // the TUI asks about --force
 		}
 		os.Exit(1)
 	}
@@ -87,6 +91,10 @@ func runCommand(ctx context.Context, abort <-chan struct{}, args []string, dir s
 		err = runChat(ctx, args[1:], dir, stdout)
 	case args[0] == "vm":
 		err = runVM(ctx, args[1:], dir, stdout)
+	case args[0] == "tui": // all Projects: no config of the current one
+		err = runTUI(ctx, args[1:])
+	case args[0] == "sidebar":
+		err = runSidebar(ctx, args[1:])
 	default:
 		err = fmt.Errorf("unknown command %q", args[0])
 	}

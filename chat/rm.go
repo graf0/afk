@@ -22,6 +22,19 @@ const maxShas = 5
 
 var shaPattern = regexp.MustCompile(`^[0-9a-f]{4,64}$`)
 
+// ExitNeedsForce is the exit code of `afk chat rm` for ErrNeedsForce.
+const ExitNeedsForce = 3
+
+// ErrNeedsForce is matched (errors.Is) by the refusals of Remove that
+// --force overrides: work or state that would be lost.
+var ErrNeedsForce = errors.New("refused without --force")
+
+// forceRefusal is a refusal of Remove that --force overrides.
+type forceRefusal struct{ error }
+
+func (r forceRefusal) Unwrap() error        { return r.error }
+func (r forceRefusal) Is(target error) bool { return target == ErrNeedsForce }
+
 // Remove destroys the Chat opts.Name (docs/workflow.md, Zamknięcie): its VM
 // (with network, filter and overlay), the Quarantine refs of chat-<name> and
 // its state directory, last, so that a failure midway leaves a Chat that
@@ -74,7 +87,7 @@ func Remove(ctx context.Context, opts Options, force bool) (err error) {
 	switch {
 	case force || i < 0:
 	case !hasState:
-		err = fmt.Errorf("chat %s has a VM but no state: what it exported is unknown, use --force to remove it", opts.Name)
+		err = forceRefusal{fmt.Errorf("chat %s has a VM but no state: what it exported is unknown, use --force to remove it", opts.Name)}
 		return
 	default:
 		if err = checkLost(ctx, conn, opts, project, stateDir, chatDir); err != nil {
@@ -109,7 +122,7 @@ func Remove(ctx context.Context, opts Options, force bool) (err error) {
 func checkLost(ctx context.Context, conn *machine.Conn, opts Options, project, stateDir, chatDir string) (err error) {
 	snap, err := readSnapshot(chatDir)
 	if err != nil {
-		err = fmt.Errorf("%w (use --force to remove the Chat anyway)", err)
+		err = forceRefusal{fmt.Errorf("%w (use --force to remove the Chat anyway)", err)}
 		return
 	}
 	quarantine, err := run.OpenQuarantine(ctx, filepath.Join(stateDir, run.QuarantineName))
@@ -120,7 +133,7 @@ func checkLost(ctx context.Context, conn *machine.Conn, opts Options, project, s
 	if from == "" {
 		what = "the base"
 		if from, err = quarantine.Base(ctx, BranchPrefix+opts.Name); err != nil {
-			err = fmt.Errorf("%w (use --force to remove the Chat anyway)", err)
+			err = forceRefusal{fmt.Errorf("%w (use --force to remove the Chat anyway)", err)}
 			return
 		}
 	}
@@ -131,7 +144,7 @@ func checkLost(ctx context.Context, conn *machine.Conn, opts Options, project, s
 	defer closeExec()
 	lost, err := unsaved(ctx, exec, from, what)
 	if err == nil && lost != "" {
-		err = fmt.Errorf("chat %s would lose %s: commit and export it (`afk chat export %s`) or use --force", opts.Name, lost, opts.Name)
+		err = forceRefusal{fmt.Errorf("chat %s would lose %s: commit and export it (`afk chat export %s`) or use --force", opts.Name, lost, opts.Name)}
 	}
 	return
 }

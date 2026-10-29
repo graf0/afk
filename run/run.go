@@ -192,6 +192,7 @@ func (r run) session(ctx context.Context, setup vmSetup, work workFunc) (res res
 		BaseDisk:  setup.disk,
 		MemoryMiB: setup.sandbox.MemoryMiB,
 		CPUs:      setup.sandbox.CPUs,
+		Repo:      r.Base.Repo,
 	})
 	if err != nil {
 		return

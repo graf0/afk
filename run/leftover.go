@@ -43,6 +43,12 @@ func ListLeftovers(project string) (leftovers []Leftover, err error) {
 	return
 }
 
+// IsLeftover reports whether m is the VM of a Run of a Factory.
+func IsLeftover(m machine.Machine) (ok bool) {
+	_, ok = leftoverTicket(m)
+	return
+}
+
 // leftoverTicket reads the ticket from the id of a Run machine, which
 // session makes <ticket>-<random>.
 func leftoverTicket(m machine.Machine) (n int, ok bool) {

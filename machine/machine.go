@@ -381,6 +381,20 @@ func (c *Conn) Get(name string) (m Machine, err error) {
 // List returns the machines of project, running or not, from domain
 // metadata, ordered by name.
 func (c *Conn) List(project string) (machines []Machine, err error) {
+	all, err := c.ListAll()
+	if err != nil {
+		return
+	}
+	for _, m := range all {
+		if m.Project == project {
+			machines = append(machines, m)
+		}
+	}
+	return
+}
+
+// ListAll is List for every Project.
+func (c *Conn) ListAll() (machines []Machine, err error) {
 	domains, _, err := c.lv.ConnectListAllDomains(1, 0)
 	if err != nil {
 		err = fmt.Errorf("listing domains: %w", err)
@@ -398,9 +412,7 @@ func (c *Conn) List(project string) (machines []Machine, err error) {
 		if err != nil {
 			return
 		}
-		if m.Project == project {
-			machines = append(machines, m)
-		}
+		machines = append(machines, m)
 	}
 	slices.SortFunc(machines, func(a, b Machine) int { return cmp.Compare(a.Name, b.Name) })
 	return
