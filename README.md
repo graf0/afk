@@ -33,6 +33,12 @@ Repozytorium Projectu musi mieć w korzeniu trzy pliki:
 - **`compose.yml`**: Stack dev Projectu.
 - **`compose.afk.yml`**: override z serwisem `afk` (Sandbox) i opcjonalnym `afk-setup`. To serwis jednorazowy, np. seed bazy, uruchamiany przy pierwszym starcie Stacku i na żądanie Agenta. W tym pliku są też katalogi maskowane (anonimowe volume'y) i cache (named volume'y).
 
+  `afk` udostępnia w obu plikach compose dwie zmienne:
+  - `${AFK_TREE}`: ścieżka drzewa Chatu albo Runu (ta sama na hoście i w Sandboxie). Maska to anonimowy volume pod nią, np. `volumes: ["${AFK_TREE}/node_modules"]` w serwisie `afk`.
+  - `${AFK_CACHE}`: prefiks nazw volume'ów cache, osobny dla każdego Chatu i wspólny dla Runów Projectu. Cache to named volume o nazwie z prefiksem, np. `name: ${AFK_CACHE}-gomod`.
+
+  `afk` nadpisuje w serwisie `afk` `command` na `sleep infinity` i włącza `init: true`, więc `ENTRYPOINT` obrazu musi przyjmować argumenty. Porty z `compose.yml` nie są publikowane: robi to tylko `[expose]`.
+
 Gdy brak `compose.afk.yml`, `afk` na terminalu proponuje utworzenie go razem z `Dockerfile.afk` z szablonu. Niczego nie commituje.
 
 Wszystkie trzy pliki są czytane z gałęzi bazowej (`origin/HEAD`), nie z drzewa roboczego (ADR-0010). Zmiana działa więc dopiero po merge'u. Obrazy też są budowane z gałęzi bazowej, automatycznie, gdy ich brak albo gdy zmieniła się ich definicja.
