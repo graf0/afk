@@ -14,10 +14,13 @@ import (
 	"github.com/pelletier/go-toml/v2/unstable"
 
 	"github.com/graf0/afk/egress"
+	"github.com/graf0/afk/stack"
 )
 
 var (
 	forgeKinds = []string{ForgeGitHub, ForgeGitea}
+
+	vmOSes = []string{"windows", "linux"}
 
 	// ImageTemplates are the [machine.<name>].template values the image package can
 	// build; image's tests assert that it knows exactly these.
@@ -140,6 +143,8 @@ func (c Config) validate(v *validator) {
 	c.validateNetwork(v)
 	c.validateProtect(v)
 	c.validateTools(v)
+	c.validateExpose(v)
+	c.validateVMs(v)
 }
 
 func (c Config) validateForge(v *validator) {
@@ -281,6 +286,34 @@ func (c Config) validateTools(v *validator) {
 				continue
 			}
 			definedBy[env] = name
+		}
+	}
+}
+
+func (c Config) validateExpose(v *validator) {
+	for _, service := range slices.Sorted(maps.Keys(c.Expose)) {
+		if _, err := stack.ParseExpose(c.Expose[service]); err != nil {
+			v.report("expose."+service, "%v", err)
+		}
+	}
+}
+
+func (c Config) validateVMs(v *validator) {
+	seen := make(map[string]bool)
+	for i, vm := range c.VM {
+		path := fmt.Sprintf("vm[%d]", i)
+		switch {
+		case vm.Name == "":
+			v.report(path+".name", "required")
+		case seen[vm.Name]:
+			v.report(path+".name", "duplicate %q", vm.Name)
+		}
+		seen[vm.Name] = true
+		if vm.User == "" {
+			v.report(path+".user", "required")
+		}
+		if !slices.Contains(vmOSes, vm.OS) {
+			v.reportChoice(path+".os", vmOSes, vm.OS)
 		}
 	}
 }

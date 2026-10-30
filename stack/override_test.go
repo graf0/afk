@@ -23,7 +23,7 @@ func TestParseExpose(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.spec, func(t *testing.T) {
-			got, err := parseExpose(tt.spec)
+			got, err := ParseExpose(tt.spec)
 			if tt.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 					t.Fatalf("err = %v, want containing %q", err, tt.wantErr)
@@ -31,7 +31,7 @@ func TestParseExpose(t *testing.T) {
 				return
 			}
 			if err != nil || got != tt.want {
-				t.Errorf("parseExpose(%q) = %q, %v, want %q", tt.spec, got, err, tt.want)
+				t.Errorf("ParseExpose(%q) = %q, %v, want %q", tt.spec, got, err, tt.want)
 			}
 		})
 	}

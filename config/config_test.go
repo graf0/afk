@@ -218,34 +218,44 @@ func mustMkdir(t *testing.T, path string) {
 	}
 }
 
-// TestParseReadmeExamples keeps the .afk.toml examples of the README valid:
-// the Getting Started one and the full one before the reference.
+// TestParseReadmeExamples keeps the .afk.toml example of the README valid.
 func TestParseReadmeExamples(t *testing.T) {
 	readme, err := os.ReadFile(filepath.Join("..", "README.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	var configs []Config
-	rest := string(readme)
-	for {
-		_, block, found := strings.Cut(rest, "```toml\n")
-		if !found {
-			break
-		}
-		var example string
-		example, rest, _ = strings.Cut(block, "```")
-		cfg, err := Parse([]byte(example))
-		if err != nil {
-			t.Fatalf("README example %d: %v", len(configs)+1, err)
-		}
-		configs = append(configs, cfg)
+	_, block, found := strings.Cut(string(readme), "```toml\n")
+	if !found {
+		t.Fatal("no toml block in README.md")
 	}
-	if len(configs) != 2 {
-		t.Fatalf("%d toml blocks in README.md, want 2", len(configs))
+	example, _, _ := strings.Cut(block, "```")
+	cfg, err := Parse([]byte(example))
+	if err != nil {
+		t.Fatalf("README example: %v", err)
 	}
-	cfg := configs[1]
-	if len(cfg.Tool["postgres"].Setup) != 2 || cfg.Tool["postgres"].Env["DATABASE_URL"] == "" || cfg.Tool["playwright"].Env["PLAYWRIGHT_BROWSERS_PATH"] == "" {
-		t.Errorf("tools = %+v", cfg.Tool)
+	if cfg.Expose["web"] == "" || len(cfg.VM) != 1 || cfg.VM[0].OS != "windows" {
+		t.Errorf("expose = %v, vm = %+v", cfg.Expose, cfg.VM)
+	}
+}
+
+func TestParseExposeAndVM(t *testing.T) {
+	tests := []struct {
+		name, toml, want string // want: substring of the error, "" for none
+	}{
+		{"expose ok", "[expose]\nweb = \"192.168.122.1:8080:80\"\n", ""},
+		{"expose bad", "[expose]\nweb = \"80\"\n", "expose.web"},
+		{"vm ok", "[[vm]]\nname = \"win11\"\nuser = \"admin\"\nos = \"windows\"\n", ""},
+		{"vm no user", "[[vm]]\nname = \"win11\"\nos = \"linux\"\n", "vm[0].user"},
+		{"vm bad os", "[[vm]]\nname = \"win11\"\nuser = \"a\"\nos = \"mac\"\n", "vm[0].os"},
+		{"vm duplicate", "[[vm]]\nname = \"a\"\nuser = \"u\"\nos = \"linux\"\n[[vm]]\nname = \"a\"\nuser = \"u\"\nos = \"linux\"\n", "vm[1].name"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Parse([]byte(minimalConfig + tt.toml))
+			if tt.want == "" && err != nil || tt.want != "" && (err == nil || !strings.Contains(err.Error(), tt.want)) {
+				t.Errorf("err = %v, want %q", err, tt.want)
+			}
+		})
 	}
 }
 

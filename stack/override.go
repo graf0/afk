@@ -39,9 +39,9 @@ type overrideInput struct {
 	Images   map[string]string   // service with build: -> tag of its image
 }
 
-// parseExpose turns [address:]host_port:container_port into a compose port
+// ParseExpose turns [address:]host_port:container_port into a compose port
 // spec, with the loopback address by default.
-func parseExpose(spec string) (port string, err error) {
+func ParseExpose(spec string) (port string, err error) {
 	parts := strings.Split(spec, ":")
 	addr := loopback
 	switch len(parts) {

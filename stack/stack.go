@@ -339,7 +339,7 @@ func (s *Stack) writeOverride(images map[string]string, services []string) (err 
 		}
 		for _, spec := range specs {
 			var port string
-			if port, err = parseExpose(spec); err != nil {
+			if port, err = ParseExpose(spec); err != nil {
 				err = fmt.Errorf("service %s: %w", service, err)
 				return
 			}

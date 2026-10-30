@@ -49,14 +49,16 @@ var (
 
 // Config is the effective Project config, with defaults applied.
 type Config struct {
-	Forge   Forge           `toml:"forge"`
-	Labels  Labels          `toml:"labels"`
-	Agent   Agent           `toml:"agent"`
-	Gate    Gate            `toml:"gate"`
-	Machine Machines        `toml:"machine"`
-	Network Network         `toml:"network"`
-	Protect Protect         `toml:"protect"`
-	Tool    map[string]Tool `toml:"tool"`
+	Forge   Forge             `toml:"forge"`
+	Labels  Labels            `toml:"labels"`
+	Agent   Agent             `toml:"agent"`
+	Gate    Gate              `toml:"gate"`
+	Machine Machines          `toml:"machine"`
+	Network Network           `toml:"network"`
+	Protect Protect           `toml:"protect"`
+	Tool    map[string]Tool   `toml:"tool"`
+	Expose  map[string]string `toml:"expose"` // compose service -> [address:]host_port:container_port
+	VM      []VM              `toml:"vm"`
 }
 
 // Forge describes the system hosting the repository and tickets.
@@ -116,6 +118,13 @@ type Network struct {
 // ("dir/"), either at any depth with the prefix "**/".
 type Protect struct {
 	Paths []string `toml:"paths"`
+}
+
+// VM is a test VM: an existing libvirt domain the Agent in a Chat drives.
+type VM struct {
+	Name string `toml:"name"` // libvirt domain
+	User string `toml:"user"` // ssh account
+	OS   string `toml:"os"`   // windows | linux
 }
 
 // Tool is a tool the Agent can use (ADR-0011).
