@@ -1,4 +1,8 @@
 ---
+status: superseded by ADR-0013
+---
+
+---
 status: superseded by ADR-0006
 ---
 

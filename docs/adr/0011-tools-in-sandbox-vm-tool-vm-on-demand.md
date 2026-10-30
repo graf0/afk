@@ -1,3 +1,7 @@
+---
+status: superseded by ADR-0013
+---
+
 # Toole w Sandbox VM, Tool VM tylko na żądanie
 
 Tool (Postgres, Redis, Playwright) domyślnie działa w Sandbox VM obok Agenta: instalowany w Base image (`build`), uruchomiony od startu VM, przygotowany przez `setup` po klonie. Każdy Run ma przez to własną, jednorazową instancję — Agenty sobie nie przeszkadzają, Agent ma bezpośredni dostęp (unix socket, `pg_dump`), bez haseł (to nie sekrety: instancja żyje w izolowanej VM), bez dodatkowego RAM na maszynę. Osobna Tool VM (`on = "<maszyna>"`) jest tylko dla tego, czego Sandbox VM nie pomieści (Windows, inny system) i podnosi się na żądanie Agenta przez kanał gość → `afk`, wspólny z `afk-forge`. Agent poznaje każdy Tool tak samo (`prompt`, `env`), bez względu na to, gdzie działa.

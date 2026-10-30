@@ -1,19 +1,19 @@
 # afk
 
-Fabryka AI: bierze tickety z trackera i bez nadzoru implementuje je w kodzie, każdy w osobnej, odizolowanej maszynie wirtualnej. Część interaktywną (planowanie, eksperymenty) człowiek robi z agentem w czatach, też odizolowanych; wszystko, czego agent fabryki potrzebuje, jest w ticketach.
+Fabryka AI: bierze tickety z trackera i bez nadzoru implementuje je w kodzie, każdy w osobnym, odizolowanym Sandboxie obok własnego Stacku. Część interaktywną (planowanie, eksperymenty) człowiek robi z agentem w czatach, też odizolowanych; wszystko, czego agent fabryki potrzebuje, jest w ticketach.
 
 ## Language
 
 **Project**:
-Repozytorium z Project config (bez niego `afk` nie pracuje); wyznacza Forge, Base image i allowlistę dla swoich Chatów i Factory.
+Repozytorium z Project config (bez niego `afk` nie pracuje); wyznacza Forge, Base image i Stack dla swoich Chatów i Factory.
 _Avoid_: repo (gdy chodzi o całość z konfiguracją)
 
 **Chat**:
-Interaktywna rozmowa człowieka z Agentem we własnej, długo żyjącej Sandbox VM, do planowania i eksperymentów, z dostępem do całego internetu. Tickety tworzy przez `afk`, ale nigdy nie czyni ich gotowymi dla Factory — to robi człowiek.
+Interaktywna rozmowa człowieka z Agentem we własnym, długo żyjącym Sandboxie i Stacku, do planowania i eksperymentów, z dostępem do całego internetu. Pracuje na branchu `chat-<nazwa>`. Tickety tworzy przez `afk`, ale nigdy nie czyni ich gotowymi dla Factory — to robi człowiek.
 _Avoid_: sesja, interactive session
 
 **Export**:
-Przeniesienie commitów Chat na branch `chat-<nazwa>` w Forge na żądanie człowieka, przez Quarantine repo i tę samą walidację co wynik Run; można je powtarzać, bez PR.
+Przeniesienie commitów Chat na branch `chat-<nazwa>` w Forge, przez Quarantine repo i tę samą walidację co wynik Run; można je powtarzać. Zleca je Agent, gdy otwiera PR z Chat.
 _Avoid_: sync, publish
 
 **Factory**:
@@ -33,47 +33,38 @@ System hostujący repozytorium, tickety i pull requesty (GitHub, Gitea). Tylko `
 _Avoid_: tracker (gdy chodzi także o repo i PR), remote
 
 **Run**:
-Jedno podejście Factory do jednego ticketu (lub speca): od świeżej Sandbox VM do wyniku lub porażki.
+Jedno podejście Factory do jednego ticketu (lub speca): od świeżego Sandboxa do wyniku lub porażki.
 _Avoid_: job, iteration
 
 **Agent**:
-Program AI kodujący (na razie Claude Code) uruchamiany w Sandbox VM. Nie ma dostępu do Forge.
+Program AI kodujący (na razie Claude Code) uruchamiany w Sandboxie. Do Forge sięga tylko przez wąskie operacje udostępnione przez `afk`.
 _Avoid_: bot, worker
 
-**Sandbox VM**:
-Odizolowana maszyna wirtualna jednego Run albo jednego Chat, w której pracuje Agent. Nie ma drogi do świata poza kanałem kontrolowanym przez `afk`.
-_Avoid_: agent VM, kontener
+**Sandbox**:
+Odizolowany kontener jednego Run albo jednego Chat, w którym pracuje Agent. Nie widzi sekretów hosta; poświadczeń hosta używa tylko przez kanał `afk`.
+_Avoid_: Sandbox VM, kontener, instancja
+
+**Stack**:
+Środowisko jednego Chat albo Run: Sandbox oraz usługi Projectu (baza, serwer aplikacji, frontend), z którymi Agent rozmawia. Opisany w Projekcie, uruchamiany przez `afk` z gałęzi bazowej.
+_Avoid_: instancja, compose
+
+**VM testowa**:
+Istniejąca maszyna wirtualna hosta zadeklarowana w Project config, którą Agent w Chat steruje (ekran, klawiatura, mysz, snapshoty) przez `afk`; w danej chwili trzyma ją co najwyżej jeden Chat. `afk` jej nie tworzy.
+_Avoid_: Tool VM, test VM
 
 **Base image**:
-Obraz dysku, z którego powstają maszyny; niezmienny, współdzielony, z narzędziami projektu.
-_Avoid_: template (gdy chodzi o gotowy dysk), golden image
-
-**Template**:
-Wbudowany przepis, z którego `afk` buduje Base image (Debian, Windows).
-
-**Tool**:
-Nazwane narzędzie zadeklarowane w Project config, którego Agent może użyć (np. Postgres, Playwright, Windows do testów). Działa w Sandbox VM (domyślnie, od jej startu) albo w Tool VM (podnoszonej na żądanie Agenta). Agent dowiaduje się o nim tak samo bez względu na to, gdzie działa.
-_Avoid_: capability, plugin, dependency, package
+Obraz Sandboxa Projectu, budowany przez `afk` z gałęzi bazowej, gdy go brak; zmiana jego definicji na gałęzi bazowej oznacza nowy obraz.
+_Avoid_: template, golden image
 
 **Plugin**:
-Rozszerzenie Claude Code (skille), które Project deklaruje w Project config, a `afk` instaluje w Base image. Daje Agentowi instrukcje, nie możliwości w środowisku — to nie Tool.
+Rozszerzenie Claude Code (skille), które Project deklaruje w Project config, a `afk` udostępnia Agentowi w Sandboxie. Daje Agentowi instrukcje, nie możliwości w środowisku.
 _Avoid_: skill (gdy chodzi o cały pakiet)
-
-**Tool VM**:
-Osobna maszyna wirtualna w sieci Run, hostująca jeden lub więcej Tooli; podnoszona na żądanie Agenta, ginie razem z Run. Agent łączy się z nią standardowymi protokołami lub przez sterowanie ekranem.
-
-**Expiry**:
-Ważność Base image zdefiniowana w projekcie; po jej upływie obraz jest budowany od nowa (Debian ze świeżego cloud image, Windows z ISO), zanim powstanie kolejna Sandbox VM.
-_Avoid_: lifetime, TTL
 
 **Gate**:
 Polecenie bramki projektu (build, vet, test), które musi przejść, zanim wynik zostanie przyjęty.
 
 **Quarantine repo**:
-Repozytorium hosta, do którego trafia wynik z Sandbox VM; nigdy nie jest miejscem uruchamiania czegokolwiek.
-
-**Egress proxy**:
-Jedyna droga ruchu wychodzącego z Sandbox VM; przepuszcza tylko domeny dozwolone w konfiguracji projektu.
+Repozytorium hosta, do którego trafia wynik z Sandboxa; nigdy nie jest miejscem uruchamiania czegokolwiek.
 
 **Needs-info**:
 Stan ticketu, w którym Agent nie mógł kontynuować i zadał pytanie; pytanie zapisuje w tickecie `afk`, nie Agent.

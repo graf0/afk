@@ -1,3 +1,7 @@
+---
+status: superseded by ADR-0014
+---
+
 # Agent nie ma dostępu do Forge; pytania idą przez ticket; token Claude'a w VM
 
 Host pobiera Ticket (treść, komentarze, spec, blokery) i zapisuje go w VM jako plik, którego ścieżkę podaje prompt. Prompt mówi wprost, że tracker jest celowo niedostępny i że przy braku informacji agent kończy Run ze statusem `needs_info` i listą pytań zamiast zgadywać. `afk` zapisuje pytania jako komentarz, ustawia label `needs-info` i zdejmuje `ready-for-agent`. Część interaktywna dzieje się przed fabryką, więc nie ma czatu z agentem ani `ask_human`.

@@ -1,3 +1,7 @@
+---
+status: superseded by ADR-0013
+---
+
 # Sandbox VM per Run, ruch wychodzący tylko przez afk
 
 Każdy Run dostaje świeżą Sandbox VM (overlay na Base image), niszczoną po zakończeniu, we własnej izolowanej sieci libvirt bez NAT. Interfejs VM ma nwfilter z białą listą: nowe połączenia od gościa tylko do innych maszyn tego Run, wszystko inne (w tym każdy adres hosta) odrzucone. `afk` łączy się z VM po ssh i otwiera odwrotny tunel (`ssh -R`), który obsługuje w procesie jako Egress proxy dla tej jednej VM; proxy przepuszcza tylko domeny z `.afk.toml` (domyślnie pusta lista, dla Claude'a domeny Anthropic), a host nie otwiera dla gościa żadnego portu. Odrzuciliśmy bwrap z ralph.sh (wspólne jądro z hostem), vsock (brak wsparcia na Windows, kanał inicjowany z gościa), MITM z własnym CA (pełny podsłuch przy kompromitacji klucza CA) i własną tablicę nftables (działa, ale wymaga roota przy każdym Run i ręcznego sprzątania; nwfilter zakłada i usuwa libvirtd razem z domeną). Instalacja zależności dzieje się w osobnej fazie budowy obrazu, bez sekretów i bez treści ticketów.

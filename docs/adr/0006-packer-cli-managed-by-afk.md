@@ -1,3 +1,7 @@
+---
+status: superseded by ADR-0013
+---
+
 # Base image budujemy Packerem CLI, którym zarządza afk
 
 Zastępuje ADR-0004. Obrazy buduje binarka `packer` uruchamiana przez `afk` jako podproces, z szablonami HCL wbudowanymi w `afk` (`go:embed`) i wartościami z `.afk.toml` przekazanymi przez wygenerowany `-var-file`; postęp i błędy czytamy z `-machine-readable`, a przerwanie `afk` wysyła Packerowi SIGINT (sam sprząta QEMU). Wersja Packera i pluginu `qemu` jest przypięta dokładnie: `afk` pobiera Packera z releases.hashicorp.com (binarek nie ma w release'ach na GitHubie) do własnego katalogu, weryfikuje SHA256 zapisany w kodzie, ignoruje `packer` z `PATH`, a plugin instaluje `packer init` do `PACKER_PLUGIN_PATH` ustawionego na katalog `afk`. Provisioning robią natywne provisionery Packera (`shell`, `powershell`, `windows-restart`), a internet daje `ssh_remote_tunnels` do Egress proxy `afk`. Biblioteka (ADR-0004) działała, ale wymagała `replace` dla `go-cty`, ok. 150 zależności i opierała się na SDK, które nie jest przeznaczone do osadzania; CLI ma udokumentowany, stabilny interfejs (schemat HCL), a klucze buildera są te same.
