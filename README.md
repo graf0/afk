@@ -4,7 +4,7 @@ Fabryka AI: bierze tickety z trackera i bez nadzoru implementuje je w kodzie, ka
 
 ## Wymagania hosta
 
-- Linux x86_64 z KVM (`/dev/kvm`), libvirt (`qemu:///system`), `qemu-img`, `xorriso`, `git`; użytkownik w grupach `libvirt` i `kvm` ([libvirt.md](docs/libvirt.md)).
+- Linux x86_64 z KVM (`/dev/kvm`), libvirt (`qemu:///system`), `qemu-img`, `xorriso`, `git`; użytkownik z dostępem do gniazda libvirt (Debian: grupa `libvirt`) i w grupie `kvm` ([libvirt.md](docs/libvirt.md)).
 - Katalog `/var/lib/afk` z grupą `kvm`, zapisywalny dla użytkownika: `sudo install -d -o "$USER" -g kvm -m 2775 /var/lib/afk`.
 - tmux ≥ 3.3 — tylko dla `afk tui`.
 - Go (wersja z `go.mod`) do instalacji: `go install ./cmd/afk` w klonie tego repo. Packera `afk` pobiera sam ([images.md](docs/images.md)).
@@ -30,8 +30,8 @@ W klonie Projectu (z `origin` w Forge):
    ```
 
 2. `afk config` — sprawdza plik i wypisuje efektywną konfigurację z wartościami domyślnymi.
-3. Commit i push na gałąź bazową: reszta komend czyta `.afk.toml` z `origin/HEAD`, nie z drzewa roboczego.
-4. Załóż w Forge labele z [`[labels]`](#labels) — `afk` ich nie tworzy. GitHub: `for l in ready-for-agent needs-info needs-triage ready-for-human wontfix spec; do gh label create --force "$l"; done`.
+3. Commit i push na gałąź bazową: komendy, które coś uruchamiają, czytają `.afk.toml` z `origin/HEAD`, nie z drzewa roboczego.
+4. Załóż w Forge labele z [`[labels]`](#labels) — `afk` ich nie tworzy. GitHub, nazwy domyślne: `for l in ready-for-agent needs-info needs-triage ready-for-human wontfix spec; do gh label create --force "$l"; done`.
 5. `afk image build` — buduje Base image (Factory zbuduje go też sama, gdy brak).
 6. Nadaj ticketowi label `ready-for-agent` i uruchom `afk factory` (wszystkie gotowe) albo `afk factory '#12'`.
 7. `afk chat new plan` — Chat do planowania w osobnej VM.

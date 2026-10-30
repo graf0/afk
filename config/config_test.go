@@ -218,9 +218,9 @@ func mustMkdir(t *testing.T, path string) {
 	}
 }
 
-// TestParseReadmeExample keeps the .afk.toml examples of the README valid:
+// TestParseReadmeExamples keeps the .afk.toml examples of the README valid:
 // the Getting Started one and the full one before the reference.
-func TestParseReadmeExample(t *testing.T) {
+func TestParseReadmeExamples(t *testing.T) {
 	readme, err := os.ReadFile(filepath.Join("..", "README.md"))
 	if err != nil {
 		t.Fatal(err)
@@ -228,9 +228,8 @@ func TestParseReadmeExample(t *testing.T) {
 	var configs []Config
 	rest := string(readme)
 	for {
-		var block string
-		var found bool
-		if _, block, found = strings.Cut(rest, "```toml\n"); !found {
+		_, block, found := strings.Cut(rest, "```toml\n")
+		if !found {
 			break
 		}
 		var example string
