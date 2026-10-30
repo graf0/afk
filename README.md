@@ -39,7 +39,9 @@ Repozytorium Projectu musi mieć w korzeniu trzy pliki:
 
   `afk` nadpisuje w serwisie `afk` `command` na `sleep infinity` i włącza `init: true`, więc `ENTRYPOINT` obrazu musi przyjmować argumenty. Porty z `compose.yml` nie są publikowane: robi to tylko `[expose]`.
 
-Gdy brak `compose.afk.yml`, `afk` na terminalu proponuje utworzenie go razem z `Dockerfile.afk` z szablonu. Niczego nie commituje.
+  Tag obrazu to hash drzewa gita kontekstu builda, więc szablon buduje z wąskiego kontekstu `.afk` (`build: {context: .afk}`, Dockerfile domyślny w kontekście): obraz przebudowuje się tylko przy zmianie `.afk/`. Wkładaj tam wyłącznie to, czego potrzebuje obraz; szerszy kontekst (np. `.`) oznacza przebudowę przy każdym commicie.
+
+Gdy brak `compose.afk.yml`, `afk` na terminalu proponuje utworzenie go razem z `.afk/Dockerfile` z szablonu (Debian 13 + git, ca-certificates, curl). Niczego nie commituje.
 
 Wszystkie trzy pliki są czytane z gałęzi bazowej (`origin/HEAD`), nie z drzewa roboczego (ADR-0010). Zmiana działa więc dopiero po merge'u. Obrazy też są budowane z gałęzi bazowej, automatycznie, gdy ich brak albo gdy zmieniła się ich definicja.
 

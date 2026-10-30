@@ -46,6 +46,7 @@ const fixtureComposeAfk = `services:
     volumes:
       - ${AFK_TREE}/masked
       - cache:/cache
+      - cache:${HOME}/cache
   afk-setup:
     image: %[1]s
     depends_on: [svc]
@@ -133,6 +134,10 @@ func TestIntegrationStack(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(chat.Tree(), "masked", "inside")); err == nil {
 			t.Error("file written under the masked directory reached the host tree")
 		}
+	})
+
+	t.Run("named volume is writable by the Agent", func(t *testing.T) {
+		execOut(t, chat, "touch /cache/inside && touch ~/cache/inside")
 	})
 
 	t.Run("token: in the Sandbox environment, nowhere in the state", func(t *testing.T) {
@@ -340,5 +345,41 @@ func removeTestImages(project string) {
 	out, _ := exec.Command("podman", "images", "--quiet", "--filter", "reference=localhost/afk/"+project+"/*").Output()
 	for _, id := range strings.Fields(string(out)) {
 		_ = exec.Command("podman", "rmi", "--force", id).Run()
+	}
+}
+
+// TestIntegrationTemplate starts a Stack from the written template alone: the
+// Sandbox must come up with git, under the sleep infinity afk forces.
+func TestIntegrationTemplate(t *testing.T) {
+	const baseImage = "docker.io/library/debian:13"
+	if out, err := exec.Command("podman", "pull", "--quiet", baseImage).CombinedOutput(); err != nil {
+		t.Fatalf("podman pull %s: %v: %s", baseImage, err, out)
+	}
+	project := fmt.Sprintf("afkt-%d", time.Now().UnixNano()%1_000_000_000)
+	t.Cleanup(func() { removeTestImages(project) })
+
+	dir := t.TempDir()
+	if err := WriteTemplate(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, composeFile), []byte("services: {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, dir, "init", "-q", "-b", "main")
+	gitIn(t, dir, "add", "-A")
+	gitIn(t, dir, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "x")
+	commit := gitIn(t, dir, "rev-parse", "HEAD")
+
+	var out bytes.Buffer
+	s, err := New(Options{Repo: dir, Commit: commit, Project: project, Kind: Chat, Name: "tpl", StateDir: t.TempDir(), Out: &out})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Remove(context.Background()) })
+	if err = s.Up(t.Context()); err != nil {
+		t.Fatalf("Up: %v\n%s", err, out.String())
+	}
+	if got := execOut(t, s, "git --version"); !strings.HasPrefix(got, "git version") {
+		t.Errorf("git --version = %q", got)
 	}
 }

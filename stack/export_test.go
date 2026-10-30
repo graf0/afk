@@ -1,9 +1,11 @@
 package stack
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -73,14 +75,28 @@ func TestExport(t *testing.T) {
 }
 
 func TestExportMissingComposeFile(t *testing.T) {
-	for _, missing := range []string{composeFile, composeAfkFile} {
-		t.Run(missing, func(t *testing.T) {
-			files := map[string]string{composeFile: "x", composeAfkFile: "x"}
-			delete(files, missing)
+	for name, missing := range map[string][]string{
+		composeFile:    {composeFile},
+		composeAfkFile: {composeAfkFile},
+		"both":         {composeFile, composeAfkFile},
+	} {
+		t.Run(name, func(t *testing.T) {
+			files := map[string]string{composeFile: "x", composeAfkFile: "x", "other": "x"}
+			for _, m := range missing {
+				delete(files, m)
+			}
 			repo, commit := gitRepo(t, files)
 			err := export(t.Context(), repo, commit, filepath.Join(t.TempDir(), "export"))
-			if err == nil || !strings.Contains(err.Error(), missing) || !strings.Contains(err.Error(), "base branch") {
-				t.Errorf("err = %v, want one naming %s and the base branch", err, missing)
+			if err == nil || !strings.Contains(err.Error(), "base branch") {
+				t.Fatalf("err = %v, want one naming the base branch", err)
+			}
+			for _, m := range missing {
+				if !strings.Contains(err.Error(), m) {
+					t.Errorf("err = %v, does not name %s", err, m)
+				}
+			}
+			if got := errors.Is(err, ErrNoComposeAfk); got != slices.Contains(missing, composeAfkFile) {
+				t.Errorf("errors.Is(err, ErrNoComposeAfk) = %v for missing %v", got, missing)
 			}
 		})
 	}

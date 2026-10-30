@@ -3,9 +3,11 @@ package stack
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 )
 
@@ -14,14 +16,29 @@ const (
 	composeAfkFile = "compose.afk.yml"
 )
 
+// ErrNoComposeAfk means the base branch has no compose.afk.yml: the CLI
+// offers the template (WriteTemplate) instead of failing.
+var ErrNoComposeAfk = errors.New(composeAfkFile + " is missing on the base branch")
+
 // export replaces dir with the tree of commit in repo. Compose files and
 // build contexts come from here, never from a working tree (ADR-0010).
 func export(ctx context.Context, repo, commit, dir string) (err error) {
+	var missing []string
 	for _, name := range []string{composeFile, composeAfkFile} {
-		if out, catErr := exec.CommandContext(ctx, "git", "-C", repo, "cat-file", "-e", "--end-of-options", commit+":"+name).CombinedOutput(); catErr != nil {
-			err = fmt.Errorf("%s is missing on the base branch (commit and push it): %s", name, strings.TrimSpace(string(out)))
-			return
+		if catErr := exec.CommandContext(ctx, "git", "-C", repo, "cat-file", "-e", "--end-of-options", commit+":"+name).Run(); catErr != nil {
+			missing = append(missing, name)
 		}
+	}
+	switch {
+	case slices.Contains(missing, composeAfkFile) && len(missing) == 2:
+		err = fmt.Errorf("%w, and so is %s", ErrNoComposeAfk, composeFile)
+		return
+	case slices.Contains(missing, composeAfkFile):
+		err = ErrNoComposeAfk
+		return
+	case len(missing) > 0:
+		err = fmt.Errorf("%s is missing on the base branch (commit and push it)", missing[0])
+		return
 	}
 	if err = os.RemoveAll(dir); err != nil {
 		return
