@@ -427,8 +427,10 @@ const forgeUsage = `usage:
   afk-forge issue create --title <title> [--body <text> | --body-file -] [--label <a,b>]...
   afk-forge issue comment <n> (--body <text> | --body-file -)
   afk-forge issue edit <n> [--add-label <a,b>]... [--remove-label <a,b>]... [--title <title>] [--body <text> | --body-file -]
+  afk-forge pr create --title <title> [--body <text> | --body-file -]
 --body-file - reads the text from stdin; --label, --add-label and --remove-label may repeat or list labels with commas;
---title and --body only on issues created by this Chat that are not ready-for-agent`
+--title and --body only on issues created by this Chat that are not ready-for-agent;
+pr create pushes the commits of this clone (uncommitted changes stay out) to the branch of this Chat and opens a pull request, or, when one is open, only pushes and prints its URL`
 
 // errForgeUsage answers arguments afk-forge does not take.
 var errForgeUsage = errors.New(forgeUsage)
@@ -439,13 +441,14 @@ type forgeCall struct {
 	body         any
 }
 
-// forgeCommands parse the arguments after `issue <subcommand>` into the call.
+// forgeCommands parse the arguments after `<group> <subcommand>` into the call.
 var forgeCommands = map[string]func(args []string, stdin io.Reader) (call forgeCall, err error){
-	"view":    parseView,
-	"list":    parseList,
-	"create":  parseCreate,
-	"comment": parseComment,
-	"edit":    parseEdit,
+	"issue view":    parseView,
+	"issue list":    parseList,
+	"issue create":  parseCreate,
+	"issue comment": parseComment,
+	"issue edit":    parseEdit,
+	"pr create":     parsePullCreate,
 }
 
 // RunForge executes `afk-forge args` against the channel at socket and writes
@@ -453,8 +456,8 @@ var forgeCommands = map[string]func(args []string, stdin io.Reader) (call forgeC
 // of --body-file -.
 func RunForge(ctx context.Context, socket string, args []string, stdin io.Reader, stdout, stderr io.Writer) (err error) {
 	var parse func(args []string, stdin io.Reader) (call forgeCall, err error)
-	if len(args) >= 2 && args[0] == "issue" {
-		parse = forgeCommands[args[1]]
+	if len(args) >= 2 {
+		parse = forgeCommands[args[0]+" "+args[1]]
 	}
 	if parse == nil {
 		err = errForgeUsage
@@ -586,7 +589,9 @@ func parseEdit(args []string, stdin io.Reader) (call forgeCall, err error) {
 // sendForge sends call over the channel at socket and writes the reply: the
 // output to stdout, the warning to stderr.
 func sendForge(ctx context.Context, socket string, call forgeCall, stdout, stderr io.Writer) (err error) {
-	client := &http.Client{Timeout: time.Minute, Transport: &http.Transport{
+	// pr create bundles, validates and pushes the clone and asks the Forge
+	// twice: minutes on a big repository; a ticket call answers in seconds.
+	client := &http.Client{Timeout: 5 * time.Minute, Transport: &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (conn net.Conn, err error) {
 			conn, err = (&net.Dialer{}).DialContext(ctx, "unix", socket)
 			return

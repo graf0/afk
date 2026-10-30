@@ -31,7 +31,8 @@ Details and rationale: `docs/workflow.md` (`afk-forge`), ADR-0012. Flags: `afk-f
 - **Edit title / body**: `afk-forge issue edit <number> --title "..." (--body "..." | --body-file -)`, only on issues this Chat created, and only while they are not `ready-for-agent` (a human approved that text). Labels of such an issue stay editable.
 - **Sub-issue of a parent**: _host only_. Put `Part of #<parent>` at the top of the child body. The `spec` label is allowed on create/edit.
 - **Close**: _host only_.
-- **Blocking, assignees, PRs**: _host only_ (see below).
+- **Open a pull request**: commit your work first, then `afk-forge pr create --title "..." (--body "..." | --body-file -)`. afk validates the commits of this clone like a Run's result (changes to protected paths such as `.github/`, `compose.yml`, `compose.afk.yml`, the Stack's Dockerfiles, `.afk/`, `.claude/` are refused, with the commits and paths listed), pushes `chat-<name>`, opens a ready-for-review PR into the base branch and prints its URL. Call it again after more commits: it only pushes and prints the URL of the open PR (title and body stay). No commits against the base branch is an error; uncommitted changes are left out (a warning). Reading, commenting on or merging PRs stays _host only_.
+- **Blocking, assignees**: _host only_ (see below).
 
 Limits, short:
 
@@ -41,7 +42,7 @@ Limits, short:
 
 ## Pull requests as a triage surface
 
-_Host only (`gh`); Chat has no PR operations._
+_Host only (`gh`); Chat has only `afk-forge pr create` (above), no PR triage._
 
 **PRs as a request surface: no.** _(Set to `yes` if this repo treats external PRs as feature requests; `/triage` reads this flag.)_
 

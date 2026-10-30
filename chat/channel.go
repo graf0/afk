@@ -26,8 +26,8 @@ const (
 	maxSocketPath = 107
 )
 
-// routeGroup registers the routes of one part of the channel (tickets today;
-// pull requests, the Stack and the test VMs are added the same way) on mux.
+// routeGroup registers the routes of one part of the channel (tickets and pull
+// requests today; the Stack and the test VMs are added the same way) on mux.
 // Every call of a route goes to logger.
 type routeGroup func(mux *http.ServeMux, logger *log.Logger)
 

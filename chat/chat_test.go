@@ -39,7 +39,7 @@ func TestClaudeProjectKey(t *testing.T) {
 
 func TestSystemPrompt(t *testing.T) {
 	got := systemPrompt("plan", "main", "/s/repo")
-	for _, want := range []string{`"plan"`, "origin/main", "chat-plan", "afk-forge", "ready-for-agent", "/s/repo"} {
+	for _, want := range []string{`"plan"`, "origin/main", "chat-plan", "afk-forge", "pr create", "ready-for-agent", "/s/repo"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("prompt lacks %q:\n%s", want, got)
 		}
@@ -139,6 +139,7 @@ func (f *fakeStack) Container(context.Context) (name string, err error) {
 	f.calls = append(f.calls, "Container")
 	return "afk_o-r_chat_plan-afk-1", nil
 }
+func (f *fakeStack) Protected() (paths []string) { return nil }
 func (f *fakeStack) Attach(ctx context.Context, command string, _ *os.File, _, _ io.Writer) (err error) {
 	f.calls = append(f.calls, "Attach")
 	if f.onAttach != nil {
