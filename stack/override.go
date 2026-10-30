@@ -122,7 +122,7 @@ func overrideFile(in overrideInput) (data []byte, err error) {
 	bind := func(source, target string, readOnly bool) (volume string) {
 		return quote(map[string]any{"type": "bind", "source": escape(source), "target": escape(target), "read_only": readOnly})
 	}
-	names := map[string]bool{sandboxService: true}
+	names := map[string]bool{SandboxService: true}
 	for name := range in.Images {
 		names[name] = true
 	}
@@ -140,7 +140,7 @@ func overrideFile(in overrideInput) (data []byte, err error) {
 		if ports, ok := in.Ports[name]; ok {
 			fmt.Fprintf(&out, "    ports: !override %s\n", quote(append([]string{}, ports...)))
 		}
-		if name != sandboxService {
+		if name != SandboxService {
 			continue
 		}
 		// The Sandbox is a place to exec into, whatever its image runs.

@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -33,7 +34,7 @@ const (
 const fixtureCompose = `services:
   svc:
     image: %[1]s
-    command: ["sleep", "infinity"]
+    command: ["sh", "-c", "echo svc up; exec sleep infinity"]
     ports: ["80"]
 `
 
@@ -50,7 +51,7 @@ const fixtureComposeAfk = `services:
   afk-setup:
     image: %[1]s
     depends_on: [svc]
-    command: sh -c 'cat /t/seed >> /t/setup.log'
+    command: sh -c 'cat /t/seed >> /t/setup.log; echo seeded'
     volumes:
       - ${AFK_TREE}:/t
 volumes:
@@ -237,6 +238,27 @@ func TestIntegrationStack(t *testing.T) {
 		}
 		if got := countVolumes(t, chat); got != volumes {
 			t.Errorf("volumes after Up, Down, Up = %d, want %d: Down orphaned the masks", got, volumes)
+		}
+	})
+
+	t.Run("services, logs, restart and reseed", func(t *testing.T) {
+		services, err := chat.Services(t.Context())
+		if err != nil || strings.Join(services, ",") != "afk,afk-setup,svc" {
+			t.Fatalf("Services = %q, %v", services, err)
+		}
+		var logs bytes.Buffer
+		if err = chat.Logs(t.Context(), "svc", 5, &logs); err != nil || !strings.Contains(logs.String(), "svc up") {
+			t.Fatalf("Logs = %q, %v", logs.String(), err)
+		}
+		if err = chat.Restart(t.Context(), "svc", io.Discard); err != nil {
+			t.Fatalf("Restart: %v", err)
+		}
+		var seed bytes.Buffer
+		if err = chat.Reseed(t.Context(), &seed); err != nil || !strings.Contains(seed.String(), "seeded") {
+			t.Fatalf("Reseed = %q, %v: want the output of afk-setup", seed.String(), err)
+		}
+		if got := readLines(t, filepath.Join(chat.Tree(), "setup.log")); got != 2 {
+			t.Errorf("setup ran %d times after Reseed, want 2", got)
 		}
 	})
 

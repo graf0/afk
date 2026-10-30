@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 const (
@@ -28,10 +29,11 @@ type composeService struct {
 	} `json:"volumes"`
 }
 
-// config resolves the Project's two compose files.
+// config resolves the Project's two compose files. Its warnings are left
+// out: the channel asks for it on every call.
 func (s *Stack) config(ctx context.Context) (services map[string]composeService, err error) {
 	var out bytes.Buffer
-	if err = s.compose(ctx, false, &out, "--profile", "*", "config", "--format", "json"); err != nil {
+	if err = s.composeTo(ctx, false, &out, io.Discard, "--profile", "*", "config", "--format", "json"); err != nil {
 		return
 	}
 	var parsed struct {
@@ -51,22 +53,32 @@ func (s *Stack) config(ctx context.Context) (services map[string]composeService,
 // generated file is left out, for the commands that run before it exists.
 // The socket is only in the environment of this process, never of the Sandbox.
 func (s *Stack) compose(ctx context.Context, override bool, stdout io.Writer, args ...string) (err error) {
+	out := s.opts.Out
+	if out == nil {
+		out = io.Discard
+	}
+	if stdout == nil {
+		stdout = out
+	}
+	err = s.composeTo(ctx, override, stdout, out, args...)
+	return
+}
+
+// composeTo is compose with stdout and stderr the caller's, never
+// Options.Out: for output that is not the human's, such as the answers of the
+// channel while claude holds the terminal. The end of stderr is in err.
+func (s *Stack) composeTo(ctx context.Context, override bool, stdout, stderr io.Writer, args ...string) (err error) {
 	cmd, err := s.command(ctx, override, args...)
 	if err != nil {
 		return
 	}
+	if stdout == stderr {
+		// Two goroutines copy them: one writer takes one Write at a time.
+		w := &lockedWriter{w: stdout}
+		stdout, stderr = w, w
+	}
 	tail := &tailBuffer{max: errorTail}
-	cmd.Stderr = tail
-	if s.opts.Out != nil {
-		cmd.Stderr = io.MultiWriter(tail, s.opts.Out)
-	}
-	cmd.Stdout = stdout
-	if stdout == nil {
-		cmd.Stdout = io.Discard
-		if s.opts.Out != nil {
-			cmd.Stdout = s.opts.Out
-		}
-	}
+	cmd.Stdout, cmd.Stderr = stdout, io.MultiWriter(tail, stderr)
 	if err = cmd.Run(); err != nil {
 		err = fmt.Errorf("%s %s: %w: %s", composeBinary, args[0], err, strings.TrimSpace(tail.String()))
 	}
@@ -142,3 +154,16 @@ func (t *tailBuffer) Write(p []byte) (n int, err error) {
 }
 
 func (t *tailBuffer) String() (s string) { return string(t.buf) }
+
+// lockedWriter is w for the stdout and stderr of one command.
+type lockedWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (l *lockedWriter) Write(p []byte) (n int, err error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	n, err = l.w.Write(p)
+	return
+}

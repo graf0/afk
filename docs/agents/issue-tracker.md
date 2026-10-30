@@ -32,6 +32,9 @@ Details and rationale: `docs/workflow.md` (`afk-forge`), ADR-0012. Flags: `afk-f
 - **Sub-issue of a parent**: _host only_. Put `Part of #<parent>` at the top of the child body. The `spec` label is allowed on create/edit.
 - **Close**: _host only_.
 - **Open a pull request**: commit your work first, then `afk-forge pr create --title "..." (--body "..." | --body-file -)`. afk validates the commits of this clone like a Run's result (changes to protected paths such as `.github/`, `compose.yml`, `compose.afk.yml`, the Stack's Dockerfiles, `.afk/`, `.claude/` are refused, with the commits and paths listed), pushes `chat-<name>`, opens a ready-for-review PR into the base branch and prints its URL. Call it again after more commits: it only pushes and prints the URL of the open PR (title and body stay). No commits against the base branch is an error; uncommitted changes are left out (a warning). Reading, commenting on or merging PRs stays _host only_.
+- **Stack logs**: `afk-forge stack logs <service> [--tail <n>]` prints the last `n` lines of a service of this Chat's Stack (default 100, at most 1000; more is an error). An unknown service is an error that lists the services there are. Includes `afk`, your own Sandbox.
+- **Restart a service**: `afk-forge stack restart <service>`, any service of the Stack except `afk` (your Sandbox) and the one-shot `afk-setup` (use reseed).
+- **Reseed**: `afk-forge stack reseed` runs the service `afk-setup` of the Stack again and prints its output; it resets only what that script resets (volumes stay). A Stack without `afk-setup` is an error.
 - **Blocking, assignees**: _host only_ (see below).
 
 Limits, short:

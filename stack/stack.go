@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -23,9 +24,11 @@ import (
 )
 
 const (
-	sandboxService = "afk"
-	setupService   = "afk-setup"
-	podmanBinary   = "podman"
+	// SandboxService is the service the Agent works in.
+	SandboxService = "afk"
+	// SetupService is the optional one-shot service that seeds a new Stack.
+	SetupService = "afk-setup"
+	podmanBinary = "podman"
 
 	// terminateWait is how long a terminated Attach gets to restore the terminal.
 	terminateWait = 10 * time.Second
@@ -257,8 +260,8 @@ func (s *Stack) Up(ctx context.Context) (err error) {
 	if err = rejectSocketMounts(s.socket, sources); err != nil {
 		return
 	}
-	if _, ok := services[sandboxService]; !ok {
-		err = fmt.Errorf("%s defines no service %q", composeAfkFile, sandboxService)
+	if _, ok := services[SandboxService]; !ok {
+		err = fmt.Errorf("%s defines no service %q", composeAfkFile, SandboxService)
 		return
 	}
 	images := map[string]string{}
@@ -281,7 +284,7 @@ func (s *Stack) Up(ctx context.Context) (err error) {
 	}
 	var start []string
 	for _, name := range slices.Sorted(maps.Keys(services)) {
-		if name != setupService {
+		if name != SetupService {
 			start = append(start, name)
 		}
 	}
@@ -370,14 +373,25 @@ func (s *Stack) Setup(ctx context.Context) (err error) {
 	if err != nil {
 		return
 	}
-	if _, ok := services[setupService]; ok {
-		s.say("running %s", setupService)
-		if err = s.compose(ctx, true, nil, "run", "--rm", "--no-TTY", setupService); err != nil {
-			err = fmt.Errorf("%s: %w", setupService, err)
+	if _, ok := services[SetupService]; ok {
+		s.say("running %s", SetupService)
+		out := s.opts.Out
+		if out == nil {
+			out = io.Discard
+		}
+		if err = s.runSetup(ctx, out); err != nil {
 			return
 		}
 	}
 	err = os.WriteFile(s.setupMarker(), nil, 0o644)
+	return
+}
+
+// runSetup runs the service afk-setup to its end, its output to out.
+func (s *Stack) runSetup(ctx context.Context, out io.Writer) (err error) {
+	if err = s.composeTo(ctx, true, out, out, "run", "--rm", "--no-TTY", SetupService); err != nil {
+		err = fmt.Errorf("%s: %w", SetupService, err)
+	}
 	return
 }
 
@@ -435,12 +449,60 @@ func (s *Stack) writeOverride(images map[string]string, services []string) (err 
 	return
 }
 
+// --- Services, Logs, Restart, Reseed ---
+
+// These answer the channel while claude holds the terminal: their output goes
+// to the caller, never to Options.Out.
+
+// ErrNoSetup is Reseed's answer for a Stack without the service afk-setup.
+var ErrNoSetup = errors.New("the Stack has no service " + SetupService + ": nothing to reseed")
+
+// Services lists the services of the Stack, sorted.
+func (s *Stack) Services(ctx context.Context) (services []string, err error) {
+	config, err := s.config(ctx)
+	if err != nil {
+		return
+	}
+	services = slices.Sorted(maps.Keys(config))
+	return
+}
+
+// Logs writes the last tail lines of service's log to stdout. service is an
+// argument of docker-compose, not of a shell: the caller passes only a name
+// that Services listed.
+func (s *Stack) Logs(ctx context.Context, service string, tail int, stdout io.Writer) (err error) {
+	err = s.composeTo(ctx, true, stdout, io.Discard, "logs", "--no-color", "--tail", strconv.Itoa(tail), "--", service)
+	return
+}
+
+// Restart restarts service, with the same caveat as Logs; the output of
+// docker-compose goes to out.
+func (s *Stack) Restart(ctx context.Context, service string, out io.Writer) (err error) {
+	err = s.composeTo(ctx, true, out, out, "restart", "--", service)
+	return
+}
+
+// Reseed runs afk-setup again, whatever the marker of Setup says; its output
+// goes to out.
+func (s *Stack) Reseed(ctx context.Context, out io.Writer) (err error) {
+	config, err := s.config(ctx)
+	if err != nil {
+		return
+	}
+	if _, ok := config[SetupService]; !ok {
+		err = ErrNoSetup
+		return
+	}
+	err = s.runSetup(ctx, out)
+	return
+}
+
 // --- Exec, Down, Remove ---
 
 // Exec runs command with bash in the tree, in the Sandbox. Its stdout goes
 // to stdout; an error carries the tail of its stderr.
 func (s *Stack) Exec(ctx context.Context, command string, stdout io.Writer) (err error) {
-	err = s.compose(ctx, true, stdout, "exec", "--no-TTY", "--workdir", s.Tree(), sandboxService, "bash", "-c", command)
+	err = s.compose(ctx, true, stdout, "exec", "--no-TTY", "--workdir", s.Tree(), SandboxService, "bash", "-c", command)
 	return
 }
 
@@ -452,7 +514,7 @@ func (s *Stack) Attach(ctx context.Context, command string, in *os.File, out, er
 	if !term.IsTerminal(int(in.Fd())) {
 		args = append(args, "--no-TTY")
 	}
-	args = append(args, "--workdir", s.Tree(), sandboxService, "bash", "-c", command)
+	args = append(args, "--workdir", s.Tree(), SandboxService, "bash", "-c", command)
 	cmd, err := s.command(ctx, true, args...)
 	if err != nil {
 		return
@@ -473,7 +535,7 @@ func (s *Stack) Attach(ctx context.Context, command string, in *os.File, out, er
 func (s *Stack) Container(ctx context.Context) (name string, err error) {
 	out, err := exec.CommandContext(ctx, podmanBinary, "ps", "--format", "{{.Names}}",
 		"--filter", "label=com.docker.compose.project="+s.ProjectName(),
-		"--filter", "label=com.docker.compose.service="+sandboxService).Output()
+		"--filter", "label=com.docker.compose.service="+SandboxService).Output()
 	if err != nil {
 		err = fmt.Errorf("finding the Sandbox container: %w", err)
 		return

@@ -39,7 +39,7 @@ func TestClaudeProjectKey(t *testing.T) {
 
 func TestSystemPrompt(t *testing.T) {
 	got := systemPrompt("plan", "main", "/s/repo")
-	for _, want := range []string{`"plan"`, "origin/main", "chat-plan", "afk-forge", "pr create", "ready-for-agent", "/s/repo"} {
+	for _, want := range []string{`"plan"`, "origin/main", "chat-plan", "afk-forge", "pr create", "stack logs", "stack reseed", "ready-for-agent", "/s/repo"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("prompt lacks %q:\n%s", want, got)
 		}
@@ -157,6 +157,11 @@ func (f *fakeStack) Remove(ctx context.Context) (err error) {
 	f.cleanup = append(f.cleanup, ctx.Err())
 	return
 }
+
+func (f *fakeStack) Services(context.Context) (services []string, err error)  { return }
+func (f *fakeStack) Logs(context.Context, string, int, io.Writer) (err error) { return }
+func (f *fakeStack) Restart(context.Context, string, io.Writer) (err error)   { return }
+func (f *fakeStack) Reseed(context.Context, io.Writer) (err error)            { return }
 
 func gitIn(t *testing.T, dir string, args ...string) {
 	t.Helper()

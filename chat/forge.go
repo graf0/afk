@@ -428,9 +428,13 @@ const forgeUsage = `usage:
   afk-forge issue comment <n> (--body <text> | --body-file -)
   afk-forge issue edit <n> [--add-label <a,b>]... [--remove-label <a,b>]... [--title <title>] [--body <text> | --body-file -]
   afk-forge pr create --title <title> [--body <text> | --body-file -]
+  afk-forge stack logs <service> [--tail <n>]
+  afk-forge stack restart <service>
+  afk-forge stack reseed
 --body-file - reads the text from stdin; --label, --add-label and --remove-label may repeat or list labels with commas;
 --title and --body only on issues created by this Chat that are not ready-for-agent;
-pr create pushes the commits of this clone (uncommitted changes stay out) to the branch of this Chat and opens a pull request, or, when one is open, only pushes and prints its URL`
+pr create pushes the commits of this clone (uncommitted changes stay out) to the branch of this Chat and opens a pull request, or, when one is open, only pushes and prints its URL;
+stack logs prints the last n lines (default 100, at most 1000) of a service of the Stack; stack restart works on any service but afk and afk-setup; stack reseed runs afk-setup again and prints its output`
 
 // errForgeUsage answers arguments afk-forge does not take.
 var errForgeUsage = errors.New(forgeUsage)
@@ -449,6 +453,9 @@ var forgeCommands = map[string]func(args []string, stdin io.Reader) (call forgeC
 	"issue comment": parseComment,
 	"issue edit":    parseEdit,
 	"pr create":     parsePullCreate,
+	"stack logs":    parseStackLogs,
+	"stack restart": parseStackRestart,
+	"stack reseed":  parseStackReseed,
 }
 
 // RunForge executes `afk-forge args` against the channel at socket and writes
