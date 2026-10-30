@@ -72,18 +72,54 @@ func ReadBase(ctx context.Context, dir string) (base Base, err error) {
 	if base.Config, err = config.ParseNamed(fmt.Sprintf("%s at origin/%s", config.FileName, base.Branch), []byte(data)); err != nil {
 		return
 	}
-	// A missing settings.json is no plugins.
-	if listed, listErr := git(ctx, "-C", base.Repo, "ls-tree", "--name-only", base.Commit, "--", settingsPath); listErr == nil && listed != "" {
-		var settings string
-		if settings, err = git(ctx, "-C", base.Repo, "cat-file", "blob", base.Commit+":"+settingsPath); err != nil {
-			err = fmt.Errorf("reading %s from origin/%s: %w", settingsPath, base.Branch, err)
-			return
-		}
-		base.Settings = []byte(settings)
+	if base.Settings, err = readSettings(ctx, base.Repo, base.Commit); err != nil {
+		err = fmt.Errorf("%w (origin/%s)", err, base.Branch)
+		return
 	}
 	base.Plugins, _, err = config.EffectivePlugins(base.Config.Agent, base.Settings)
 	if err != nil {
 		err = fmt.Errorf("plugins at origin/%s: %w", base.Branch, err)
+	}
+	return
+}
+
+// readSettings is .claude/settings.json at commit in repo; a missing file is
+// no settings (nil).
+func readSettings(ctx context.Context, repo, commit string) (settings []byte, err error) {
+	listed, listErr := git(ctx, "-C", repo, "ls-tree", "--name-only", commit, "--", settingsPath)
+	if listErr != nil || listed == "" {
+		return
+	}
+	data, err := git(ctx, "-C", repo, "cat-file", "blob", commit+":"+settingsPath)
+	if err != nil {
+		err = fmt.Errorf("reading %s: %w", settingsPath, err)
+		return
+	}
+	settings = []byte(data)
+	return
+}
+
+// pinned is b with the Settings and Plugins as of b.Commit, read in repo,
+// which must have that commit: a resumed Run takes everything of its Sandbox
+// from the one base commit its clone was made from, not from the base branch
+// as it is today.
+func (b Base) pinned(ctx context.Context, repo string) (pinned Base, err error) {
+	pinned = b
+	data, err := git(ctx, "-C", repo, "cat-file", "blob", b.Commit+":"+config.FileName)
+	if err != nil {
+		err = fmt.Errorf("reading %s at %s: %w", config.FileName, b.Commit, err)
+		return
+	}
+	cfg, err := config.ParseNamed(fmt.Sprintf("%s at %s", config.FileName, b.Commit), []byte(data))
+	if err != nil {
+		return
+	}
+	if pinned.Settings, err = readSettings(ctx, repo, b.Commit); err != nil {
+		return
+	}
+	pinned.Plugins, _, err = config.EffectivePlugins(cfg.Agent, pinned.Settings)
+	if err != nil {
+		err = fmt.Errorf("plugins at %s: %w", b.Commit, err)
 	}
 	return
 }

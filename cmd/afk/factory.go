@@ -50,6 +50,21 @@ func runFactory(ctx context.Context, args []string, dir string, stdout io.Writer
 		return
 	}
 	err = factory.Run(ctx)
+	err = offerTemplateOnFailure(ctx, err, dir, os.Stdin, stdout, isTerminal(os.Stdin))
+	return
+}
+
+// offerTemplateOnFailure is the end of `afk factory`: a Project without
+// compose.afk.yml on the base branch (stack.ErrNoComposeAfk from the first Run)
+// gets the template on a terminal, which is no failure; any other err stays.
+func offerTemplateOnFailure(ctx context.Context, err error, dir string, in io.Reader, out io.Writer, tty bool) (outErr error) {
+	if err == nil {
+		return
+	}
+	created, outErr := offerTemplate(ctx, err, dir, in, out, tty)
+	if created {
+		outErr = nil
+	}
 	return
 }
 

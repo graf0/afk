@@ -321,13 +321,13 @@ func TestWorkResumedNote(t *testing.T) {
 }
 
 func TestTaskSpec(t *testing.T) {
-	r := run{branch: "ticket-9"}
+	r := run{branch: "ticket-9", Options: Options{Ticket: forge.Ticket{Number: 9}}}
 	if got := r.task().SpecPath; got != "" {
 		t.Errorf("SpecPath without a Spec = %q", got)
 	}
 	r.spec = &forge.Ticket{Number: 9}
-	if got := r.task().SpecPath; got != guestSpec {
-		t.Errorf("SpecPath = %q, want %q", got, guestSpec)
+	if got := r.task().SpecPath; got != r.contextFile(specFileName) {
+		t.Errorf("SpecPath = %q, want %q", got, r.contextFile(specFileName))
 	}
 }
 
@@ -398,5 +398,92 @@ func TestGuestBranchFetch(t *testing.T) {
 	g.commit("locked", agent.Report{})()
 	if _, err = fetch(); err == nil || !strings.Contains(err.Error(), "rejected") {
 		t.Errorf("protected path: err = %v", err)
+	}
+}
+
+// TestGuestBranchCloneTo: the clone the host makes before the Sandbox starts
+// holds the objects and refs; the Sandbox puts it on the branch (CheckoutCommand),
+// with the base as origin/<base>, or from the tip of a Spec's branch at the tip.
+// It has no remote: nothing to push to.
+func TestGuestBranchCloneTo(t *testing.T) {
+	root, _, base, q := acceptedResult(t)
+	tip := sh(t, root, "git --git-dir="+q.Dir+" rev-parse refs/heads/ticket-1")
+	b := GuestBranch{Quarantine: q, Name: "ticket-1", TempDir: t.TempDir()}
+	for name, tc := range map[string]struct {
+		fromTip bool
+		head    string
+	}{"from the base": {false, base}, "from the tip": {true, tip}} {
+		t.Run(name, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "state", "repo")
+			start, err := b.CloneTo(t.Context(), dir, "main", tc.fromTip)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if entries, _ := os.ReadDir(dir); len(entries) != 1 { // .git only: nothing checked out
+				t.Errorf("the host checked out files: %v", entries)
+			}
+			sh(t, dir, b.CheckoutCommand(start)) // what the Sandbox does
+			if got := sh(t, dir, "git rev-parse --abbrev-ref HEAD"); got != "ticket-1" {
+				t.Errorf("branch = %q", got)
+			}
+			if got := sh(t, dir, "git rev-parse HEAD"); got != tc.head {
+				t.Errorf("HEAD = %s, want %s", got, tc.head)
+			}
+			if got := sh(t, dir, "git rev-parse origin/main"); got != base {
+				t.Errorf("origin/main = %s, want the base %s", got, base)
+			}
+			if got := sh(t, dir, "git remote"); got != "" {
+				t.Errorf("remotes = %q, want none", got)
+			}
+			if got := sh(t, dir, "git status --porcelain"); got != "" {
+				t.Errorf("clone is dirty: %q", got)
+			}
+		})
+	}
+	if _, err := b.CloneTo(t.Context(), filepath.Join(t.TempDir(), "repo"), "main", true); err != nil {
+		t.Fatal(err)
+	}
+	empty := GuestBranch{Quarantine: q, Name: "ticket-9", TempDir: t.TempDir()}
+	if _, err := empty.CloneTo(t.Context(), filepath.Join(t.TempDir(), "repo"), "main", false); err == nil {
+		t.Error("a branch with no base in the Quarantine repo: want an error")
+	}
+}
+
+// The host's git config (hooks, filters from attributes) and the template
+// must run nothing while the host makes the clone: here a filter, a hook and
+// a template hook that would all leave a mark.
+func TestGuestBranchCloneToRunsNothingOfTheHosts(t *testing.T) {
+	_, _, _, q := acceptedResult(t)
+	home := t.TempDir()
+	mark := filepath.Join(home, "mark")
+	hooks := filepath.Join(home, "hooks")
+	template := filepath.Join(home, "template", "hooks")
+	for _, dir := range []string{hooks, template} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		for _, name := range []string{"reference-transaction", "post-checkout", "post-merge", "pre-auto-gc"} {
+			if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\ntouch "+mark+"\n"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	attributes := filepath.Join(home, "attributes")
+	if err := os.WriteFile(attributes, []byte("* filter=evil\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	global := filepath.Join(home, "gitconfig")
+	config := "[core]\n\thooksPath = " + hooks + "\n\tattributesFile = " + attributes + "\n[filter \"evil\"]\n\tsmudge = touch " + mark + "\n\tclean = touch " + mark + "\n[init]\n\ttemplateDir = " + filepath.Dir(template) + "\n"
+	if err := os.WriteFile(global, []byte(config), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", global)
+	t.Setenv("GIT_TEMPLATE_DIR", filepath.Dir(template))
+	b := GuestBranch{Quarantine: q, Name: "ticket-1", TempDir: t.TempDir()}
+	if _, err := b.CloneTo(t.Context(), filepath.Join(t.TempDir(), "repo"), "main", true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(mark); err == nil {
+		t.Error("the host's git ran a hook or a filter of its own config")
 	}
 }

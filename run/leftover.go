@@ -11,67 +11,73 @@ import (
 
 	"github.com/graf0/afk/forge"
 	"github.com/graf0/afk/machine"
+	"github.com/graf0/afk/stack"
 )
 
-// Leftover is a Run an earlier Factory left in its VM: after a failure or
-// Ctrl-C the VM stays (docs/workflow.md).
+// Leftover is the state of a Run an earlier Factory left: after a failure or
+// Ctrl-C the Stack goes down, but its clone and home stay (docs/workflow.md).
 type Leftover struct {
-	Machine string // libvirt name of the VM
+	Name string // of the Stack, and of its directory in the Project's state
 	// Ticket is the ticket the Run was for: a child of a Spec, the Spec
-	// itself for its review. Zero for a VM of the preflight.
+	// itself for its review. Zero for the state of a preflight.
 	Ticket int
 }
 
-// ListLeftovers returns the Run machines of project, by ticket, from the
-// metadata of libvirt domains. Machines that are no Run of a Factory (`afk vm up`) are left out.
-func ListLeftovers(project string) (leftovers []Leftover, err error) {
-	conn, err := machine.Connect()
+// ListLeftovers returns the Runs of project that have state, by ticket: the
+// state directory is the only record (ADR-0015).
+func ListLeftovers(stateDir, project string) (leftovers []Leftover, err error) {
+	names, err := stack.List(stateDir, project, stack.Run)
 	if err != nil {
 		return
 	}
-	defer func() { _ = conn.Close() }()
-	machines, err := conn.List(project)
-	if err != nil {
-		return
-	}
-	for _, m := range machines {
-		if n, ok := leftoverTicket(m); ok {
-			leftovers = append(leftovers, Leftover{Machine: m.Name, Ticket: n})
+	for _, name := range names {
+		if n, ok := leftoverTicket(name); ok {
+			leftovers = append(leftovers, Leftover{Name: name, Ticket: n})
 		}
 	}
 	slices.SortStableFunc(leftovers, func(a, b Leftover) int { return cmp.Compare(a.Ticket, b.Ticket) })
 	return
 }
 
-// IsLeftover reports whether m is the VM of a Run of a Factory.
-func IsLeftover(m machine.Machine) (ok bool) {
-	_, ok = leftoverTicket(m)
+// ticketName is the name of a ticket's branch and of the Stack of its Run.
+func ticketName(n int) (name string) { return fmt.Sprintf("ticket-%d", n) }
+
+// ticketNumber is the inverse of ticketName: ok is false for any other name.
+func ticketNumber(name string) (n int, ok bool) {
+	digits, found := strings.CutPrefix(name, "ticket-")
+	if !found {
+		return
+	}
+	n, err := strconv.Atoi(digits)
+	ok = err == nil && n > 0 && ticketName(n) == name
 	return
 }
 
-// leftoverTicket reads the ticket from the id of a Run machine, which
-// session makes <ticket>-<random>.
-func leftoverTicket(m machine.Machine) (n int, ok bool) {
+// leftoverTicket reads the ticket from the name of a Run's Stack; ok is
+// false for what is no Run of a Factory. The state of a preflight has ticket 0.
+func leftoverTicket(name string) (n int, ok bool) {
+	if rest, found := strings.CutPrefix(name, preflightPrefix); found && rest != "" {
+		return 0, true
+	}
+	return ticketNumber(name)
+}
+
+// IsLeftover reports whether m is the VM of a Run of the Sandbox VM Factory,
+// which left it by the id <ticket>-<random>. The Factory no longer makes
+// them; the TUI lists the ones it finds, until it goes (#65).
+func IsLeftover(m machine.Machine) (ok bool) {
 	number, _, found := strings.Cut(m.ID, "-")
 	n, err := strconv.Atoi(number)
-	ok = m.Kind == machine.KindRun && found && err == nil && n >= 0
-	return
+	return m.Kind == machine.KindRun && found && err == nil && n >= 0
 }
 
-// cleanLeftover destroys the VM of l and, unless vmOnly, what its Run left
-// of ticket-N. vmOnly is for a child of a Spec: its work is on the Spec's
-// branch, which is not its to delete.
-func cleanLeftover(ctx context.Context, g forge.Forge, q Quarantine, l Leftover, vmOnly bool, out io.Writer) (err error) {
-	conn, err := machine.Connect()
+// removeLeftover removes the Stack, volumes and state of l: its Run is over.
+func removeLeftover(ctx context.Context, stateDir, project string, l Leftover) (err error) {
+	st, err := stack.Open(stateDir, project, stack.Run, l.Name)
 	if err != nil {
 		return
 	}
-	err = conn.Kill(l.Machine)
-	_ = conn.Close()
-	if err != nil || vmOnly || l.Ticket == 0 {
-		return
-	}
-	err = cleanBranch(ctx, g, q, fmt.Sprintf("ticket-%d", l.Ticket), out)
+	err = st.Remove(ctx)
 	return
 }
 

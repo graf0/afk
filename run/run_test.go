@@ -10,6 +10,7 @@ import (
 
 	"github.com/graf0/afk/config"
 	"github.com/graf0/afk/forge"
+	"github.com/graf0/afk/image"
 )
 
 func TestTailBuffer(t *testing.T) {
@@ -60,11 +61,17 @@ func TestRotatingLog(t *testing.T) {
 
 func TestRunPrompt(t *testing.T) {
 	r := run{
-		Options: Options{Base: Base{Branch: "trunk", Config: config.Config{Protect: config.Protect{Paths: []string{".afk.toml"}}}}},
+		Options: Options{
+			Base:   Base{Branch: "trunk", Config: config.Config{Protect: config.Protect{Paths: []string{".afk.toml"}}}},
+			Ticket: forge.Ticket{Number: 7},
+			Paths:  image.Paths{StateDir: "/state"},
+		},
+		project: "o-r",
 		branch:  "ticket-7",
 	}
 	prompt := r.prompt()
-	for _, want := range []string{guestTicket, GuestRepo, "`ticket-7`", "`origin/trunk`", "`.afk.toml`"} {
+	// The paths are those of the Stack's Sandbox: the same as on the host.
+	for _, want := range []string{"/state/o-r/runs/ticket-7/context/TICKET.md", "/state/o-r/runs/ticket-7/repo", "`ticket-7`", "`origin/trunk`", "`.afk.toml`"} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("prompt lacks %q", want)
 		}
@@ -98,38 +105,5 @@ func TestDenialLogIsCreatedByTheFirstDenial(t *testing.T) {
 	}
 	if got, _ := os.ReadFile(path); string(got) != "denied a\ndenied b\n" || denied != 2 {
 		t.Errorf("file = %q, denied = %d", got, denied)
-	}
-}
-
-func TestCloseLogsSummarizesDenials(t *testing.T) {
-	dir := t.TempDir()
-	for name, denials := range map[string][]string{"none": nil, "two": {"denied a\n", "denied b\n"}} {
-		t.Run(name, func(t *testing.T) {
-			var out strings.Builder
-			path := filepath.Join(dir, name+".jsonl")
-			file, err := os.Create(path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			r := run{
-				Options: Options{Out: &out},
-				log:     &rotatingLog{path: path, file: file},
-				denials: &DenialLog{path: filepath.Join(dir, name+"-egress.txt")},
-			}
-			for _, line := range denials {
-				_, _ = r.denials.Write([]byte(line))
-			}
-			r.closeLogs()
-			want := ""
-			if denials != nil {
-				want = "= egress: 2 denied, see " + r.denials.path + "\n"
-			}
-			if out.String() != want {
-				t.Errorf("out = %q, want %q", out.String(), want)
-			}
-			if _, err := os.Stat(r.denials.path); (err == nil) != (denials != nil) {
-				t.Errorf("denials file stat: %v", err)
-			}
-		})
 	}
 }

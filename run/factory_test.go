@@ -11,10 +11,9 @@ import (
 
 	"github.com/graf0/afk/config"
 	"github.com/graf0/afk/forge"
-	"github.com/graf0/afk/machine"
 )
 
-// factoryEnv is a Factory on a fake GitHub with injected VMs: Execute
+// factoryEnv is a Factory on a fake GitHub with injected Stacks: Execute
 // records the tickets and does what a Run does to the Forge (the Spec and its
 // children are closed, the label goes), unless fail has an error for it.
 type factoryEnv struct {
@@ -22,13 +21,12 @@ type factoryEnv struct {
 	factory   *Factory
 	out       *bytes.Buffer
 	executed  []int
-	resumes   map[int]Leftover // by ticket, for the Runs that continued in a VM
+	resumes   map[int]Leftover // by ticket, for the Runs that continued in its state
 	cleaned   []string
 	events    []string
 	leftovers []Leftover
 	fail      map[int]error
 	reads     int   // ReadBase calls
-	imageErr  error // what EnsureImage fails with
 	unclaimed []int // claims a resumed Run did not hold
 }
 
@@ -44,10 +42,6 @@ func newFactoryEnv(t *testing.T, issues map[int]*fakeIssue, selector ...int) (en
 		Selector: selector,
 		Claims:   Claims{Dir: t.TempDir()},
 		Out:      env.out,
-		EnsureImage: func(ctx context.Context, base Base) (err error) {
-			env.events = append(env.events, "image")
-			return env.imageErr
-		},
 		ReadBase: func(ctx context.Context) (base Base, err error) {
 			env.reads++
 			return
@@ -57,11 +51,11 @@ func newFactoryEnv(t *testing.T, issues map[int]*fakeIssue, selector ...int) (en
 			return
 		},
 		Leftovers: func() (leftovers []Leftover, err error) { return env.leftovers, nil },
-		Cleanup: func(ctx context.Context, l Leftover, vmOnly bool) (err error) {
-			if vmOnly {
-				env.cleaned = append(env.cleaned, l.Machine+" (VM only)")
+		Cleanup: func(ctx context.Context, l Leftover, stateOnly bool) (err error) {
+			if stateOnly {
+				env.cleaned = append(env.cleaned, l.Name+" (state only)")
 			} else {
-				env.cleaned = append(env.cleaned, l.Machine)
+				env.cleaned = append(env.cleaned, l.Name)
 			}
 			return
 		},
@@ -134,7 +128,7 @@ func TestFactoryPick(t *testing.T) {
 			t.Errorf("want one %q in:\n%s", want, got)
 		}
 	}
-	if got := env.events; !slices.Equal(got, []string{"image", "preflight", "execute", "image", "execute", "image", "execute"}) {
+	if got := env.events; !slices.Equal(got, []string{"preflight", "execute", "execute", "execute"}) {
 		t.Errorf("events %v, want an image check before every Run and one preflight before the first", got)
 	}
 }
@@ -283,56 +277,8 @@ func TestFactoryFailureStops(t *testing.T) {
 	if want := []int{1, 2}; !slices.Equal(env.executed, want) {
 		t.Errorf("executed %v, want %v: the failure stops the Factory", env.executed, want)
 	}
-	for _, want := range []string{"afk vm shell", "afk vm kill"} {
-		if !strings.Contains(env.out.String(), want) {
-			t.Errorf("output lacks %q:\n%s", want, env.out)
-		}
-	}
-}
-
-func TestFactoryNoMemoryStops(t *testing.T) {
-	env := newFactoryEnv(t, map[int]*fakeIssue{1: {title: "One", open: true, labels: ready()}, 2: {title: "Two", open: true, labels: ready()}})
-	env.fail[1] = fmt.Errorf("starting the VM: %w", machine.ErrNoMemory)
-	err := env.factory.Run(t.Context())
-	if !errors.Is(err, machine.ErrNoMemory) || !strings.Contains(err.Error(), "#1") {
-		t.Errorf("err = %v, want the refusal of #1", err)
-	}
-	if want := []int{1}; !slices.Equal(env.executed, want) {
-		t.Errorf("executed %v, want %v", env.executed, want)
-	}
-	if got := env.out.String(); strings.Contains(got, "VM of the Run stays") || !strings.Contains(got, "no VM was created") {
-		t.Errorf("output:\n%s", got)
-	}
-}
-
-func TestFactoryEnsuresImageBeforeEveryRun(t *testing.T) {
-	env := newFactoryEnv(t, map[int]*fakeIssue{
-		1: {title: "One", open: true, labels: ready()},
-		2: {title: "Two", open: true, labels: ready()},
-	})
-	if err := env.factory.Run(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	want := []string{"image", "preflight", "execute", "image", "execute"}
-	if !slices.Equal(env.events, want) {
-		t.Errorf("events = %v, want %v", env.events, want)
-	}
-}
-
-func TestFactoryImageFailureStops(t *testing.T) {
-	env := newFactoryEnv(t, map[int]*fakeIssue{
-		1: {title: "One", open: true, labels: ready()},
-		2: {title: "Two", open: true, labels: ready()},
-	})
-	boom := errors.New("packer failed")
-	env.imageErr = boom
-
-	err := env.factory.Run(t.Context())
-	if !errors.Is(err, boom) {
-		t.Errorf("err = %v, want the build error", err)
-	}
-	if len(env.executed) != 0 || slices.Contains(env.events, "preflight") {
-		t.Errorf("events = %v, executed = %v; want nothing run on a failed build", env.events, env.executed)
+	if want := "The state of the Run stays: `afk factory` continues it"; !strings.Contains(env.out.String(), want) {
+		t.Errorf("output lacks %q:\n%s", want, env.out)
 	}
 }
 
@@ -376,56 +322,35 @@ func TestFactoryResume(t *testing.T) {
 		5: {title: "Failed single", open: true, labels: ready()},
 		6: {title: "Closed since", open: false},
 		7: {title: "Label gone", open: true},
-		// The VM of a child: the Spec continues.
+		// The state of a child: the Spec continues.
 		10: {title: "Spec", open: true, labels: readySpec()},
 		11: {title: "Child", open: true, labels: ready(), parent: 10},
 		13: {title: "Finished child", open: false, parent: 10},
 		80: {title: "Queue", open: true, labels: ready()},
 	})
-	env.leftovers = []Leftover{{"vm-pre", 0}, {"vm-5", 5}, {"vm-6", 6}, {"vm-7", 7}, {"vm-11", 11}, {"vm-13", 13}}
+	env.leftovers = []Leftover{{"preflight-ab12", 0}, {"ticket-5", 5}, {"ticket-6", 6}, {"ticket-7", 7}, {"ticket-11", 11}, {"ticket-13", 13}}
 	if err := env.factory.Run(t.Context()); err != nil {
 		t.Fatalf("%v\n%s", err, env.out)
 	}
 	if want := []int{5, 10, 80}; !slices.Equal(env.executed, want) {
 		t.Errorf("executed %v, want %v: leftovers before the queue\n%s", env.executed, want, env.out)
 	}
-	if want := (map[int]Leftover{5: {"vm-5", 5}, 10: {"vm-11", 11}}); len(env.resumes) != len(want) || env.resumes[5] != want[5] || env.resumes[10] != want[10] {
+	if want := (map[int]Leftover{5: {"ticket-5", 5}, 10: {"ticket-11", 11}}); len(env.resumes) != len(want) || env.resumes[5] != want[5] || env.resumes[10] != want[10] {
 		t.Errorf("resumes %v, want %v", env.resumes, want)
 	}
 	if len(env.unclaimed) != 0 {
 		t.Errorf("a resumed Run did not hold the claims of %v", env.unclaimed)
 	}
-	// A finished child has no branch of its own: only its VM goes.
-	if want := []string{"vm-pre (VM only)", "vm-6", "vm-13 (VM only)"}; !slices.Equal(env.cleaned, want) {
+	// A finished child has no branch of its own: only its state goes.
+	if want := []string{"preflight-ab12 (state only)", "ticket-6", "ticket-13 (state only)"}; !slices.Equal(env.cleaned, want) {
 		t.Errorf("cleaned %v, want %v", env.cleaned, want)
 	}
-	if !strings.Contains(env.out.String(), "VM vm-7 stays") {
-		t.Errorf("output does not say that vm-7 stays:\n%s", env.out)
+	if !strings.Contains(env.out.String(), "ticket-7 stays") {
+		t.Errorf("output does not say that ticket-7 stays:\n%s", env.out)
 	}
 }
 
-// A resumed Run continues in its VM: the image is needed only for a new VM,
-// here the preflight (the first Run of the Factory), and the fresh Run.
-func TestFactoryResumeEnsuresImageOnlyForNewVMs(t *testing.T) {
-	env := newFactoryEnv(t, map[int]*fakeIssue{
-		5: {title: "Resumed one", open: true, labels: ready()},
-		6: {title: "Resumed two", open: true, labels: ready()},
-		7: {title: "Fresh", open: true, labels: ready()},
-	})
-	env.leftovers = []Leftover{{"vm-5", 5}, {"vm-6", 6}}
-	if err := env.factory.Run(t.Context()); err != nil {
-		t.Fatalf("%v\n%s", err, env.out)
-	}
-	want := []string{"image", "preflight", "execute", "execute", "image", "execute"}
-	if !slices.Equal(env.events, want) {
-		t.Errorf("events = %v, want %v", env.events, want)
-	}
-	if env.reads != 3 {
-		t.Errorf("ReadBase calls = %d, want one per Run (3)", env.reads)
-	}
-}
-
-// A Factory stops at a failed Run; the next one continues it in its VM.
+// A Factory stops at a failed Run; the next one continues it in its state.
 func TestFactoryRerunContinuesFailedRun(t *testing.T) {
 	env := newFactoryEnv(t, map[int]*fakeIssue{
 		1: {title: "Fine", open: true, labels: ready()},
@@ -439,8 +364,8 @@ func TestFactoryRerunContinuesFailedRun(t *testing.T) {
 	if len(env.resumes) != 0 {
 		t.Errorf("resumes %v in the first Factory", env.resumes)
 	}
-	// What the failed Run left in libvirt.
-	env.leftovers = []Leftover{{"afk-run-2-ab12", 2}}
+	// What the failed Run left in the state directory.
+	env.leftovers = []Leftover{{"ticket-2", 2}}
 	delete(env.fail, 2)
 	env.executed = nil
 	if err := env.factory.Run(t.Context()); err != nil {
@@ -449,15 +374,15 @@ func TestFactoryRerunContinuesFailedRun(t *testing.T) {
 	if want := []int{2, 3}; !slices.Equal(env.executed, want) {
 		t.Errorf("executed %v, want %v", env.executed, want)
 	}
-	if got, ok := env.resumes[2]; !ok || got.Machine != "afk-run-2-ab12" {
-		t.Errorf("#2 did not continue in the VM it left: resumes %v", env.resumes)
+	if got, ok := env.resumes[2]; !ok || got.Name != "ticket-2" {
+		t.Errorf("#2 did not continue in the state it left: resumes %v", env.resumes)
 	}
 	if _, ok := env.resumes[3]; ok {
-		t.Error("#3 continued in a VM: it was never started")
+		t.Error("#3 continued in a state: it was never started")
 	}
 }
 
-// The VM of a live Run of another Factory looks like a leftover: its claim
+// The state of a live Run of another Factory looks like a leftover: its claim
 // tells them apart.
 func TestFactoryLeftoverInUse(t *testing.T) {
 	env := newFactoryEnv(t, map[int]*fakeIssue{
@@ -465,9 +390,9 @@ func TestFactoryLeftoverInUse(t *testing.T) {
 		6: {title: "Closed, running elsewhere", open: false},
 		7: {title: "Failed here", open: true, labels: ready()},
 	})
-	env.leftovers = []Leftover{{"vm-pre", 0}, {"vm-5", 5}, {"vm-6", 6}, {"vm-7", 7}}
+	env.leftovers = []Leftover{{"preflight-ab12", 0}, {"ticket-5", 5}, {"ticket-6", 6}, {"ticket-7", 7}}
 	other := env.factory.Claims
-	for _, key := range []string{preflightKey("vm-pre"), "5", "6"} {
+	for _, key := range []string{"preflight-ab12", "5", "6"} {
 		release, ok, err := other.ClaimKeys(key)
 		if err != nil || !ok {
 			t.Fatalf("claim %s: %v, %v", key, ok, err)
@@ -481,7 +406,7 @@ func TestFactoryLeftoverInUse(t *testing.T) {
 		t.Errorf("executed %v, cleaned %v; want only #7 resumed, nothing of the others touched\n%s", env.executed, env.cleaned, env.out)
 	}
 	if got := strings.Count(env.out.String(), "in use by another Factory"); got != 3 {
-		t.Errorf("%d VMs reported in use, want 3:\n%s", got, env.out)
+		t.Errorf("%d Runs reported in use, want 3:\n%s", got, env.out)
 	}
 }
 
@@ -496,17 +421,17 @@ func TestFactoryListLeftovers(t *testing.T) {
 		20: {title: "Other Spec", open: true, labels: readySpec()},
 		21: {title: "Child", open: true, labels: ready(), parent: 20},
 	}, 5, 10)
-	env.leftovers = []Leftover{{"vm-5", 5}, {"vm-6", 6}, {"vm-7", 7}, {"vm-11", 11}, {"vm-21", 21}}
+	env.leftovers = []Leftover{{"ticket-5", 5}, {"ticket-6", 6}, {"ticket-7", 7}, {"ticket-11", 11}, {"ticket-21", 21}}
 	if err := env.factory.Run(t.Context()); err != nil {
 		t.Fatalf("%v\n%s", err, env.out)
 	}
 	if want := []int{5, 10}; !slices.Equal(env.executed, want) {
 		t.Errorf("executed %v, want %v", env.executed, want)
 	}
-	if want := (map[int]Leftover{5: {"vm-5", 5}, 10: {"vm-11", 11}}); len(env.resumes) != 2 || env.resumes[5] != want[5] || env.resumes[10] != want[10] {
+	if want := (map[int]Leftover{5: {"ticket-5", 5}, 10: {"ticket-11", 11}}); len(env.resumes) != 2 || env.resumes[5] != want[5] || env.resumes[10] != want[10] {
 		t.Errorf("resumes %v, want %v", env.resumes, want)
 	}
 	if len(env.cleaned) != 0 {
-		t.Errorf("cleaned %v: unlisted tickets' VMs must stay", env.cleaned)
+		t.Errorf("cleaned %v: unlisted tickets' state must stay", env.cleaned)
 	}
 }

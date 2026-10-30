@@ -12,20 +12,7 @@ import (
 	"github.com/graf0/afk/config"
 )
 
-// withSetup is work preceded by the Tools' setup, which runs in a guest whose
-// clone is prepared and before any of its sessions. A VM of a resumed Run has
-// had it already: its work is not wrapped.
-func (r run) withSetup(work workFunc) (wrapped workFunc) {
-	return func(ctx context.Context, g guest) (res result, err error) {
-		if err = SetupTools(ctx, g.Exec, r.Base.Config, r.log.path, r.Out); err != nil {
-			return
-		}
-		res, err = work(ctx, g)
-		return
-	}
-}
-
-// SetupTools runs the setup commands of the Tools in the clone, Tools in name
+// SetupTools runs the setup commands of the Tools in the clone of a Chat's guest, Tools in name
 // order, with their env (exec sets it). The output of all of them goes to
 // <logPath minus .jsonl>-setup.txt, bounded like the log; the first failing
 // command fails it, with the path of the file. Progress lines go to out.

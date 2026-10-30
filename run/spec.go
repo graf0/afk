@@ -9,17 +9,15 @@ import (
 	"strings"
 
 	"github.com/graf0/afk/agent"
-	"github.com/graf0/afk/config"
 	"github.com/graf0/afk/forge"
-	"github.com/graf0/afk/image"
 )
 
-// sessionFunc runs work in a fresh guest prepared for r: in production a
-// Sandbox VM (run.session), in tests a local clone.
+// sessionFunc runs work in a guest prepared for r: in production the Sandbox
+// of a Stack (run.enter), in tests a local clone.
 type sessionFunc func(ctx context.Context, r run, work workFunc) (res result, err error)
 
 // ErrNeedsInfo is wrapped by the error of a Spec stopped by needs_info of a
-// child: the questions are on the Forge and the VM is gone, so the Factory goes on.
+// child: the questions are on the Forge and the Stack is gone, so the Factory goes on.
 var ErrNeedsInfo = errors.New("needs info")
 
 // specRun is the state of the Run of a Spec: its children, one Run each, on
@@ -28,8 +26,8 @@ type specRun struct {
 	run  // Ticket is the Spec; tip moves with every child
 	open sessionFunc
 
-	// leftover is the VM an earlier Factory left for one of the Runs of the
-	// Spec; the Run of its ticket goes there (takeLeftover).
+	// leftover is the state an earlier Factory left for one of the Runs of the
+	// Spec; the Run of its ticket continues in it (takeLeftover).
 	leftover *Leftover
 
 	pushed   string            // commit of the branch on the Forge: what afk pushed or read last
@@ -41,36 +39,26 @@ type specRun struct {
 
 // ExecuteSpec runs the Spec opts.Ticket like docs/reference/ralph.sh, do_spec:
 // its open sub-issues in ascending order, the first one without an open
-// blocker each time, every one as a Run in a fresh VM (from a Base image
-// ensured right before it, as a Spec runs for hours) that starts from the
-// end of the branch ticket-<spec>; then a review of the whole branch.
+// blocker each time, every one as a Run in the Sandbox of a Stack of its own
+// that starts from the end of the branch ticket-<spec>; then a review of the
+// whole branch.
 // After each child the branch is pushed, the first one opens a draft pull
 // request (Closes for the Spec and all children), and the report goes on the
 // pull request. The child is closed and loses ready_for_agent. After the
 // review the pull request is ready for review. needs_info on a child stops
 // the Spec with labels on the child and the Spec; the finished children stay
 // on the branch. The branch of a draft pull request is continued where it
-// ended; failures in a VM leave it as in Execute.
+// ended; failures leave the state as in Execute.
 func ExecuteSpec(ctx context.Context, opts Options) (err error) {
 	// Resume is per Run, set by takeLeftover.
 	leftover := opts.Resume
 	opts.Resume = nil
-	r, setup, err := newRun(ctx, opts)
+	r, err := newRun(ctx, opts)
 	if err != nil {
 		return
 	}
 	s := specRun{run: r, leftover: leftover, open: func(ctx context.Context, r run, work workFunc) (res result, err error) {
-		// A Spec runs for hours: every fresh VM starts from a current image.
-		if r.Resume == nil {
-			if err = ensureSandboxImage(ctx, r.Base, r.Paths, r.Out, image.Build); err != nil {
-				err = fmt.Errorf("ensuring the Base image: %w", err)
-				return
-			}
-			if setup.disk, err = image.LatestDisk(r.Paths, r.project, config.SandboxMachine); err != nil {
-				return
-			}
-		}
-		res, err = r.enter(ctx, setup, work)
+		res, err = r.enter(ctx, work)
 		return
 	}}
 	err = s.execute(ctx)
@@ -104,7 +92,7 @@ func (s *specRun) execute(ctx context.Context) (err error) {
 		}
 	}
 	if err = s.finish(ctx); err == nil && s.leftover != nil {
-		s.say("VM %s of #%d was not used (nothing of the Spec is left for it): `afk vm kill %s`", s.leftover.Machine, s.leftover.Ticket, s.leftover.Machine)
+		s.say("state %s of #%d was not used (nothing of the Spec is left for it)", s.leftover.Name, s.leftover.Ticket)
 	}
 	return
 }
@@ -137,7 +125,7 @@ func (s *specRun) start(ctx context.Context) (err error) {
 		}
 	}
 	if remoteTip == "" && s.leftover != nil {
-		// The VM cloned the base of the earlier Run, not today's.
+		// The clone was made from the base of the earlier Run, not today's.
 		if s.Base.Commit, err = s.quarantine.Base(ctx, s.branch); err != nil {
 			return
 		}
@@ -213,7 +201,7 @@ func (s *specRun) next(ctx context.Context) (child forge.Ticket, ok bool, err er
 	return
 }
 
-// runChild runs child in a fresh VM from the tip of the branch, accepts the
+// runChild runs child in a fresh Stack from the tip of the branch, accepts the
 // result and publishes it. needs_info stops the Spec.
 func (s *specRun) runChild(ctx context.Context, child forge.Ticket) (err error) {
 	r := s.run
@@ -247,7 +235,7 @@ func (s *specRun) runChild(ctx context.Context, child forge.Ticket) (err error) 
 	return
 }
 
-// takeLeftover sends the Run r to the VM an earlier Factory left for its
+// takeLeftover sends the Run r to the state an earlier Factory left for its
 // ticket, once: the next ones start fresh.
 func (s *specRun) takeLeftover(r *run) {
 	if s.leftover == nil || s.leftover.Ticket != r.Ticket.Number {
@@ -341,7 +329,7 @@ func (s *specRun) needsInfo(ctx context.Context, child forge.Ticket, report agen
 
 // --- review ---
 
-// finish reviews the whole branch in a fresh VM and writes the outcome to the
+// finish reviews the whole branch in a fresh Stack and writes the outcome to the
 // Forge: push of the review's fixes, report, the description of the pull
 // request, ready_for_human when a person must look, the pull request ready for
 // review and the Spec without ready_for_agent.

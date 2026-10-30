@@ -50,7 +50,7 @@ const fixtureComposeAfk = `services:
   afk-setup:
     image: %[1]s
     depends_on: [svc]
-    command: sh -c 'echo run >> /t/setup.log'
+    command: sh -c 'cat /t/seed >> /t/setup.log'
     volumes:
       - ${AFK_TREE}:/t
 volumes:
@@ -113,8 +113,22 @@ func TestIntegrationStack(t *testing.T) {
 		if got := execOut(t, chat, "getent hosts svc | wc -l"); got != "1" {
 			t.Errorf("service svc not resolvable from the Sandbox: %q", got)
 		}
+		if _, err := os.Stat(filepath.Join(chat.Tree(), "setup.log")); err == nil {
+			t.Error("Up ran afk-setup: it is for Setup, after the clone is in the tree")
+		}
+	})
+
+	t.Run("setup sees the tree, and runs once", func(t *testing.T) {
+		if err := os.WriteFile(filepath.Join(chat.Tree(), "seed"), []byte("from the clone\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		for range 2 {
+			if err := chat.Setup(t.Context()); err != nil {
+				t.Fatalf("Setup: %v\n%s", err, upOut.String())
+			}
+		}
 		if got := readLines(t, filepath.Join(chat.Tree(), "setup.log")); got != 1 {
-			t.Errorf("setup ran %d times, want 1", got)
+			t.Errorf("setup ran %d times, want 1 (it reads the seed of the tree)", got)
 		}
 	})
 
@@ -194,6 +208,9 @@ func TestIntegrationStack(t *testing.T) {
 		}
 		if strings.Contains(upOut.String(), "building images") {
 			t.Errorf("unchanged definition rebuilt:\n%s", upOut.String())
+		}
+		if err := chat.Setup(t.Context()); err != nil {
+			t.Fatal(err)
 		}
 		if got := readLines(t, filepath.Join(chat.Tree(), "setup.log")); got != 1 {
 			t.Errorf("setup ran %d times after restart, want 1", got)

@@ -17,18 +17,18 @@ import (
 	"github.com/graf0/afk/forge"
 )
 
-// fakeVMs plays the VMs of a Spec: every session gets a clone of the Quarantine
+// fakeSandboxes plays the Sandboxes of a Spec: every session gets a clone of the Quarantine
 // repo at the start of the Run, and the next script says what its Agent does.
-type fakeVMs struct {
+type fakeSandboxes struct {
 	t       *testing.T
 	scripts []func(g *fakeGuest)
 	guests  []*fakeGuest
-	resumes []*Leftover // per VM: the VM it continues, nil for a fresh one
+	resumes []*Leftover // per Sandbox: the state it continues, nil for a fresh one
 }
 
-func (v *fakeVMs) open(ctx context.Context, r run, work workFunc) (res result, err error) {
+func (v *fakeSandboxes) open(ctx context.Context, r run, work workFunc) (res result, err error) {
 	if len(v.scripts) == 0 {
-		v.t.Fatalf("unexpected VM for #%d", r.Ticket.Number)
+		v.t.Fatalf("unexpected Sandbox for #%d", r.Ticket.Number)
 	}
 	dir := filepath.Join(v.t.TempDir(), "repo")
 	sh(v.t, filepath.Dir(dir), fmt.Sprintf("git init -q -b %[1]s repo && cd repo && git fetch -q %[2]s 'refs/*:refs/q/*' && git checkout -q -B %[1]s %[3]s",
@@ -87,24 +87,24 @@ func newSpecEnv(t *testing.T) (env specEnv) {
 	return
 }
 
-// spec is a Run of the Spec on a fresh Quarantine repo; vms plays its VMs.
-func (env specEnv) spec(t *testing.T, vms *fakeVMs) (s *specRun) {
+// spec is a Run of the Spec on a fresh Quarantine repo; boxes plays its VMs.
+func (env specEnv) spec(t *testing.T, boxes *fakeSandboxes) (s *specRun) {
 	t.Helper()
 	q, err := OpenQuarantine(t.Context(), filepath.Join(t.TempDir(), "quarantine.git"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	return env.specOn(t, vms, q)
+	return env.specOn(t, boxes, q)
 }
 
 // specOn is spec on the Quarantine repo q, as in a second process of afk.
-func (env specEnv) specOn(t *testing.T, vms *fakeVMs, q Quarantine) (s *specRun) {
+func (env specEnv) specOn(t *testing.T, boxes *fakeSandboxes, q Quarantine) (s *specRun) {
 	t.Helper()
 	cfg, err := config.Parse([]byte(testConfigBase + "[agent]\nmodel = \"impl\"\nreview_model = \"rev\"\n[gate]\ncmd = 'true'\nmax_fixes = 1\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	vms.t = t
+	boxes.t = t
 	return &specRun{
 		run: run{
 			Options: Options{
@@ -117,7 +117,7 @@ func (env specEnv) specOn(t *testing.T, vms *fakeVMs, q Quarantine) (s *specRun)
 			branch:     "ticket-9",
 			quarantine: q,
 		},
-		open: vms.open,
+		open: boxes.open,
 	}
 }
 
@@ -144,8 +144,8 @@ func childWrites(n int) (writes []string) {
 
 func TestSpecThreeChildren(t *testing.T) {
 	env := newSpecEnv(t)
-	vms := &fakeVMs{scripts: []func(g *fakeGuest){child("c1"), child("c2"), child("c3"), review("fix")}}
-	s := env.spec(t, vms)
+	boxes := &fakeSandboxes{scripts: []func(g *fakeGuest){child("c1"), child("c2"), child("c3"), review("fix")}}
+	s := env.spec(t, boxes)
 	if err := s.execute(t.Context()); err != nil {
 		t.Fatalf("%v\n%s", err, s.Out)
 	}
@@ -157,8 +157,8 @@ func TestSpecThreeChildren(t *testing.T) {
 	if got := env.fake.writes(); !slices.Equal(got, want) {
 		t.Fatalf("writes:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
-	if len(vms.scripts) != 0 {
-		t.Errorf("%d VMs not used", len(vms.scripts))
+	if len(boxes.scripts) != 0 {
+		t.Errorf("%d VMs not used", len(boxes.scripts))
 	}
 
 	pull := env.fake.bodies[slices.Index(env.fake.requests, "POST /repos/o/r/pulls")]
@@ -206,13 +206,13 @@ func TestSpecThreeChildren(t *testing.T) {
 	}
 
 	// Every child is told about the Spec; the review is of the Spec itself.
-	for i, g := range vms.guests[:3] {
-		if !strings.Contains(g.prompts[0], guestSpec) {
+	for i, g := range boxes.guests[:3] {
+		if !strings.Contains(g.prompts[0], specFileName) {
 			t.Errorf("prompt of child %d lacks the Spec:\n%s", i+1, g.prompts[0])
 		}
 	}
-	if strings.Contains(vms.guests[3].prompts[0], guestSpec) || !strings.Contains(vms.guests[3].prompts[0], "git diff origin/main...HEAD") {
-		t.Errorf("review prompt:\n%s", vms.guests[3].prompts[0])
+	if strings.Contains(boxes.guests[3].prompts[0], specFileName) || !strings.Contains(boxes.guests[3].prompts[0], "git diff origin/main...HEAD") {
+		t.Errorf("review prompt:\n%s", boxes.guests[3].prompts[0])
 	}
 }
 
@@ -221,8 +221,8 @@ func TestSpecBlocked(t *testing.T) {
 		env := newSpecEnv(t)
 		env.fake.issues[10].blockers = []int{20}
 		env.fake.issues[12].body = "Blocked by: #10"
-		vms := &fakeVMs{scripts: []func(g *fakeGuest){child("c2")}}
-		s := env.spec(t, vms)
+		boxes := &fakeSandboxes{scripts: []func(g *fakeGuest){child("c2")}}
+		s := env.spec(t, boxes)
 		err := s.execute(t.Context())
 		if err == nil || !strings.Contains(err.Error(), "all are blocked") {
 			t.Fatalf("err = %v, want open children all blocked", err)
@@ -243,7 +243,7 @@ func TestSpecBlocked(t *testing.T) {
 		for _, n := range []int{10, 11, 12} {
 			env.fake.issues[n].blockers = []int{20}
 		}
-		s := env.spec(t, &fakeVMs{})
+		s := env.spec(t, &fakeSandboxes{})
 		if err := s.execute(t.Context()); err == nil || !strings.Contains(err.Error(), "all are blocked") {
 			t.Fatalf("err = %v", err)
 		}
@@ -254,7 +254,7 @@ func TestSpecBlocked(t *testing.T) {
 	t.Run("child without the label", func(t *testing.T) {
 		env := newSpecEnv(t)
 		env.fake.issues[12].labels = nil
-		s := env.spec(t, &fakeVMs{})
+		s := env.spec(t, &fakeSandboxes{})
 		if err := s.execute(t.Context()); err == nil || !strings.Contains(err.Error(), "#12 lacks the label") {
 			t.Fatalf("err = %v", err)
 		}
@@ -263,8 +263,8 @@ func TestSpecBlocked(t *testing.T) {
 
 func TestSpecNeedsInfo(t *testing.T) {
 	env := newSpecEnv(t)
-	vms := &fakeVMs{scripts: []func(g *fakeGuest){child("c1"), needsInfo}}
-	s := env.spec(t, vms)
+	boxes := &fakeSandboxes{scripts: []func(g *fakeGuest){child("c1"), needsInfo}}
+	s := env.spec(t, boxes)
 	err := s.execute(t.Context())
 	if err == nil || !strings.Contains(err.Error(), "child #11 needs info") || !strings.Contains(err.Error(), "stay on ticket-9") {
 		t.Fatalf("err = %v", err)
@@ -308,7 +308,7 @@ func TestSpecResume(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			env := newSpecEnv(t)
-			first := env.spec(t, &fakeVMs{scripts: []func(g *fakeGuest){child("c1"), needsInfo}})
+			first := env.spec(t, &fakeSandboxes{scripts: []func(g *fakeGuest){child("c1"), needsInfo}})
 			if err := first.execute(t.Context()); err == nil {
 				t.Fatal("want needs_info")
 			}
@@ -327,13 +327,13 @@ func TestSpecResume(t *testing.T) {
 			}
 			env.fake.requests, env.fake.bodies = nil, nil
 
-			vms := &fakeVMs{scripts: []func(g *fakeGuest){child("c2"), child("c3"), review("")}}
-			s := env.specOn(t, vms, q)
+			boxes := &fakeSandboxes{scripts: []func(g *fakeGuest){child("c2"), child("c3"), review("")}}
+			s := env.specOn(t, boxes, q)
 			if err := s.execute(t.Context()); err != nil {
 				t.Fatalf("%v\n%s", err, s.Out)
 			}
 			// The next child starts from the end of the branch.
-			if got := sh(t, vms.guests[0].dir, "git log -1 --format=%s HEAD~1"); got != "First (#10)" {
+			if got := sh(t, boxes.guests[0].dir, "git log -1 --format=%s HEAD~1"); got != "First (#10)" {
 				t.Errorf("the VM of #11 starts at %q, want the work of #10", got)
 			}
 			want := slices.Concat(
@@ -370,19 +370,19 @@ func TestSpecLeftover(t *testing.T) {
 	sh(t, env.user, "echo m > moved && git add moved && git commit -qm moved")
 	moved := sh(t, env.user, "git rev-parse HEAD")
 
-	vms := &fakeVMs{scripts: []func(g *fakeGuest){child("c1"), child("c2"), child("c3"), review("")}}
-	s := env.specOn(t, vms, q)
+	boxes := &fakeSandboxes{scripts: []func(g *fakeGuest){child("c1"), child("c2"), child("c3"), review("")}}
+	s := env.specOn(t, boxes, q)
 	s.Base.Commit = moved
-	leftover := Leftover{Machine: "afk-run-10-ab12", Ticket: 10}
+	leftover := Leftover{Name: "ticket-10", Ticket: 10}
 	s.leftover = &leftover
 	if err = s.execute(t.Context()); err != nil {
 		t.Fatalf("%v\n%s", err, s.Out)
 	}
-	if len(vms.resumes) != 4 || vms.resumes[0] == nil || *vms.resumes[0] != leftover || slices.ContainsFunc(vms.resumes[1:], func(l *Leftover) bool { return l != nil }) {
-		t.Errorf("resumes %v, want only the VM of #10 continued", vms.resumes)
+	if len(boxes.resumes) != 4 || boxes.resumes[0] == nil || *boxes.resumes[0] != leftover || slices.ContainsFunc(boxes.resumes[1:], func(l *Leftover) bool { return l != nil }) {
+		t.Errorf("resumes %v, want only the state of #10 continued", boxes.resumes)
 	}
-	if !strings.Contains(vms.guests[0].prompts[0], "Wznawiasz przerwaną pracę") || strings.Contains(vms.guests[1].prompts[0], "Wznawiasz") {
-		t.Errorf("the note belongs in the first prompt only:\n%s\n---\n%s", vms.guests[0].prompts[0], vms.guests[1].prompts[0])
+	if !strings.Contains(boxes.guests[0].prompts[0], "Wznawiasz przerwaną pracę") || strings.Contains(boxes.guests[1].prompts[0], "Wznawiasz") {
+		t.Errorf("the note belongs in the first prompt only:\n%s\n---\n%s", boxes.guests[0].prompts[0], boxes.guests[1].prompts[0])
 	}
 	if s.Base.Commit != env.base {
 		t.Errorf("base %s, want %s of the earlier Run, not the moved main %s", s.Base.Commit, env.base, moved)
@@ -394,17 +394,17 @@ func TestSpecLeftover(t *testing.T) {
 
 func TestSpecLeftoverOfNothing(t *testing.T) {
 	env := newSpecEnv(t)
-	vms := &fakeVMs{scripts: []func(g *fakeGuest){child("c1"), child("c2"), child("c3"), review("")}}
-	s := env.spec(t, vms)
+	boxes := &fakeSandboxes{scripts: []func(g *fakeGuest){child("c1"), child("c2"), child("c3"), review("")}}
+	s := env.spec(t, boxes)
 	if err := s.quarantine.FetchBase(t.Context(), env.user, env.base, "ticket-9"); err != nil {
 		t.Fatal(err)
 	}
-	s.leftover = &Leftover{Machine: "afk-run-99-ab12", Ticket: 99}
+	s.leftover = &Leftover{Name: "ticket-99", Ticket: 99}
 	if err := s.execute(t.Context()); err != nil {
 		t.Fatalf("%v\n%s", err, s.Out)
 	}
-	if !strings.Contains(s.Out.(*bytes.Buffer).String(), "VM afk-run-99-ab12 of #99 was not used") {
-		t.Errorf("output does not say that the VM was not used:\n%s", s.Out)
+	if !strings.Contains(s.Out.(*bytes.Buffer).String(), "state ticket-99 of #99 was not used") {
+		t.Errorf("output does not say that the state was not used:\n%s", s.Out)
 	}
 }
 
@@ -413,7 +413,7 @@ func TestSpecLeftoverOfNothing(t *testing.T) {
 func TestSpecResumeHalfFinishedChild(t *testing.T) {
 	env := newSpecEnv(t)
 	env.fake.fail = "PATCH /repos/o/r/issues/10"
-	first := env.spec(t, &fakeVMs{scripts: []func(g *fakeGuest){child("c1")}})
+	first := env.spec(t, &fakeSandboxes{scripts: []func(g *fakeGuest){child("c1")}})
 	err := first.execute(t.Context())
 	if err == nil || !strings.Contains(err.Error(), "close #10") {
 		t.Fatalf("err = %v, want the failed closing of #10", err)
@@ -421,8 +421,8 @@ func TestSpecResumeHalfFinishedChild(t *testing.T) {
 	env.fake.fail = ""
 	env.fake.requests, env.fake.bodies = nil, nil
 
-	vms := &fakeVMs{scripts: []func(g *fakeGuest){child("c2"), child("c3"), review("")}}
-	s := env.specOn(t, vms, first.quarantine)
+	boxes := &fakeSandboxes{scripts: []func(g *fakeGuest){child("c2"), child("c3"), review("")}}
+	s := env.specOn(t, boxes, first.quarantine)
 	if err = s.execute(t.Context()); err != nil {
 		t.Fatalf("%v\n%s", err, s.Out)
 	}
@@ -448,14 +448,14 @@ func TestSpecResumeHalfFinishedChild(t *testing.T) {
 // The Quarantine repo has commits the Forge lacks: nothing is overwritten.
 func TestSpecResumeLocalAhead(t *testing.T) {
 	env := newSpecEnv(t)
-	first := env.spec(t, &fakeVMs{scripts: []func(g *fakeGuest){child("c1"), needsInfo}})
+	first := env.spec(t, &fakeSandboxes{scripts: []func(g *fakeGuest){child("c1"), needsInfo}})
 	if err := first.execute(t.Context()); err == nil {
 		t.Fatal("want needs_info")
 	}
 	git := "git --git-dir=" + first.quarantine.Dir + " "
 	sh(t, env.root, git+"update-ref refs/heads/ticket-9 $("+git+"commit-tree ticket-9^{tree} -p ticket-9 -m extra)")
 	local := sh(t, env.root, git+"rev-parse ticket-9")
-	s := env.specOn(t, &fakeVMs{}, first.quarantine)
+	s := env.specOn(t, &fakeSandboxes{}, first.quarantine)
 	err := s.execute(t.Context())
 	if err == nil || !strings.Contains(err.Error(), "has commits that") || !strings.Contains(err.Error(), "update-ref -d refs/heads/ticket-9") {
 		t.Fatalf("err = %v, want instructions", err)
@@ -474,7 +474,7 @@ func TestSpecResumeRefused(t *testing.T) {
 			env := newSpecEnv(t)
 			sh(t, env.root, "git --git-dir=origin.git update-ref refs/heads/ticket-9 "+env.base)
 			env.fake.pull = pull
-			s := env.spec(t, &fakeVMs{})
+			s := env.spec(t, &fakeSandboxes{})
 			err := s.execute(t.Context())
 			if err == nil || !strings.Contains(err.Error(), "is not an open draft") || !strings.Contains(err.Error(), "git push origin --delete ticket-9") {
 				t.Fatalf("err = %v, want instructions", err)
@@ -488,7 +488,7 @@ func TestSpecResumeRefused(t *testing.T) {
 
 func TestSpecNotASpec(t *testing.T) {
 	env := newSpecEnv(t)
-	s := env.spec(t, &fakeVMs{})
+	s := env.spec(t, &fakeSandboxes{})
 	s.Ticket.Labels = nil
 	if err := s.execute(t.Context()); err == nil || !strings.Contains(err.Error(), "not a Spec") {
 		t.Errorf("without the label: err = %v", err)

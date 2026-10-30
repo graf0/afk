@@ -11,4 +11,5 @@ Agent w Chat wypycha branch `chat-<nazwa>` i otwiera PR wąską operacją kanał
 ## Consequences
 
 - Każdy push brancha Agenta (`chat-<nazwa>`, `ticket-N`) uruchamia CI repo z jego sekretami na kodzie Agenta. Filtr chronionych ścieżek chroni definicje workflowów, ale nie kod, który wykonują. Projekt powinien dawać sekrety tylko workflowom na gałęzi bazowej i tagach albo za approval (environments). Opisuje to README.
+- Token jest w środowisku Sandboxa, więc widzi go też gate i każdy proces w Sandboxie. To nie jest nowa ekspozycja: gate wykonuje kod napisany przez Agenta, który ma token w swojej sesji.
 - Agent nadal nie nadaje `ready-for-agent` i nie merguje PR. Robi to człowiek.

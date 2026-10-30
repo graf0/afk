@@ -31,7 +31,7 @@ Repozytorium Projectu musi mieć w korzeniu trzy pliki:
 
 - **`.afk.toml`**: konfiguracja (format niżej).
 - **`compose.yml`**: Stack dev Projectu.
-- **`compose.afk.yml`**: override z serwisem `afk` (Sandbox) i opcjonalnym `afk-setup`. To serwis jednorazowy, np. seed bazy, uruchamiany przy pierwszym starcie Stacku i na żądanie Agenta. W tym pliku są też katalogi maskowane (anonimowe volume'y) i cache (named volume'y).
+- **`compose.afk.yml`**: override z serwisem `afk` (Sandbox) i opcjonalnym `afk-setup`. To serwis jednorazowy, np. seed bazy, uruchamiany raz, po starcie Stacku i po checkoucie klona do drzewa (widzi więc pliki Projectu), oraz na żądanie Agenta. W tym pliku są też katalogi maskowane (anonimowe volume'y) i cache (named volume'y).
 
   `afk` udostępnia w obu plikach compose dwie zmienne:
   - `${AFK_TREE}`: ścieżka drzewa Chatu albo Runu (ta sama na hoście i w Sandboxie). Maska to anonimowy volume pod nią, np. `volumes: ["${AFK_TREE}/node_modules"]` w serwisie `afk`.

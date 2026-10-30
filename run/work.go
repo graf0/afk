@@ -14,7 +14,6 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/graf0/afk/agent"
-	"github.com/graf0/afk/machine"
 )
 
 const (
@@ -22,7 +21,7 @@ const (
 	gateTerminalLines = 40       // lines of a failed gate shown on the terminal
 )
 
-// guest is the Sandbox VM as the Run uses it after the clone is prepared.
+// guest is the Sandbox as the Run uses it after the clone is prepared.
 type guest interface {
 	// Exec runs command in the Agent's clone, its stdout going to stdout.
 	Exec(ctx context.Context, command string, stdout io.Writer) (err error)
@@ -32,13 +31,6 @@ type guest interface {
 
 // workFunc is what a Run does in a prepared guest.
 type workFunc func(ctx context.Context, g guest) (res result, err error)
-
-// sshGuest is the guest over ssh.
-type sshGuest struct {
-	run    run
-	client *ssh.Client
-	env    map[string]string // env of the Tools, set for every command
-}
 
 // result is what a Run brings to publish.
 type result struct {
@@ -50,13 +42,8 @@ type result struct {
 	gateRuns int // numbers the gate's output files
 }
 
-func (g sshGuest) Exec(ctx context.Context, command string, stdout io.Writer) (err error) {
-	err = NewExec(g.client, g.env)(ctx, command, stdout)
-	return
-}
-
-// execCommand is the shell command Exec sends to the guest: command in the
-// clone, with the env of the Tools.
+// execCommand is the shell command NewExec sends to a Chat's guest: command in
+// the clone, with the env of the Tools.
 func execCommand(env map[string]string, command string) (full string) {
 	return agent.ExportEnv(env) + "cd " + GuestRepo + " && " + command
 }
@@ -64,23 +51,6 @@ func execCommand(env map[string]string, command string) (full string) {
 // bashCommand runs script in bash, its stderr in its stdout.
 func bashCommand(script string) (command string) {
 	return "bash -c " + agent.ShellQuote(script) + " 2>&1"
-}
-
-func (g sshGuest) Agent(ctx context.Context, prompt, model string) (report agent.Report, err error) {
-	r := g.run
-	report, err = agent.Session{
-		Token:  r.ClaudeToken,
-		Prompt: prompt,
-		Dir:    GuestRepo,
-		Model:  model,
-		Proxy:  "http://" + machine.ProxyAddr,
-		Binary: r.AgentBinary,
-		Env:    g.env,
-	}.Run(ctx, g.client, r.Out, r.log)
-	if err != nil {
-		err = fmt.Errorf("%w (log: %s)", err, r.log.path)
-	}
-	return
 }
 
 // human reports whether a person must look before merging: the Agent
@@ -324,6 +294,52 @@ func (b GuestBranch) Clone(ctx context.Context, client *ssh.Client, baseBranch s
 	return
 }
 
+// CloneTo is the host's half of Clone: the base of the branch from the
+// Quarantine repo goes into the new directory dir as git objects and refs, with
+// the base as origin/<baseBranch> (and, with fromTip as in Clone, the tip at
+// refs/afk/start). It returns start, the ref the branch is to begin at: the
+// Sandbox checks it out (CheckoutCommand), never the host. The tree of the tip
+// is the Agent's work, and checking it out would run what the host's git
+// config says (filters from .gitattributes, hooks). So the host only inits and
+// fetches, with no config of the user's (ADR-0002); once the Sandbox starts,
+// it never runs git there again.
+func (b GuestBranch) CloneTo(ctx context.Context, dir, baseBranch string, fromTip bool) (start string, err error) {
+	temp, err := os.CreateTemp(b.TempDir, "base-*.bundle")
+	if err != nil {
+		err = fmt.Errorf("creating base bundle: %w", err)
+		return
+	}
+	_ = temp.Close()
+	defer func() { _ = os.Remove(temp.Name()) }()
+	if err = b.Quarantine.Bundle(ctx, b.Name, temp.Name()); err != nil {
+		return
+	}
+	origin := originPrefix + baseBranch
+	refspecs, start := []string{"+" + baseRef(b.Name) + ":" + origin}, origin
+	if fromTip {
+		refspecs, start = append(refspecs, "+"+resultRef(b.Name)+":"+guestStart), guestStart
+	}
+	// No global or system config, no hooks, no template: nothing to run.
+	isolated := []string{"GIT_CONFIG_GLOBAL=" + os.DevNull, "GIT_CONFIG_NOSYSTEM=1"}
+	steps := [][]string{
+		{"-c", "core.hooksPath=" + os.DevNull, "init", "-q", "--template=", "-b", b.Name, dir},
+		append([]string{"-C", dir, "-c", "core.hooksPath=" + os.DevNull, "fetch", "-q", "--no-tags", temp.Name()}, refspecs...),
+	}
+	for _, args := range steps {
+		if _, err = gitWith(ctx, isolated, "", args...); err != nil {
+			err = fmt.Errorf("cloning the base into %s: %w", dir, err)
+			return
+		}
+	}
+	return
+}
+
+// CheckoutCommand is the command that puts the branch on start in the clone
+// CloneTo made, for the Sandbox to run.
+func (b GuestBranch) CheckoutCommand(start string) (command string) {
+	return "git checkout -q -B " + agent.ShellQuote(b.Name) + " " + agent.ShellQuote(start)
+}
+
 // Fetch brings HEAD of the guest's clone into the Quarantine repo as a
 // bundle, without running anything of the clone on the host (ADR-0002), and
 // validates it against start and protected. It returns the commit; without
@@ -453,22 +469,23 @@ func (r run) task() (task agent.Task) {
 		name, _, _ := strings.Cut(id, "@")
 		names = append(names, name)
 	}
+	// [tool] goes with the Sandbox VM (#65); until then the Agent is told of it.
 	for _, name := range slices.Sorted(maps.Keys(r.Base.Config.Tool)) {
 		tool := r.Base.Config.Tool[name]
 		tools = append(tools, agent.Tool{Name: name, Prompt: strings.TrimSpace(tool.Prompt), Env: tool.EnvNames()})
 	}
 	task = agent.Task{
-		RepoDir:    GuestRepo,
+		RepoDir:    r.treePath(),
 		Branch:     r.branch,
 		BaseRef:    "origin/" + r.Base.Branch,
-		TicketPath: guestTicket,
+		TicketPath: r.contextFile(ticketFileName),
 		Protected:  r.Base.Config.Protect.Paths,
 		Plugins:    names,
 		Tools:      tools,
 		Resumed:    r.resumed,
 	}
 	if r.spec != nil {
-		task.SpecPath = guestSpec
+		task.SpecPath = r.contextFile(specFileName)
 	}
 	return
 }

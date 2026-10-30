@@ -128,3 +128,40 @@ func TestWriteEnv(t *testing.T) {
 		t.Errorf("removing a missing env file: %v", err)
 	}
 }
+
+func TestListNamesStacksWithState(t *testing.T) {
+	state := t.TempDir()
+	if names, err := List(state, "owner-name", Run); err != nil || names != nil {
+		t.Fatalf("List without state = %v, %v", names, err)
+	}
+	for _, dir := range []string{Dir(state, "owner-name", Run, "ticket-2"), Dir(state, "owner-name", Run, "ticket-10"), Dir(state, "owner-name", Chat, "plan"), Dir(state, "other", Run, "ticket-3")} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(state, "owner-name", "runs", "stray"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	names, err := List(state, "owner-name", Run)
+	if err != nil || strings.Join(names, " ") != "ticket-10 ticket-2" {
+		t.Errorf("List = %v, %v; want the directories of the Project's Runs only", names, err)
+	}
+	if got, want := Dir(state, "owner-name", Run, "ticket-2"), filepath.Join(state, "owner-name", "runs", "ticket-2"); got != want {
+		t.Errorf("Dir = %q, want %q", got, want)
+	}
+}
+
+// Open needs no repository or commit: Down and Remove work on the state alone.
+func TestOpenNeedsNoCommit(t *testing.T) {
+	opts := testOptions(t)
+	s, err := Open(opts.StateDir, opts.Project, Run, "ticket-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.ProjectName() != "afk_owner-name_run_ticket-1" || s.Tree() != filepath.Join(Dir(opts.StateDir, opts.Project, Run, "ticket-1"), "repo") {
+		t.Errorf("project %q, tree %q", s.ProjectName(), s.Tree())
+	}
+	if _, err = Open(opts.StateDir, opts.Project, Run, "Bad Name"); err == nil {
+		t.Error("invalid name: want an error")
+	}
+}

@@ -13,12 +13,11 @@ import (
 	"github.com/graf0/afk/config"
 	"github.com/graf0/afk/forge"
 	"github.com/graf0/afk/image"
-	"github.com/graf0/afk/machine"
 )
 
 // Factory runs tickets one after another, like docs/reference/ralph.sh,
 // main (docs/workflow.md, Factory). Execute, Leftovers and Cleanup are the
-// seams to the VMs; NewFactory sets the real ones.
+// seams to the Stacks; NewFactory sets the real ones.
 type Factory struct {
 	Forge forge.Forge
 	// Labels are the [labels] as of the start of the Factory: they hold for
@@ -30,21 +29,17 @@ type Factory struct {
 	Out      io.Writer
 
 	// ReadBase reads the base branch, once per Run: the same Base goes to
-	// EnsureImage, Preflight and Execute, so they agree on the configuration.
+	// Preflight and Execute, so they agree on the configuration.
 	ReadBase func(ctx context.Context) (base Base, err error)
-	// EnsureImage makes sure the Base image is there and current, building
-	// it when not, whenever a new VM is to start from it. Its failure stops
-	// the Factory.
-	EnsureImage func(ctx context.Context, base Base) (err error)
 	// Preflight checks that a Run can succeed, once, before the first one.
 	Preflight func(ctx context.Context, base Base) (err error)
-	// Leftovers lists the Runs earlier Factories left in VMs.
+	// Leftovers lists the Runs earlier Factories left state of.
 	Leftovers func() (leftovers []Leftover, err error)
-	// Cleanup destroys the VM of a leftover Run and, unless vmOnly, what it
-	// left on the Forge (not for a child of a Spec: its branch is the Spec's).
-	Cleanup func(ctx context.Context, l Leftover, vmOnly bool) (err error)
+	// Cleanup removes the state of a leftover Run and, unless stateOnly, what
+	// it left on the Forge (not for a child of a Spec: its branch is the Spec's).
+	Cleanup func(ctx context.Context, l Leftover, stateOnly bool) (err error)
 	// Execute runs the ticket: a Spec when it has the label [labels].spec.
-	// With resume it continues in that VM.
+	// With resume it continues in that state.
 	Execute func(ctx context.Context, base Base, ticket forge.Ticket, resume *Leftover) (err error)
 
 	handled     map[int]bool // run in this Factory: the list by label lags
@@ -53,7 +48,7 @@ type Factory struct {
 }
 
 // NewFactory is a Factory of the Project of base that runs real Runs in
-// VMs. Every Run reads the base branch again: it moves while a Factory works.
+// Stacks. Every Run reads the base branch again: it moves while a Factory works.
 func NewFactory(ctx context.Context, base Base, gitForge forge.Forge, paths image.Paths, claudeToken string, selector []int, out io.Writer) (f *Factory, err error) {
 	project, err := image.ProjectName(base.Config.Forge.Repo)
 	if err != nil {
@@ -80,17 +75,17 @@ func NewFactory(ctx context.Context, base Base, gitForge forge.Forge, paths imag
 			current.Config.Labels = f.Labels
 			return
 		},
-		EnsureImage: func(ctx context.Context, current Base) (err error) {
-			err = ensureSandboxImage(ctx, current, paths, out, image.Build)
-			return
-		},
 		Preflight: func(ctx context.Context, current Base) (err error) {
 			err = preflight(ctx, options(current, forge.Ticket{}), claims)
 			return
 		},
-		Leftovers: func() (leftovers []Leftover, err error) { return ListLeftovers(project) },
-		Cleanup: func(ctx context.Context, l Leftover, vmOnly bool) (err error) {
-			return cleanLeftover(ctx, gitForge, q, l, vmOnly, out)
+		Leftovers: func() (leftovers []Leftover, err error) { return ListLeftovers(paths.StateDir, project) },
+		Cleanup: func(ctx context.Context, l Leftover, stateOnly bool) (err error) {
+			if err = removeLeftover(ctx, paths.StateDir, project, l); err != nil || stateOnly || l.Ticket == 0 {
+				return
+			}
+			err = cleanBranch(ctx, gitForge, q, ticketName(l.Ticket), out)
+			return
 		},
 		Execute: func(ctx context.Context, current Base, ticket forge.Ticket, resume *Leftover) (err error) {
 			opts := options(current, ticket)
@@ -170,14 +165,14 @@ func (f *Factory) resumeLeftovers(ctx context.Context) (err error) {
 	return
 }
 
-// resumeLeftover claims the leftover first: the VM of a live Run of another
+// resumeLeftover claims the leftover first: the state of a live Run of another
 // Factory looks the same, and is never touched. Then the ticket is closed, so
-// the VM and branch are cleaned up; it is ready, so the Run continues in the
-// VM (holding the claim, with that of its Spec); otherwise the VM stays.
+// the state and branch are cleaned up; it is ready, so the Run continues in
+// the state (holding the claim, with that of its Spec); otherwise it stays.
 func (f *Factory) resumeLeftover(ctx context.Context, l Leftover) (err error) {
 	key := strconv.Itoa(l.Ticket)
 	if l.Ticket == 0 {
-		key = preflightKey(l.Machine)
+		key = l.Name
 	}
 	release, ok, err := f.Claims.ClaimKeys(key)
 	if err != nil {
@@ -190,11 +185,11 @@ func (f *Factory) resumeLeftover(ctx context.Context, l Leftover) (err error) {
 		}
 	}()
 	if !ok {
-		f.say("VM %s is in use by another Factory: leaving it", l.Machine)
+		f.say("%s is in use by another Factory: leaving it", l.Name)
 		return
 	}
 	if l.Ticket == 0 {
-		f.say("VM %s of an earlier preflight: destroying it", l.Machine)
+		f.say("%s is the state of an earlier preflight: removing it", l.Name)
 		err = f.Cleanup(ctx, l, true)
 		return
 	}
@@ -203,11 +198,11 @@ func (f *Factory) resumeLeftover(ctx context.Context, l Leftover) (err error) {
 		return
 	}
 	if f.Selector != nil && !slices.Contains(f.Selector, l.Ticket) && !slices.Contains(f.Selector, ticket.Parent) {
-		f.say("VM %s of #%d is not selected: leaving it", l.Machine, l.Ticket)
+		f.say("%s of #%d is not selected: leaving it", l.Name, l.Ticket)
 		return
 	}
 	if !open {
-		f.say("#%d is closed: cleaning up VM %s", l.Ticket, l.Machine)
+		f.say("#%d is closed: cleaning up %s", l.Ticket, l.Name)
 		err = f.Cleanup(ctx, l, ticket.Parent != 0)
 		return
 	}
@@ -222,11 +217,11 @@ func (f *Factory) resumeLeftover(ctx context.Context, l Leftover) (err error) {
 	}
 	switch {
 	case !ready:
-		f.say("#%d (or its Spec) lacks the label %q: VM %s stays (afk vm shell %s, afk vm kill %s)", l.Ticket, f.Labels.ReadyForAgent, l.Machine, l.Machine, l.Machine)
+		f.say("#%d (or its Spec) lacks the label %q: %s stays (to give it up, remove runs/%s in the Project's state directory)", l.Ticket, f.Labels.ReadyForAgent, l.Name, l.Name)
 	case f.handled[target.Number]:
-		f.say("#%d was resumed already: VM %s stays (afk vm kill %s)", target.Number, l.Machine, l.Machine)
+		f.say("#%d was resumed already: %s stays (to give it up, remove runs/%s in the Project's state directory)", target.Number, l.Name, l.Name)
 	default:
-		f.say("resuming #%d %s in VM %s", target.Number, target.Title, l.Machine)
+		f.say("resuming #%d %s in %s", target.Number, target.Title, l.Name)
 		handedOver = true
 		_, err = f.take(ctx, target, &l, []string{key}, release)
 	}
@@ -345,8 +340,7 @@ func (f *Factory) ready(ticket forge.Ticket) (ok bool) {
 // --- take ---
 
 // take runs ticket under the claim of it (and of the children of a Spec),
-// after the Base image is ensured (whenever a new VM starts from it) and
-// the preflight, which runs once. held are claims the caller has
+// after the preflight, which runs once. held are claims the caller has
 // taken already, release gives them back: take owns them from here. taken
 // is false when another Factory holds a claim or finished the ticket meanwhile.
 func (f *Factory) take(ctx context.Context, ticket forge.Ticket, resume *Leftover, held []string, release func()) (taken bool, err error) {
@@ -396,14 +390,6 @@ func (f *Factory) take(ctx context.Context, ticket forge.Ticket, resume *Leftove
 			return
 		}
 	}
-	// A resumed Run continues in its VM, which has its own backing file; only
-	// a new VM (a fresh Run, or the preflight) needs a current image.
-	if resume == nil || !f.preflighted {
-		if err = f.EnsureImage(ctx, base); err != nil {
-			err = fmt.Errorf("ensuring the Base image: %w", err)
-			return
-		}
-	}
 	if !f.preflighted {
 		f.say("preflight")
 		if err = f.Preflight(ctx, base); err != nil {
@@ -420,15 +406,12 @@ func (f *Factory) take(ctx context.Context, ticket forge.Ticket, resume *Leftove
 	switch {
 	case err == nil:
 	case ctx.Err() != nil:
-		err = fmt.Errorf("interrupted at #%d: a VM stays; `afk factory` continues it: %w", ticket.Number, err)
+		err = fmt.Errorf("interrupted at #%d: its state stays; `afk factory` continues it: %w", ticket.Number, err)
 	case errors.Is(err, ErrNeedsInfo):
 		f.say("%v", err)
 		err = nil
-	case errors.Is(err, machine.ErrNoMemory):
-		f.say("#%d: no VM was created, the Factory stops; free host memory and run `afk factory` again.", ticket.Number)
-		err = fmt.Errorf("#%d: %w", ticket.Number, err)
 	default:
-		f.say("#%d failed, the Factory stops. A VM of the Run stays: afk vm list, afk vm shell <vm>, afk vm kill <vm>; `afk factory` continues the Run.", ticket.Number)
+		f.say("#%d failed, the Factory stops. The state of the Run stays: `afk factory` continues it.", ticket.Number)
 		err = fmt.Errorf("#%d: %w", ticket.Number, err)
 	}
 	return

@@ -68,24 +68,8 @@ type Stack struct {
 // New validates opts. It touches nothing: Up creates the Stack, and Down and
 // Remove work on the state an earlier process left.
 func New(opts Options) (s *Stack, err error) {
-	if !namePattern.MatchString(opts.Project) {
-		err = fmt.Errorf("project %q: want [a-z0-9-], up to 40 characters", opts.Project)
-		return
-	}
-	if !namePattern.MatchString(opts.Name) {
-		err = fmt.Errorf("%s name %q: want [a-z0-9-], up to 40 characters", opts.Kind, opts.Name)
-		return
-	}
-	if opts.Kind != Chat && opts.Kind != Run {
-		err = fmt.Errorf("unknown kind %q", opts.Kind)
-		return
-	}
 	if !commitPattern.MatchString(opts.Commit) {
 		err = fmt.Errorf("commit %q: want a full SHA", opts.Commit)
-		return
-	}
-	if !filepath.IsAbs(opts.StateDir) {
-		err = fmt.Errorf("state directory %q: want an absolute path", opts.StateDir)
 		return
 	}
 	for key, value := range opts.Env {
@@ -95,33 +79,88 @@ func New(opts Options) (s *Stack, err error) {
 			return
 		}
 	}
+	if s, err = Open(opts.StateDir, opts.Project, opts.Kind, opts.Name); err != nil {
+		return
+	}
+	for _, m := range opts.Mounts {
+		if err = rejectSocketMounts(s.socket, map[string][]string{"mount": {m.Source}}); err != nil {
+			return
+		}
+	}
+	s.opts = opts
+	return
+}
+
+// Open is the Stack of an earlier process, for Down and Remove, which work on
+// its state alone: no repository, commit or mounts. Up needs New.
+func Open(stateDir, project string, kind Kind, name string) (s *Stack, err error) {
+	if !namePattern.MatchString(project) {
+		err = fmt.Errorf("project %q: want [a-z0-9-], up to 40 characters", project)
+		return
+	}
+	if !namePattern.MatchString(name) {
+		err = fmt.Errorf("%s name %q: want [a-z0-9-], up to 40 characters", kind, name)
+		return
+	}
+	if kind != Chat && kind != Run {
+		err = fmt.Errorf("unknown kind %q", kind)
+		return
+	}
+	if !filepath.IsAbs(stateDir) {
+		err = fmt.Errorf("state directory %q: want an absolute path", stateDir)
+		return
+	}
 	runtimeDir := os.Getenv("XDG_RUNTIME_DIR")
 	if runtimeDir == "" {
 		err = errors.New("XDG_RUNTIME_DIR is not set: no rootless podman socket")
 		return
-	}
-	socket := filepath.Join(runtimeDir, "podman", "podman.sock")
-	for _, m := range opts.Mounts {
-		if err = rejectSocketMounts(socket, map[string][]string{"mount": {m.Source}}); err != nil {
-			return
-		}
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return
 	}
 	s = &Stack{
-		opts:     opts,
-		dir:      filepath.Join(opts.StateDir, opts.Project, string(opts.Kind)+"s", opts.Name),
+		opts:     Options{Project: project, Kind: kind, Name: name, StateDir: stateDir},
+		dir:      Dir(stateDir, project, kind, name),
 		hostHome: home,
-		socket:   socket,
+		socket:   filepath.Join(runtimeDir, "podman", "podman.sock"),
+	}
+	return
+}
+
+// --- state ---
+
+// Dir is the state directory of a Stack: the one that stays after Down and is
+// the only record of the Stack (ADR-0015).
+func Dir(stateDir, project string, kind Kind, name string) (dir string) {
+	return filepath.Join(stateDir, project, string(kind)+"s", name)
+}
+
+// List returns the names of the Stacks of kind that have state, sorted: the
+// directories under the Project's state, nothing else keeps a record.
+func List(stateDir, project string, kind Kind) (names []string, err error) {
+	entries, err := os.ReadDir(filepath.Dir(Dir(stateDir, project, kind, "x")))
+	if errors.Is(err, os.ErrNotExist) {
+		err = nil
+		return
+	}
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if entry.IsDir() && namePattern.MatchString(entry.Name()) {
+			names = append(names, entry.Name())
+		}
 	}
 	return
 }
 
 // Tree is the directory the Sandbox works in, at the same path on the host
 // and in the Sandbox. The clone of a Chat or Run lives here.
-func (s *Stack) Tree() (path string) { return filepath.Join(s.dir, "repo") }
+func (s *Stack) Tree() (path string) { return TreeIn(s.dir) }
+
+// TreeIn is the tree of the Stack whose state directory (Dir) is dir.
+func TreeIn(dir string) (path string) { return filepath.Join(dir, "repo") }
 
 // Home is the host side of the Agent's $HOME.
 func (s *Stack) Home() (path string) { return filepath.Join(s.dir, "home") }
@@ -151,7 +190,7 @@ func (s *Stack) setupMarker() (path string)  { return filepath.Join(s.dir, "setu
 
 // Up starts the Stack from the base branch: it exports the compose files,
 // builds the images that lack a tag for their definition, starts the
-// services and, the first time, runs afk-setup. A failure leaves what
+// services, but not afk-setup (Setup). A failure leaves what
 // started; Down cleans up.
 func (s *Stack) Up(ctx context.Context) (err error) {
 	for _, dir := range []string{s.dir, s.Tree(), s.Home()} {
@@ -209,7 +248,6 @@ func (s *Stack) Up(ctx context.Context) (err error) {
 	if err = s.compose(ctx, true, nil, append([]string{"up", "--detach", "--no-build"}, start...)...); err != nil {
 		return
 	}
-	err = s.setup(ctx, services)
 	return
 }
 
@@ -290,9 +328,16 @@ func (s *Stack) build(ctx context.Context, images map[string]string) (err error)
 	return
 }
 
-// setup runs afk-setup, once per Stack: the marker lives in its state.
-func (s *Stack) setup(ctx context.Context, services map[string]composeService) (err error) {
+// Setup runs afk-setup, once per Stack: the marker lives in its state, so a
+// second call, also after Down and Up, does nothing. It is a call of its own,
+// after Up, so that the caller can put the clone in the tree first: afk-setup
+// sees it. Without a service afk-setup it only sets the marker.
+func (s *Stack) Setup(ctx context.Context) (err error) {
 	if _, err = os.Stat(s.setupMarker()); err == nil {
+		return
+	}
+	services, err := s.config(ctx)
+	if err != nil {
 		return
 	}
 	if _, ok := services[setupService]; ok {

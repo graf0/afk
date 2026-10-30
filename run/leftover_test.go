@@ -2,21 +2,49 @@ package run
 
 import (
 	"bytes"
+	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/graf0/afk/machine"
+	"github.com/graf0/afk/stack"
 )
 
 func TestLeftoverTicket(t *testing.T) {
-	for id, want := range map[string]int{"12-ab12cd34": 12, "0-ab12cd34": 0, "ab12cd34": -1, "x-1": -1} {
-		n, ok := leftoverTicket(machine.Machine{ID: id, Kind: machine.KindRun})
+	for name, want := range map[string]int{"ticket-12": 12, "preflight-ab12cd34": 0, "ticket-0": -1, "ticket-x": -1, "ticket-12-a": -1, "preflight": -1, "plan": -1} {
+		n, ok := leftoverTicket(name)
 		if (want >= 0) != ok || (ok && n != want) {
-			t.Errorf("leftoverTicket(%q) = %d, %v; want %d", id, n, ok, want)
+			t.Errorf("leftoverTicket(%q) = %d, %v; want %d", name, n, ok, want)
 		}
 	}
-	if _, ok := leftoverTicket(machine.Machine{ID: "12-ab", Kind: machine.KindChat}); ok {
+}
+
+func TestListLeftovers(t *testing.T) {
+	state := t.TempDir()
+	for _, name := range []string{"ticket-12", "ticket-3", "preflight-ab12cd34", "scratch"} {
+		if err := os.MkdirAll(stack.Dir(state, "o-r", stack.Run, name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(stack.Dir(state, "o-r", stack.Chat, "ticket-5"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ListLeftovers(state, "o-r")
+	want := []Leftover{{"preflight-ab12cd34", 0}, {"ticket-3", 3}, {"ticket-12", 12}}
+	if err != nil || !slices.Equal(got, want) {
+		t.Errorf("ListLeftovers = %v, %v; want %v (Runs of the Factory only, by ticket)", got, err, want)
+	}
+}
+
+func TestIsLeftover(t *testing.T) {
+	for id, want := range map[string]bool{"12-ab12cd34": true, "0-ab12cd34": true, "ab12cd34": false, "x-1": false} {
+		if got := IsLeftover(machine.Machine{ID: id, Kind: machine.KindRun}); got != want {
+			t.Errorf("IsLeftover(%q) = %v, want %v", id, got, want)
+		}
+	}
+	if IsLeftover(machine.Machine{ID: "12-ab", Kind: machine.KindChat}) {
 		t.Error("a Chat is no leftover Run")
 	}
 }

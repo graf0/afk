@@ -1,5 +1,5 @@
-// Package agent runs the Agent (Claude Code) in a Sandbox VM: prompt, ssh
-// session, report.
+// Package agent runs the Agent (Claude Code) in a Sandbox: prompt, session,
+// report.
 package agent
 
 import (
@@ -84,14 +84,7 @@ func (s Session) command() (command string) {
 	if binary == "" {
 		binary = "claude"
 	}
-	args := []string{binary, "-p", "--dangerously-skip-permissions", "--verbose",
-		"--output-format", "stream-json", "--json-schema", Schema}
-	if s.Model != "" {
-		args = append(args, "--model", s.Model)
-	}
-	// Variadic: must stay last, the prompt comes on stdin.
-	args = append(args, "--disallowedTools")
-	args = append(args, disallowedTools...)
+	args := claudeArgs(binary, s.Model)
 
 	env := []string{"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1"}
 	for _, name := range []string{"http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"} {
@@ -105,6 +98,33 @@ func (s Session) command() (command string) {
 		" && IFS= read -r " + TokenEnv + " && export " + TokenEnv +
 		" && cd " + ShellQuote(s.Dir) +
 		" && exec " + strings.Join(quoted, " ")
+}
+
+// claudeArgs is the command line of a session: the prompt comes on stdin.
+func claudeArgs(binary, model string) (args []string) {
+	args = []string{binary, "-p", "--dangerously-skip-permissions", "--verbose",
+		"--output-format", "stream-json", "--json-schema", Schema}
+	if model != "" {
+		args = append(args, "--model", model)
+	}
+	// Variadic: must stay last, the prompt comes on stdin.
+	args = append(args, "--disallowedTools")
+	args = append(args, disallowedTools...)
+	return
+}
+
+// SandboxCommand is the shell command of one session in the Sandbox of a
+// Stack: bash runs it in the clone. The token is in the Sandbox environment
+// already (Stack's env file), so nothing secret is on the command line. The
+// prompt is read from promptFile; stderr goes to the stream, for the log.
+// binary is a shell word, quoted by the caller when it needs it.
+func SandboxCommand(binary, promptFile, model string) (command string) {
+	args := claudeArgs(binary, model)
+	for i := 1; i < len(args); i++ {
+		args[i] = ShellQuote(args[i])
+	}
+	return "export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 && exec " + strings.Join(args, " ") +
+		" < " + ShellQuote(promptFile) + " 2>&1"
 }
 
 // ExportEnv is a shell prefix exporting env in name order, or empty without
