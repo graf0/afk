@@ -20,7 +20,7 @@ func git(ctx context.Context, args ...string) (out string, err error) {
 
 // gitWith runs git like git, with env added to the environment and stdin
 // as its input. The error names args, never env or stdin: they may carry a
-// token or text from the guest.
+// token or text from the Sandbox.
 func gitWith(ctx context.Context, env []string, stdin string, args ...string) (out string, err error) {
 	var stdout, stderr bytes.Buffer
 	cmd := exec.CommandContext(ctx, "git", args...)
@@ -28,7 +28,7 @@ func gitWith(ctx context.Context, env []string, stdin string, args ...string) (o
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	cmd.Env = append(append(os.Environ(), "LC_ALL=C"), env...)
 	if err = cmd.Run(); err != nil {
-		// stderr can quote objects and refs from the guest.
+		// stderr can quote objects and refs from the Sandbox.
 		err = fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, agent.Sanitize(strings.TrimSpace(stderr.String())))
 		return
 	}

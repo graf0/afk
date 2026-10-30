@@ -165,3 +165,54 @@ func TestOpenNeedsNoCommit(t *testing.T) {
 		t.Error("invalid name: want an error")
 	}
 }
+
+func TestProjectName(t *testing.T) {
+	tests := []struct {
+		repo    string
+		want    string
+		wantErr bool
+	}{
+		{repo: "graf0/dfmx", want: "graf0-dfmx"},
+		{repo: "org/my.repo_1", want: "org-my.repo_1"},
+		{repo: "", wantErr: true},
+		{repo: "../etc", wantErr: true},
+		{repo: "a/../b", wantErr: true},
+		{repo: ".hidden/x", wantErr: true},
+		{repo: "a b/c", wantErr: true},
+		{repo: "a//c", want: "a--c"},
+	}
+	for _, tt := range tests {
+		got, err := ProjectName(tt.repo)
+		if (err != nil) != tt.wantErr || got != tt.want {
+			t.Errorf("ProjectName(%q) = %q, %v; want %q, error=%v", tt.repo, got, err, tt.want, tt.wantErr)
+		}
+	}
+}
+
+func TestDefaultStateDir(t *testing.T) {
+	t.Setenv("HOME", "/home/u")
+	dir, err := DefaultStateDir()
+	if want := "/home/u/.local/state/afk"; err != nil || dir != want {
+		t.Errorf("DefaultStateDir() = %q, %v; want %q", dir, err, want)
+	}
+}
+
+func TestUpRejectsIncludeAndExtendsFile(t *testing.T) {
+	for name, files := range map[string]map[string]string{
+		"include":      {composeFile: "include: [other.yml]\nservices: {}\n", composeAfkFile: "services: {}\n"},
+		"extends file": {composeFile: "services: {}\n", composeAfkFile: "services:\n  afk:\n    extends: {file: common.yml, service: base}\n"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			repo, commit := gitRepo(t, files)
+			opts := testOptions(t)
+			opts.Repo, opts.Commit = repo, commit
+			s, err := New(opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = s.Up(t.Context()); err == nil || !strings.Contains(err.Error(), "not supported") {
+				t.Errorf("err = %v, want a refusal", err)
+			}
+		})
+	}
+}

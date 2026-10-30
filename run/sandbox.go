@@ -85,7 +85,7 @@ func (r run) stackName() (name string) {
 }
 
 func (r run) stackDir() (dir string) {
-	return stack.Dir(r.Paths.StateDir, r.project, stack.Run, r.stackName())
+	return stack.Dir(r.StateDir, r.project, stack.Run, r.stackName())
 }
 
 // treePath is the Agent's clone, the same path on the host and in the Sandbox.
@@ -173,6 +173,9 @@ func (r run) enter(ctx context.Context, work workFunc) (res result, err error) {
 		return
 	}
 	up = true
+	if r.stackFiles != nil {
+		r.stackFiles.paths = st.Protected()
+	}
 	r.say("Stack %s is up", r.stackName())
 	if checkout != "" {
 		if err = st.Exec(ctx, checkout, io.Discard); err != nil {
@@ -215,7 +218,7 @@ func (r run) pluginDataDir() (dir string) { return filepath.Join(r.stackDir(), "
 func (r run) newStack(repo string, mounts []stack.Mount) (st *stack.Stack, err error) {
 	st, err = stack.New(stack.Options{
 		Repo: repo, Commit: r.Base.Commit, Project: r.project, Kind: stack.Run, Name: r.stackName(),
-		StateDir: r.Paths.StateDir, Env: sandbox.Env(r.ClaudeToken), Mounts: mounts, Out: r.Out,
+		StateDir: r.StateDir, Env: sandbox.Env(r.ClaudeToken), Mounts: mounts, Out: r.Out,
 	})
 	return
 }

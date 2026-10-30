@@ -12,7 +12,7 @@ import (
 
 	"github.com/graf0/afk/config"
 	"github.com/graf0/afk/forge"
-	"github.com/graf0/afk/image"
+	"github.com/graf0/afk/stack"
 )
 
 // Factory runs tickets one after another, like docs/reference/ralph.sh,
@@ -49,20 +49,19 @@ type Factory struct {
 
 // NewFactory is a Factory of the Project of base that runs real Runs in
 // Stacks. Every Run reads the base branch again: it moves while a Factory works.
-func NewFactory(ctx context.Context, base Base, gitForge forge.Forge, paths image.Paths, claudeToken string, selector []int, out io.Writer) (f *Factory, err error) {
-	project, err := image.ProjectName(base.Config.Forge.Repo)
+func NewFactory(ctx context.Context, base Base, gitForge forge.Forge, stateDir string, claudeToken string, selector []int, out io.Writer) (f *Factory, err error) {
+	project, err := stack.ProjectName(base.Config.Forge.Repo)
 	if err != nil {
 		return
 	}
-	stateDir := filepath.Join(paths.StateDir, project)
-	q, err := OpenQuarantine(ctx, filepath.Join(stateDir, QuarantineName))
+	q, err := OpenQuarantine(ctx, filepath.Join(stateDir, project, QuarantineName))
 	if err != nil {
 		return
 	}
 	options := func(base Base, ticket forge.Ticket) (opts Options) {
-		return Options{Ticket: ticket, Base: base, ClaudeToken: claudeToken, Paths: paths, Out: out, Forge: gitForge}
+		return Options{Ticket: ticket, Base: base, ClaudeToken: claudeToken, StateDir: stateDir, Out: out, Forge: gitForge}
 	}
-	claims := Claims{Dir: filepath.Join(paths.StateDir, "claims", project)}
+	claims := Claims{Dir: filepath.Join(stateDir, "claims", project)}
 	f = &Factory{
 		Forge:    gitForge,
 		Labels:   base.Config.Labels,
@@ -79,9 +78,9 @@ func NewFactory(ctx context.Context, base Base, gitForge forge.Forge, paths imag
 			err = preflight(ctx, options(current, forge.Ticket{}), claims)
 			return
 		},
-		Leftovers: func() (leftovers []Leftover, err error) { return ListLeftovers(paths.StateDir, project) },
+		Leftovers: func() (leftovers []Leftover, err error) { return ListLeftovers(stateDir, project) },
 		Cleanup: func(ctx context.Context, l Leftover, stateOnly bool) (err error) {
-			if err = removeLeftover(ctx, paths.StateDir, project, l); err != nil || stateOnly || l.Ticket == 0 {
+			if err = removeLeftover(ctx, stateDir, project, l); err != nil || stateOnly || l.Ticket == 0 {
 				return
 			}
 			err = cleanBranch(ctx, gitForge, q, ticketName(l.Ticket), out)
@@ -104,7 +103,7 @@ func NewFactory(ctx context.Context, base Base, gitForge forge.Forge, paths imag
 // --- loop ---
 
 // Run resumes the leftover Runs of the Project, then takes the tickets of
-// the selector. A failed Run stops the Factory with its error; its VM stays,
+// the selector. A failed Run stops the Factory with its error; its Stack goes down and its state stays,
 // and running the Factory again continues it. needs_info does not stop it.
 func (f *Factory) Run(ctx context.Context) (err error) {
 	f.handled, f.warned, f.preflighted = map[int]bool{}, map[int]bool{}, false

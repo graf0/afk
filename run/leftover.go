@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	"github.com/graf0/afk/forge"
-	"github.com/graf0/afk/machine"
 	"github.com/graf0/afk/stack"
 )
 
@@ -60,15 +59,6 @@ func leftoverTicket(name string) (n int, ok bool) {
 		return 0, true
 	}
 	return ticketNumber(name)
-}
-
-// IsLeftover reports whether m is the VM of a Run of the Sandbox VM Factory,
-// which left it by the id <ticket>-<random>. The Factory no longer makes
-// them; the TUI lists the ones it finds, until it goes (#65).
-func IsLeftover(m machine.Machine) (ok bool) {
-	number, _, found := strings.Cut(m.ID, "-")
-	n, err := strconv.Atoi(number)
-	return m.Kind == machine.KindRun && found && err == nil && n >= 0
 }
 
 // removeLeftover removes the Stack, volumes and state of l: its Run is over.

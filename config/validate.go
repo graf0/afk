@@ -8,26 +8,24 @@ import (
 	"regexp"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/pelletier/go-toml/v2"
 	"github.com/pelletier/go-toml/v2/unstable"
 
-	"github.com/graf0/afk/egress"
 	"github.com/graf0/afk/stack"
 )
+
+// removedSections are the sections of the Sandbox VM era, with what replaced them.
+var removedSections = map[string]string{
+	"machine": "the Sandbox is defined by compose.afk.yml",
+	"network": "the Sandbox has no egress allowlist",
+	"tool":    "Tools are services of compose.yml and compose.afk.yml",
+}
 
 var (
 	forgeKinds = []string{ForgeGitHub, ForgeGitea}
 
 	vmOSes = []string{"windows", "linux"}
-
-	// ImageTemplates are the [machine.<name>].template values the image package can
-	// build; image's tests assert that it knows exactly these.
-	ImageTemplates = []string{"debian13"}
-
-	// envNamePattern is a name a POSIX shell can export.
-	envNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 	repoPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
 )
@@ -97,8 +95,8 @@ func (v *validator) reportUnknownKeys(strictErr *toml.StrictMissingError) {
 			pos = positionOf(detail)
 		}
 		msg := fmt.Sprintf("unknown key %q", path)
-		if len(key) >= 2 && key[0] == "machine" && key[1] != SandboxMachine {
-			msg = fmt.Sprintf("machine.%s: Tool VM is not supported yet: only machine.%s is allowed", key[1], SandboxMachine)
+		if hint, removed := removedSections[key[0]]; removed {
+			msg += " (removed: " + hint + ")"
 		}
 		v.issues = append(v.issues, issue{pos: pos, msg: msg})
 	}
@@ -139,10 +137,7 @@ func (c Config) validate(v *validator) {
 	c.validateLabels(v)
 	c.validateAgent(v)
 	c.validateGate(v)
-	c.validateMachines(v)
-	c.validateNetwork(v)
 	c.validateProtect(v)
-	c.validateTools(v)
 	c.validateExpose(v)
 	c.validateVMs(v)
 }
@@ -228,33 +223,6 @@ func (c Config) validateGate(v *validator) {
 	}
 }
 
-func (c Config) validateMachines(v *validator) {
-	m := c.Machine.Sandbox
-	path := "machine." + SandboxMachine
-	if !slices.Contains(ImageTemplates, m.Template) {
-		v.reportChoice(path+".template", ImageTemplates, m.Template)
-	}
-	if age, err := time.ParseDuration(m.MaxAge); err != nil || age < 0 {
-		v.report(path+".max_age", `want a duration like "168h" or "0", got %q`, m.MaxAge)
-	}
-	if m.MemoryMiB <= 0 {
-		v.report(path+".memory", "want MiB > 0, got %d", m.MemoryMiB)
-	}
-	if m.CPUs <= 0 {
-		v.report(path+".cpus", "want > 0, got %d", m.CPUs)
-	}
-}
-
-// validateNetwork accepts what the Egress proxy accepts: host names, IP
-// literals and "*.domain" wildcards; no scheme, port or path.
-func (c Config) validateNetwork(v *validator) {
-	for i, entry := range c.Network.Allow {
-		if _, err := egress.Allowlist([]string{entry}); err != nil {
-			v.report(fmt.Sprintf("network.allow[%d]", i), "%v", err)
-		}
-	}
-}
-
 func (c Config) validateProtect(v *validator) {
 	for i, path := range c.Protect.Paths {
 		switch {
@@ -264,28 +232,6 @@ func (c Config) validateProtect(v *validator) {
 			v.report(fmt.Sprintf("protect.paths[%d]", i), "must be relative, got %q", path)
 		case slices.Contains(strings.Split(path, "/"), ".."):
 			v.report(fmt.Sprintf("protect.paths[%d]", i), `must not contain "..", got %q`, path)
-		}
-	}
-}
-
-func (c Config) validateTools(v *validator) {
-	definedBy := make(map[string]string) // env name -> Tool that defines it
-	for _, name := range slices.Sorted(maps.Keys(c.Tool)) {
-		tool := c.Tool[name]
-		if tool.On != SandboxMachine {
-			v.report("tool."+name+".on", "want %q (Tool VM is not supported yet), got %q", SandboxMachine, tool.On)
-		}
-		for _, env := range slices.Sorted(maps.Keys(tool.Env)) {
-			path := "tool." + name + ".env." + env
-			if !envNamePattern.MatchString(env) {
-				v.report(path, "want a shell variable name ([A-Za-z_][A-Za-z0-9_]*), got %q", env)
-				continue
-			}
-			if other, ok := definedBy[env]; ok {
-				v.report(path, "already defined by tool.%s.env", other)
-				continue
-			}
-			definedBy[env] = name
 		}
 	}
 }

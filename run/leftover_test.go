@@ -8,7 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/graf0/afk/machine"
 	"github.com/graf0/afk/stack"
 )
 
@@ -35,17 +34,6 @@ func TestListLeftovers(t *testing.T) {
 	want := []Leftover{{"preflight-ab12cd34", 0}, {"ticket-3", 3}, {"ticket-12", 12}}
 	if err != nil || !slices.Equal(got, want) {
 		t.Errorf("ListLeftovers = %v, %v; want %v (Runs of the Factory only, by ticket)", got, err, want)
-	}
-}
-
-func TestIsLeftover(t *testing.T) {
-	for id, want := range map[string]bool{"12-ab12cd34": true, "0-ab12cd34": true, "ab12cd34": false, "x-1": false} {
-		if got := IsLeftover(machine.Machine{ID: id, Kind: machine.KindRun}); got != want {
-			t.Errorf("IsLeftover(%q) = %v, want %v", id, got, want)
-		}
-	}
-	if IsLeftover(machine.Machine{ID: "12-ab", Kind: machine.KindChat}) {
-		t.Error("a Chat is no leftover Run")
 	}
 }
 

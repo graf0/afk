@@ -12,8 +12,8 @@ import (
 
 	"github.com/graf0/afk/agent"
 	"github.com/graf0/afk/forge"
-	"github.com/graf0/afk/image"
 	"github.com/graf0/afk/run"
+	"github.com/graf0/afk/stack"
 )
 
 const factoryUsage = "usage: afk factory ['*' | '#N' ...] (every ready ticket by default, or the listed ones in order)"
@@ -25,11 +25,11 @@ func runFactory(ctx context.Context, args []string, dir string, stdout io.Writer
 	if err != nil {
 		return
 	}
-	paths, err := image.DefaultPaths()
+	stateDir, err := stack.DefaultStateDir()
 	if err != nil {
 		return
 	}
-	claudeToken, err := agent.OAuthToken(paths.StateDir)
+	claudeToken, err := agent.OAuthToken(stateDir)
 	if err != nil {
 		return
 	}
@@ -37,7 +37,7 @@ func runFactory(ctx context.Context, args []string, dir string, stdout io.Writer
 	if err != nil {
 		return
 	}
-	gitForge, err := forge.New(ctx, base.Config, paths.StateDir)
+	gitForge, err := forge.New(ctx, base.Config, stateDir)
 	if err != nil {
 		return
 	}
@@ -45,7 +45,7 @@ func runFactory(ctx context.Context, args []string, dir string, stdout io.Writer
 	if file, ok := stdout.(*os.File); ok && term.IsTerminal(int(file.Fd())) {
 		stdout = run.NewTitle(file)
 	}
-	factory, err := run.NewFactory(ctx, base, gitForge, paths, claudeToken, selector, stdout)
+	factory, err := run.NewFactory(ctx, base, gitForge, stateDir, claudeToken, selector, stdout)
 	if err != nil {
 		return
 	}

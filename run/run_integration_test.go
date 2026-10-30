@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/graf0/afk/forge"
-	"github.com/graf0/afk/image"
 	"github.com/graf0/afk/stack"
 )
 
@@ -141,8 +140,8 @@ func TestIntegrationExecute(t *testing.T) {
 	}
 	name := fmt.Sprintf("run%d", time.Now().UnixNano()%1_000_000_000)
 	project := "afkt-" + name
-	paths := image.Paths{StateDir: t.TempDir()}
-	t.Cleanup(func() { cleanProject(paths.StateDir, project) })
+	stateDir := t.TempDir()
+	t.Cleanup(func() { cleanProject(stateDir, project) })
 
 	// The host's claude, as the Run finds it: a symlink to the real file.
 	bin := t.TempDir()
@@ -190,7 +189,7 @@ func TestIntegrationExecute(t *testing.T) {
 			Base:        base,
 			Ticket:      forge.Ticket{Number: number, Title: "Fake", Body: body},
 			ClaudeToken: fakeToken,
-			Paths:       paths,
+			StateDir:    stateDir,
 			Out:         &buf,
 			Forge:       github,
 			Resume:      resume,
@@ -198,7 +197,7 @@ func TestIntegrationExecute(t *testing.T) {
 		out = buf.String()
 		t.Logf("Execute took %s, err = %v, output:\n%s", time.Since(start).Round(time.Second), err, out)
 		if err != nil {
-			logs, _ := filepath.Glob(filepath.Join(paths.StateDir, project, "logs", "*.jsonl"))
+			logs, _ := filepath.Glob(filepath.Join(stateDir, project, "logs", "*.jsonl"))
 			for _, log := range logs {
 				data, _ := os.ReadFile(log)
 				t.Logf("%s:\n%s", log, data)
@@ -206,9 +205,9 @@ func TestIntegrationExecute(t *testing.T) {
 		}
 		return
 	}
-	quarantine := filepath.Join(paths.StateDir, project, QuarantineName)
+	quarantine := filepath.Join(stateDir, project, QuarantineName)
 	stackDir := func(number int) (dir string) {
-		return stack.Dir(paths.StateDir, project, stack.Run, fmt.Sprintf("ticket-%d", number))
+		return stack.Dir(stateDir, project, stack.Run, fmt.Sprintf("ticket-%d", number))
 	}
 	containers := func(number int) (ids string) {
 		out, err := exec.Command("podman", "ps", "-a", "--quiet", "--filter", fmt.Sprintf("label=com.docker.compose.project=afk_%s_run_ticket-%d", project, number)).Output()
@@ -261,10 +260,10 @@ func TestIntegrationExecute(t *testing.T) {
 		if exists(stackDir(1)) || containers(1) != "" {
 			t.Errorf("Stack of the finished Run stays: state %v, containers %q", exists(stackDir(1)), containers(1))
 		}
-		if out, _ := exec.Command("grep", "-rlF", fakeToken, paths.StateDir).Output(); len(out) > 0 {
+		if out, _ := exec.Command("grep", "-rlF", fakeToken, stateDir).Output(); len(out) > 0 {
 			t.Errorf("token in the state directory: %s", out)
 		}
-		logs, _ := filepath.Glob(filepath.Join(paths.StateDir, project, "logs", "ticket-1-*.jsonl"))
+		logs, _ := filepath.Glob(filepath.Join(stateDir, project, "logs", "ticket-1-*.jsonl"))
 		if len(logs) != 1 {
 			t.Errorf("logs = %v, want one", logs)
 		}
@@ -325,7 +324,7 @@ func TestIntegrationExecute(t *testing.T) {
 		if !exists(filepath.Join(stackDir(2), "repo", ".git")) || containers(2) != "" {
 			t.Errorf("state %v, containers %q: want the clone kept and the Stack down", exists(stackDir(2)), containers(2))
 		}
-		if err = removeLeftover(t.Context(), paths.StateDir, project, Leftover{Name: "ticket-2", Ticket: 2}); err != nil {
+		if err = removeLeftover(t.Context(), stateDir, project, Leftover{Name: "ticket-2", Ticket: 2}); err != nil {
 			t.Fatal(err)
 		}
 		if exists(stackDir(2)) {
@@ -353,10 +352,10 @@ func TestIntegrationExecute(t *testing.T) {
 		if containers(3) != "" {
 			t.Errorf("Stack up after the interruption: %q", containers(3))
 		}
-		if out, _ := exec.Command("grep", "-rlF", fakeToken, paths.StateDir).Output(); len(out) > 0 {
+		if out, _ := exec.Command("grep", "-rlF", fakeToken, stateDir).Output(); len(out) > 0 {
 			t.Errorf("token in the state directory after the interruption: %s", out)
 		}
-		leftovers, err := ListLeftovers(paths.StateDir, project)
+		leftovers, err := ListLeftovers(stateDir, project)
 		if want := []Leftover{{Name: "ticket-3", Ticket: 3}}; err != nil || !slices.Equal(leftovers, want) {
 			t.Fatalf("leftovers = %v, %v; want %v", leftovers, err, want)
 		}

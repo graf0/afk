@@ -71,6 +71,8 @@ type Stack struct {
 	dir      string // <state>/<project>/<kind>s/<name>
 	hostHome string
 	socket   string // the rootless podman socket
+
+	protected []string // Dockerfiles of the services with build:, set by Up
 }
 
 // New validates opts. It touches nothing: Up creates the Stack, and Down and
@@ -137,6 +139,30 @@ func Open(stateDir, project string, kind Kind, name string) (s *Stack, err error
 }
 
 // --- state ---
+
+var projectNamePattern = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9._-]*$`)
+
+// ProjectName derives the Project's directory name in the state directory
+// from [forge].repo ("graf0/dfmx" becomes "graf0-dfmx").
+func ProjectName(repo string) (name string, err error) {
+	name = strings.ReplaceAll(repo, "/", "-")
+	if !projectNamePattern.MatchString(name) || strings.Contains(name, "..") {
+		err = fmt.Errorf("cannot derive a project name from forge.repo %q", repo)
+		name = ""
+	}
+	return
+}
+
+// DefaultStateDir is ~/.local/state/afk.
+func DefaultStateDir() (dir string, err error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		err = fmt.Errorf("finding home directory: %w", err)
+		return
+	}
+	dir = filepath.Join(home, ".local", "state", "afk")
+	return
+}
 
 // Dir is the state directory of a Stack: the one that stays after Down and is
 // the only record of the Stack (ADR-0015).
@@ -209,6 +235,9 @@ func (s *Stack) Up(ctx context.Context) (err error) {
 	if err = export(ctx, s.opts.Repo, s.opts.Commit, s.exportDir()); err != nil {
 		return
 	}
+	if err = rejectExternalFiles(s.exportDir()); err != nil {
+		return
+	}
 	if err = s.writeEnv(); err != nil {
 		return
 	}
@@ -240,6 +269,9 @@ func (s *Stack) Up(ctx context.Context) (err error) {
 		if images[name], err = s.tag(ctx, name, service.Build); err != nil {
 			return
 		}
+	}
+	if s.protected, err = protectedDockerfiles(s.exportDir(), services); err != nil {
+		return
 	}
 	if err = s.writeOverride(images, slices.Sorted(maps.Keys(services))); err != nil {
 		return
@@ -278,26 +310,16 @@ func (s *Stack) tag(ctx context.Context, service string, build map[string]any) (
 		return
 	}
 	var dockerfileBlob string
-	if _, inline := build["dockerfile_inline"]; !inline {
-		name, _ := build["dockerfile"].(string)
-		if name == "" {
-			name = "Dockerfile"
-		}
-		path := name
-		if !filepath.IsAbs(path) {
-			path = filepath.Join(dir, name)
-		}
-		var rel string
-		if rel, err = relativeTo(s.exportDir(), path); err != nil {
+	rel, inline, err := dockerfilePath(s.exportDir(), build)
+	if err != nil {
+		err = fmt.Errorf("service %s: dockerfile: %w", service, err)
+		return
+	}
+	// Inside the context its tree covers the Dockerfile; outside it does not.
+	if _, inContext := relativeTo(dir, filepath.Join(s.exportDir(), rel)); !inline && inContext != nil {
+		if dockerfileBlob, err = s.revision(ctx, rel); err != nil {
 			err = fmt.Errorf("service %s: dockerfile: %w", service, err)
 			return
-		}
-		// Inside the context its tree covers the Dockerfile; outside it does not.
-		if _, inContext := relativeTo(dir, path); inContext != nil {
-			if dockerfileBlob, err = s.revision(ctx, rel); err != nil {
-				err = fmt.Errorf("service %s: dockerfile: %w", service, err)
-				return
-			}
 		}
 	}
 	tag, err = imageTag(s.opts.Project, service, s.exportDir(), build, contextTree, dockerfileBlob)

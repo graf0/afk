@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/graf0/afk/agent"
 	"github.com/graf0/afk/config"
 )
 
@@ -71,8 +70,6 @@ git push -q origin trunk`)
 	})
 }
 
-// TestReadBaseIgnoresWorkingTree covers `afk image build` and `afk vm up`:
-// both take .afk.toml and settings.json only from ReadBase.
 func TestReadBaseLocalDoesNotFetch(t *testing.T) {
 	root, user, base := userRepo(t)
 	sh(t, root, `
@@ -91,6 +88,8 @@ echo n > n && git add n && git commit -qm next && git push -q origin main`)
 	}
 }
 
+// TestReadBaseIgnoresWorkingTree: the commands that start something take
+// .afk.toml and settings.json only from ReadBase.
 func TestReadBaseIgnoresWorkingTree(t *testing.T) {
 	_, user, _ := userRepo(t)
 	sh(t, user, `printf '[forge]\nkind = "gitea"\nrepo = "x/y"\nurl = "https://g.example"\n[gate]\ncmd = "false"\n' > .afk.toml
@@ -117,23 +116,59 @@ func TestReadBaseErrors(t *testing.T) {
 	}
 }
 
-func TestEgressPolicy(t *testing.T) {
-	policy, err := EgressPolicy(config.Config{Network: config.Network{Allow: []string{"example.com", "*.corp.test"}}})
+// TestResultChangingStackFilesIsRejected: what the host builds and runs from
+// the base branch cannot be changed by a Run or a Chat: the default [protect]
+// has the compose files, .env and .afk/; the Dockerfiles named by the compose
+// files come from the Stack (run.protected), here a service's Dockerfile.
+func TestResultChangingStackFilesIsRejected(t *testing.T) {
+	root, user, _ := userRepo(t)
+	sh(t, user, `mkdir -p .afk docker
+echo 'services: {}' > compose.yml
+echo 'services: {}' > compose.afk.yml
+echo A=1 > .env
+echo 'FROM scratch' > .afk/Dockerfile
+echo 'FROM scratch' > docker/Dockerfile.web
+git add -A && git commit -qm stack && git push -q origin main && git fetch -q origin`)
+	base, err := ReadBase(t.Context(), user)
 	if err != nil {
 		t.Fatal(err)
 	}
-	allowed := append([]string{"example.com", "git.corp.test"}, agent.Domains...)
-	for _, host := range allowed {
-		if !policy.Allows(host) {
-			t.Errorf("policy denies %s, want allowed", host)
-		}
+	r := run{Options: Options{Base: base}, stackFiles: &stackFiles{paths: []string{"docker/Dockerfile.web"}}}
+	for name, script := range map[string]string{
+		"compose.yml":           `echo '# x' >> compose.yml`,
+		"compose.afk.yml":       `echo '# x' >> compose.afk.yml`,
+		".env":                  `echo B=2 >> .env`,
+		"Dockerfile of afk":     `echo 'RUN evil' >> .afk/Dockerfile`,
+		"new file in .afk":      `echo x > .afk/entrypoint.sh`,
+		"Dockerfile of service": `echo 'RUN evil' >> docker/Dockerfile.web`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			q, err := OpenQuarantine(t.Context(), filepath.Join(t.TempDir(), "quarantine.git"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = q.FetchBase(t.Context(), user, base.Commit, "ticket-1"); err != nil {
+				t.Fatal(err)
+			}
+			bundle := agentResult(t, root, base.Commit, script+" && git add -A && git commit -qm x")
+			head, err := q.Import(t.Context(), bundle, "ticket-1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = q.Validate(t.Context(), base.Commit, head, r.protected()); err == nil {
+				t.Error("Validate accepted a change of a protected Stack file")
+			}
+		})
 	}
-	for _, host := range []string{"evil.test", "example.org", "corp.test.evil.test"} {
-		if policy.Allows(host) {
-			t.Errorf("policy allows %s, want denied", host)
-		}
+}
+
+func TestProtectedAddsTheStacksDockerfiles(t *testing.T) {
+	r := run{Options: Options{Base: Base{Config: config.Config{Protect: config.Protect{Paths: []string{".afk.toml"}}}}}, stackFiles: &stackFiles{}}
+	if got := r.protected(); !slices.Equal(got, []string{".afk.toml"}) {
+		t.Errorf("before Up: %v", got)
 	}
-	if _, err = EgressPolicy(config.Config{Network: config.Network{Allow: []string{"bad host"}}}); err == nil || !strings.Contains(err.Error(), "network.allow") {
-		t.Errorf("invalid entry: err = %v, want network.allow error", err)
+	r.stackFiles.paths = []string{"docker/Dockerfile"}
+	if got := r.protected(); !slices.Equal(got, []string{".afk.toml", "docker/Dockerfile"}) {
+		t.Errorf("after Up: %v", got)
 	}
 }

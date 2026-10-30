@@ -14,7 +14,6 @@ import (
 
 	"github.com/graf0/afk/config"
 	"github.com/graf0/afk/forge"
-	"github.com/graf0/afk/image"
 	"github.com/graf0/afk/run"
 	"github.com/graf0/afk/stack"
 )
@@ -207,7 +206,7 @@ func newLifecycle(t *testing.T) (l *lifecycle) {
 			Repo: user, Branch: "main", Commit: strings.TrimSpace(string(out)),
 			Config: config.Config{Forge: config.Forge{Repo: "o/r"}},
 		},
-		Name: "plan", ClaudeToken: "fake", Paths: image.Paths{StateDir: filepath.Join(root, "state")},
+		Name: "plan", ClaudeToken: "fake", StateDir: filepath.Join(root, "state"),
 		Forge:       fakeForge{remote: forge.Remote{Repo: "o/r", URL: remoteDir}},
 		AgentBinary: "/bin/fake", AfkBinary: os.Args[0], Out: l.out,
 	}
@@ -245,9 +244,9 @@ func TestEnterNewChat(t *testing.T) {
 	var branchBase string
 	l.stack.onAttach = func(_ context.Context, cmd string) (err error) {
 		command = cmd
-		socket, _ := socketPath(filepath.Join(l.opts.Paths.StateDir, "o-r", "chats", "plan"))
+		socket, _ := socketPath(filepath.Join(l.opts.StateDir, "o-r", "chats", "plan"))
 		_, statErr := os.Stat(socket)
-		socketDuring = statErr == nil && running(filepath.Join(l.opts.Paths.StateDir, "o-r", "chats", "plan"))
+		socketDuring = statErr == nil && running(filepath.Join(l.opts.StateDir, "o-r", "chats", "plan"))
 		return
 	}
 	c, err := l.enter(t.Context())

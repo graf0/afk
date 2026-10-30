@@ -6,12 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"maps"
 	"os"
-	"slices"
 	"strings"
-
-	"golang.org/x/crypto/ssh"
 
 	"github.com/graf0/afk/agent"
 )
@@ -29,7 +25,7 @@ type guest interface {
 	Agent(ctx context.Context, prompt, model string) (report agent.Report, err error)
 }
 
-// workFunc is what a Run does in a prepared guest.
+// workFunc is what a Run does in a prepared Sandbox.
 type workFunc func(ctx context.Context, g guest) (res result, err error)
 
 // result is what a Run brings to publish.
@@ -65,11 +61,11 @@ func (res *result) addFix(fix agent.Report) {
 
 // --- work ---
 
-// work runs the Agent in the prepared guest and brings its result through
+// work runs the Agent in the prepared Sandbox and brings its result through
 // the gate and the review into the Quarantine repo as the result branch: the
 // implementation squashed into one commit on the base and, when the review
 // committed anything, a "code review" commit on top. Every batch of commits
-// from the guest is validated like the first. needs_info returns early.
+// from the Sandbox is validated like the first. needs_info returns early.
 func (r run) work(ctx context.Context, g guest) (res result, err error) {
 	res, head, implemented, err := r.implement(ctx, g)
 	if err != nil || res.Report.Status == agent.StatusNeedsInfo {
@@ -95,7 +91,7 @@ func (r run) workChild(ctx context.Context, g guest) (res result, err error) {
 	return
 }
 
-// workReview is the review of the whole branch of a Spec, in a guest that
+// workReview is the review of the whole branch of a Spec, in a Sandbox that
 // starts at its tip; the result is the tip, with a "code review" commit on
 // top when the review committed anything.
 func (r run) workReview(ctx context.Context, g guest) (res result, err error) {
@@ -108,7 +104,7 @@ func (r run) workReview(ctx context.Context, g guest) (res result, err error) {
 
 // implement runs the Agent's implementation session and the gate, and
 // squashes the result on the start of the Run. It returns the validated head
-// in the guest and the squashed commit. needs_info returns early.
+// in the Sandbox and the squashed commit. needs_info returns early.
 func (r run) implement(ctx context.Context, g guest) (res result, head, implemented string, err error) {
 	cfg := r.Base.Config
 	r.say("agent started")
@@ -188,15 +184,15 @@ func (r run) squash(ctx context.Context, parent, head, message string) (squashed
 	if squashed, err = r.quarantine.Squash(ctx, parent, head, message, r.Base.Ident); err != nil {
 		return
 	}
-	if _, err = r.quarantine.Validate(ctx, r.Base.Commit, squashed, r.Base.Config.Protect.Paths); err != nil {
+	if _, err = r.quarantine.Validate(ctx, r.Base.Commit, squashed, r.protected()); err != nil {
 		err = fmt.Errorf("squashed result %s rejected: %w", squashed, err)
 	}
 	return
 }
 
-// --- guest branch ---
+// --- Sandbox branch ---
 
-// fetchResult brings HEAD of the guest's clone into the Quarantine repo; see
+// fetchResult brings HEAD of the Sandbox's clone into the Quarantine repo; see
 // GuestBranch.Fetch.
 func (r run) fetchResult(ctx context.Context, g guest) (head string, err error) {
 	dirty, err := Dirty(ctx, g.Exec)
@@ -207,13 +203,13 @@ func (r run) fetchResult(ctx context.Context, g guest) (head string, err error) 
 		err = fmt.Errorf("the agent left uncommitted changes:\n%s", agent.Sanitize(dirty))
 		return
 	}
-	return r.guestBranch().Fetch(ctx, g.Exec, r.start(), r.Base.Config.Protect.Paths, r.Out)
+	return r.guestBranch().Fetch(ctx, g.Exec, r.start(), r.protected(), r.Out)
 }
 
-// ExecFunc runs command in the guest's clone, its stdout going to stdout.
+// ExecFunc runs command in the Sandbox's clone, its stdout going to stdout.
 type ExecFunc func(ctx context.Context, command string, stdout io.Writer) (err error)
 
-// Dirty returns the uncommitted changes of the guest's clone, `git status
+// Dirty returns the uncommitted changes of the Sandbox's clone, `git status
 // --porcelain`: empty when it is clean.
 func Dirty(ctx context.Context, exec ExecFunc) (status string, err error) {
 	var out tailBuffer
@@ -225,59 +221,12 @@ func Dirty(ctx context.Context, exec ExecFunc) (status string, err error) {
 	return
 }
 
-// GuestBranch is a branch of the Quarantine repo that a guest works on: its
-// base goes into the guest, its result comes back.
+// GuestBranch is a branch of the Quarantine repo that a Sandbox works on: its
+// base goes into the Sandbox, its result comes back.
 type GuestBranch struct {
 	Quarantine Quarantine
-	Name       string // the branch, also in the guest's clone
+	Name       string // the branch, also in the Sandbox's clone
 	TempDir    string // holds bundles on the host while they are sent
-}
-
-// Clone clones the branch's base from the Quarantine repo (FetchBase must
-// have stored it) into GuestRepo over client, on the branch, with the base as
-// origin/<baseBranch>. With fromTip the branch starts at its result ref (the
-// tip of a Spec's branch) instead.
-func (b GuestBranch) Clone(ctx context.Context, client *ssh.Client, baseBranch string, fromTip bool) (err error) {
-	temp, err := os.CreateTemp(b.TempDir, "base-*.bundle")
-	if err != nil {
-		err = fmt.Errorf("creating base bundle: %w", err)
-		return
-	}
-	_ = temp.Close()
-	defer func() { _ = os.Remove(temp.Name()) }()
-	// git replaces the file (lock file + rename): open it only afterwards.
-	if err = b.Quarantine.Bundle(ctx, b.Name, temp.Name()); err != nil {
-		return
-	}
-	bundle, err := os.Open(temp.Name())
-	if err != nil {
-		err = fmt.Errorf("opening base bundle: %w", err)
-		return
-	}
-	defer func() { _ = bundle.Close() }()
-	q := agent.ShellQuote
-	origin := originPrefix + baseBranch
-	fetch, start := q("+"+baseRef(b.Name)+":"+origin), origin
-	if fromTip {
-		fetch, start = fetch+" "+q("+"+resultRef(b.Name)+":"+guestStart), guestStart
-	}
-	script := strings.Join([]string{
-		"set -eu",
-		`sudo install -d -o "$(id -u)" -g "$(id -g)" ` + guestWork,
-		"cat > " + guestBundle,
-		"git init -q -b " + q(b.Name) + " " + GuestRepo,
-		"cd " + GuestRepo,
-		"git config user.name " + q(guestGitName),
-		"git config user.email " + q(guestGitEmail),
-		"git fetch -q --no-tags " + guestBundle + " " + fetch,
-		"git checkout -q -B " + q(b.Name) + " " + q(start),
-		"rm " + guestBundle,
-	}, "\n")
-	if err = remote(ctx, client, script, bundle, nil); err != nil {
-		err = fmt.Errorf("cloning the base in the guest: %w", err)
-		return
-	}
-	return
 }
 
 // CloneTo is the host's half of Clone: the base of the branch from the
@@ -326,7 +275,7 @@ func (b GuestBranch) CheckoutCommand(start string) (command string) {
 	return "git checkout -q -B " + agent.ShellQuote(b.Name) + " " + agent.ShellQuote(start)
 }
 
-// Fetch brings HEAD of the guest's clone into the Quarantine repo as a
+// Fetch brings HEAD of the Sandbox's clone into the Quarantine repo as a
 // bundle, without running anything of the clone on the host (ADR-0002), and
 // validates it against start and protected. It returns the commit; without
 // new commits that is start itself, unvalidated. Uncommitted changes in the
@@ -369,7 +318,7 @@ func (b GuestBranch) Fetch(ctx context.Context, exec ExecFunc, start string, pro
 
 // --- gate ---
 
-// gate runs [gate].cmd in the guest on head. When it fails, the Agent gets
+// gate runs [gate].cmd in the Sandbox on head. When it fails, the Agent gets
 // a fix session with the end of the output, up to [gate].max_fixes of them;
 // each batch of commits is fetched and validated. It returns the head that
 // passed. Running out of fixes, or a fix session that does not return done,
@@ -409,7 +358,7 @@ func (r run) gate(ctx context.Context, g guest, head string, res *result) (passe
 func (r run) gateAttempt(ctx context.Context, g guest, res *result) (tail, path string, ok bool, err error) {
 	res.gateRuns++
 	path = fmt.Sprintf("%s-gate-%d.txt", strings.TrimSuffix(r.log.path, ".jsonl"), res.gateRuns)
-	// Bounded like the log: the guest decides how much it prints.
+	// Bounded like the log: the Sandbox decides how much it prints.
 	out, err := newRotatingLog(path)
 	if err != nil {
 		err = fmt.Errorf("gate output file: %w", err)
@@ -450,24 +399,17 @@ func (r run) start() (commit string) { return cmp.Or(r.tip, r.Base.Commit) }
 
 func (r run) task() (task agent.Task) {
 	var names []string
-	var tools []agent.Tool
 	for _, id := range r.Base.Plugins {
 		name, _, _ := strings.Cut(id, "@")
 		names = append(names, name)
-	}
-	// [tool] goes with the Sandbox VM (#65); until then the Agent is told of it.
-	for _, name := range slices.Sorted(maps.Keys(r.Base.Config.Tool)) {
-		tool := r.Base.Config.Tool[name]
-		tools = append(tools, agent.Tool{Name: name, Prompt: strings.TrimSpace(tool.Prompt), Env: tool.EnvNames()})
 	}
 	task = agent.Task{
 		RepoDir:    r.treePath(),
 		Branch:     r.branch,
 		BaseRef:    "origin/" + r.Base.Branch,
 		TicketPath: r.contextFile(ticketFileName),
-		Protected:  r.Base.Config.Protect.Paths,
+		Protected:  r.protected(),
 		Plugins:    names,
-		Tools:      tools,
 		Resumed:    r.resumed,
 	}
 	if r.spec != nil {

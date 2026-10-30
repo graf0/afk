@@ -12,7 +12,7 @@ import (
 	"github.com/graf0/afk/forge"
 )
 
-// sessionFunc runs work in a guest prepared for r: in production the Sandbox
+// sessionFunc runs work in a Sandbox prepared for r: in production the Sandbox
 // of a Stack (run.enter), in tests a local clone.
 type sessionFunc func(ctx context.Context, r run, work workFunc) (res result, err error)
 

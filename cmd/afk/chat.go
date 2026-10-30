@@ -11,8 +11,8 @@ import (
 	"github.com/graf0/afk/agent"
 	"github.com/graf0/afk/chat"
 	"github.com/graf0/afk/forge"
-	"github.com/graf0/afk/image"
 	"github.com/graf0/afk/run"
+	"github.com/graf0/afk/stack"
 )
 
 const chatUsage = "usage: afk chat <name> [--rm] [-- claude args...] | afk chat ls | afk chat shell <name> | afk chat rm <name>"
@@ -91,7 +91,7 @@ func runChat(ctx context.Context, args []string, dir string, stdout io.Writer) (
 	if err != nil {
 		return
 	}
-	paths, err := image.DefaultPaths()
+	stateDir, err := stack.DefaultStateDir()
 	if err != nil {
 		return
 	}
@@ -104,16 +104,16 @@ func runChat(ctx context.Context, args []string, dir string, stdout io.Writer) (
 	if err != nil {
 		return
 	}
-	opts := chat.Options{Base: base, Name: cmd.name, Paths: paths, In: os.Stdin, Out: stdout, Err: os.Stderr}
+	opts := chat.Options{Base: base, Name: cmd.name, StateDir: stateDir, In: os.Stdin, Out: stdout, Err: os.Stderr}
 	switch cmd.kind {
 	case chatEnter:
 		err = chatEnterCommand(ctx, cmd, opts, dir)
 	case chatList:
 		var project string
-		if project, err = image.ProjectName(base.Config.Forge.Repo); err != nil {
+		if project, err = stack.ProjectName(base.Config.Forge.Repo); err != nil {
 			return
 		}
-		err = chat.List(stdout, paths.StateDir, project, time.Now())
+		err = chat.List(stdout, stateDir, project, time.Now())
 	case chatShell:
 		err = chat.Shell(ctx, opts)
 	case chatRm:
@@ -125,10 +125,10 @@ func runChat(ctx context.Context, args []string, dir string, stdout io.Writer) (
 // chatEnterCommand creates the Chat or returns to it. A Project without
 // compose.afk.yml on the base branch gets the template on a terminal.
 func chatEnterCommand(ctx context.Context, cmd chatCommand, opts chat.Options, dir string) (err error) {
-	if opts.ClaudeToken, err = agent.OAuthToken(opts.Paths.StateDir); err != nil {
+	if opts.ClaudeToken, err = agent.OAuthToken(opts.StateDir); err != nil {
 		return
 	}
-	if opts.Forge, err = forge.New(ctx, opts.Base.Config, opts.Paths.StateDir); err != nil {
+	if opts.Forge, err = forge.New(ctx, opts.Base.Config, opts.StateDir); err != nil {
 		return
 	}
 	opts.Args, opts.Remove = cmd.claudeArgs, cmd.remove

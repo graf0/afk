@@ -147,7 +147,7 @@ func TestWorkGateFixes(t *testing.T) {
 	}
 }
 
-// A failed Run keeps the VM (session destroys it only without an error), so
+// A failed Run keeps the state (session destroys it only without an error), so
 // work must return an error and accept nothing.
 func TestWorkGateExhausted(t *testing.T) {
 	r, g, _ := workRun(t, &fakeGitHub{}, `echo boom; false`, 2)
@@ -335,22 +335,6 @@ func TestTaskPlugins(t *testing.T) {
 	r := run{Options: Options{Base: Base{Plugins: []string{"b@y", "mattpocock-skills@claude-plugins-official"}}}}
 	if got := r.task().Plugins; !slices.Equal(got, []string{"b", "mattpocock-skills"}) {
 		t.Errorf("task plugins = %q", got)
-	}
-}
-
-func TestTaskTools(t *testing.T) {
-	cfg := config.Config{Tool: map[string]config.Tool{
-		"postgres":   {Prompt: "  psql\n", Env: map[string]string{"PGHOST": "/run", "DATABASE_URL": "x"}},
-		"playwright": {Prompt: "shot"},
-		"silent":     {Build: []string{"x"}},
-		"blank":      {Prompt: " \n\t"},
-	}}
-	r := run{Options: Options{Base: Base{Config: cfg}}}
-	want := []agent.Tool{{Name: "blank"}, {Name: "playwright", Prompt: "shot"}, {Name: "postgres", Prompt: "psql", Env: []string{"DATABASE_URL", "PGHOST"}}, {Name: "silent"}}
-	if got := r.task().Tools; !slices.EqualFunc(got, want, func(a, b agent.Tool) bool {
-		return a.Name == b.Name && a.Prompt == b.Prompt && slices.Equal(a.Env, b.Env)
-	}) {
-		t.Errorf("task tools = %v, want %v", got, want)
 	}
 }
 

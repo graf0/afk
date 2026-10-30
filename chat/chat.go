@@ -21,7 +21,6 @@ import (
 
 	"github.com/graf0/afk/agent"
 	"github.com/graf0/afk/forge"
-	"github.com/graf0/afk/image"
 	"github.com/graf0/afk/run"
 	"github.com/graf0/afk/sandbox"
 	"github.com/graf0/afk/stack"
@@ -52,12 +51,12 @@ var subcommands = []string{"ls", "shell", "rm"}
 var nonKey = regexp.MustCompile(`[^a-zA-Z0-9]`)
 
 // Options describe a Chat. Run uses all of them; Shell and Remove only Base,
-// Name, Paths, In, Out and Err.
+// Name, StateDir, In, Out and Err.
 type Options struct {
 	Base        run.Base
 	Name        string
 	ClaudeToken string
-	Paths       image.Paths
+	StateDir    string      // ~/.local/state/afk
 	Forge       forge.Forge // Remote is where chat-<name> goes
 	// Args are the arguments of claude after "--". They replace --continue,
 	// which a Chat that exists gets without them.
@@ -118,11 +117,11 @@ func newChat(ctx context.Context, opts Options) (c *chat, err error) {
 		return
 	}
 	c = &chat{Options: opts, branch: BranchPrefix + opts.Name}
-	if c.project, err = image.ProjectName(opts.Base.Config.Forge.Repo); err != nil {
+	if c.project, err = stack.ProjectName(opts.Base.Config.Forge.Repo); err != nil {
 		return
 	}
-	c.stateDir = filepath.Join(opts.Paths.StateDir, c.project)
-	c.dir = stack.Dir(opts.Paths.StateDir, c.project, stack.Chat, opts.Name)
+	c.stateDir = filepath.Join(opts.StateDir, c.project)
+	c.dir = stack.Dir(opts.StateDir, c.project, stack.Chat, opts.Name)
 	if c.socket, err = socketPath(c.dir); err != nil {
 		return
 	}
@@ -179,7 +178,7 @@ func Run(ctx context.Context, opts Options) (err error) {
 	}
 	st, err := stack.New(stack.Options{
 		Repo: opts.Base.Repo, Commit: opts.Base.Commit, Project: c.project, Kind: stack.Chat, Name: opts.Name,
-		StateDir: opts.Paths.StateDir, Env: c.env(), Mounts: view.Mounts, Out: opts.Out,
+		StateDir: opts.StateDir, Env: c.env(), Mounts: view.Mounts, Out: opts.Out,
 	})
 	if err != nil {
 		return

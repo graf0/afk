@@ -74,7 +74,7 @@ type streamEvent struct {
 
 // Stream reads Claude Code's stream-json from r: every line goes to log
 // as is, the Agent's text and one line per tool call to out (control
-// characters removed, the stream comes from the untrusted guest). It returns
+// characters removed, the stream comes from the untrusted Sandbox). It returns
 // the report from the last result event. Each line is written to log in one
 // Write, so a rotating log splits only between lines.
 func Stream(r io.Reader, out, log io.Writer) (report Report, err error) {
@@ -144,7 +144,7 @@ func toolArg(input map[string]json.RawMessage) (arg string) {
 
 // Sanitize drops control characters (terminal escapes) except newline and
 // tab, and format characters (bidi overrides, zero-width) from text that
-// comes from the guest.
+// comes from the Sandbox.
 func Sanitize(text string) (clean string) {
 	return strings.Map(func(r rune) rune {
 		if r == '\n' || r == '\t' {

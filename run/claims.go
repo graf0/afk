@@ -29,7 +29,7 @@ func (c Claims) Claim(numbers ...int) (release func(), ok bool, err error) {
 }
 
 // ClaimKeys is Claim for things other than tickets, named by keys (the
-// preflight VM): one file each, like a ticket.
+// preflight): one file each, like a ticket.
 func (c Claims) ClaimKeys(keys ...string) (release func(), ok bool, err error) {
 	if err = os.MkdirAll(c.Dir, 0o700); err != nil {
 		err = fmt.Errorf("creating %s: %w", c.Dir, err)

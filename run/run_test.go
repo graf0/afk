@@ -2,7 +2,6 @@ package run
 
 import (
 	"bytes"
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,7 +9,6 @@ import (
 
 	"github.com/graf0/afk/config"
 	"github.com/graf0/afk/forge"
-	"github.com/graf0/afk/image"
 )
 
 func TestTailBuffer(t *testing.T) {
@@ -62,9 +60,9 @@ func TestRotatingLog(t *testing.T) {
 func TestRunPrompt(t *testing.T) {
 	r := run{
 		Options: Options{
-			Base:   Base{Branch: "trunk", Config: config.Config{Protect: config.Protect{Paths: []string{".afk.toml"}}}},
-			Ticket: forge.Ticket{Number: 7},
-			Paths:  image.Paths{StateDir: "/state"},
+			Base:     Base{Branch: "trunk", Config: config.Config{Protect: config.Protect{Paths: []string{".afk.toml"}}}},
+			Ticket:   forge.Ticket{Number: 7},
+			StateDir: "/state",
 		},
 		project: "o-r",
 		branch:  "ticket-7",
@@ -85,25 +83,5 @@ func TestExecuteRefusesSpec(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "is a Spec") {
 		t.Errorf("err = %v", err)
-	}
-}
-
-func TestDenialLogIsCreatedByTheFirstDenial(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "ticket-1-egress.txt")
-	l := &DenialLog{path: path}
-	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("file exists without a denial: %v", err)
-	}
-	for _, line := range []string{"denied a\n", "denied b\n"} {
-		if _, err := l.Write([]byte(line)); err != nil {
-			t.Fatal(err)
-		}
-	}
-	denied, err := l.Close()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got, _ := os.ReadFile(path); string(got) != "denied a\ndenied b\n" || denied != 2 {
-		t.Errorf("file = %q, denied = %d", got, denied)
 	}
 }

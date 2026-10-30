@@ -10,14 +10,6 @@ import (
 	"github.com/graf0/afk/stack"
 )
 
-// ExitNeedsForce is the exit code for ErrNeedsForce, which the TUI asks about.
-// Nothing returns it any more: `afk chat rm` has no --force. Both go with the
-// TUI (#65).
-const ExitNeedsForce = 3
-
-// ErrNeedsForce is the refusal --force used to override.
-var ErrNeedsForce = errors.New("refused without --force")
-
 // existing is the Chat opts.Name, which must have a state directory.
 func existing(ctx context.Context, opts Options) (c *chat, err error) {
 	if c, err = newChat(ctx, opts); err != nil {
@@ -34,7 +26,7 @@ func existing(ctx context.Context, opts Options) (c *chat, err error) {
 // Remove destroys the Chat opts.Name: its Stack with the volumes, the clone,
 // the home of the Agent and the Chat's refs in the Quarantine repo. A branch
 // on the Forge stays. It takes the Chat's lock, so a running Chat refuses it.
-// Only opts.Base, Name, Paths and Out are used.
+// Only opts.Base, Name, StateDir and Out are used.
 func Remove(ctx context.Context, opts Options) (err error) {
 	c, err := existing(ctx, opts)
 	if err != nil {
@@ -45,7 +37,7 @@ func Remove(ctx context.Context, opts Options) (err error) {
 		return
 	}
 	defer unlock()
-	st, err := stack.Open(opts.Paths.StateDir, c.project, stack.Chat, opts.Name)
+	st, err := stack.Open(opts.StateDir, c.project, stack.Chat, opts.Name)
 	if err != nil {
 		return
 	}

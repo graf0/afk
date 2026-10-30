@@ -1,7 +1,6 @@
 package config
 
 import (
-	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -12,7 +11,7 @@ import (
 // minimalConfig is the smallest valid Project config.
 const minimalConfig = "[forge]\nkind = \"github\"\nrepo = \"o/r\"\n[gate]\ncmd = \"true\"\n"
 
-var requiredProtect = []string{".afk.toml", ".github/", ".gitea/", "**/.claude/", "**/.mcp.json"}
+var requiredProtect = []string{".afk.toml", "compose.yml", "compose.afk.yml", ".env", ".afk/", ".github/", ".gitea/", "**/.claude/", "**/.mcp.json"}
 
 func TestParseDefaults(t *testing.T) {
 	cfg, err := Parse([]byte(minimalConfig))
@@ -36,42 +35,12 @@ func TestParseDefaults(t *testing.T) {
 	if cfg.Gate.MaxFixes != 3 {
 		t.Errorf("gate.max_fixes = %d", cfg.Gate.MaxFixes)
 	}
-	wantSandbox := Machine{Template: "debian13", MaxAge: "168h", MemoryMiB: 2048, CPUs: 2}
-	if !machineEqual(cfg.Machine.Sandbox, wantSandbox) {
-		t.Errorf("sandbox = %+v, want %+v", cfg.Machine.Sandbox, wantSandbox)
-	}
-	if len(cfg.Network.Allow) != 0 || len(cfg.Agent.Plugins) != 0 || len(cfg.Agent.Marketplaces) != 0 {
-		t.Errorf("allow/plugins/marketplaces should be empty: %v %v %v", cfg.Network.Allow, cfg.Agent.Plugins, cfg.Agent.Marketplaces)
+	if len(cfg.Agent.Plugins) != 0 || len(cfg.Agent.Marketplaces) != 0 {
+		t.Errorf("plugins/marketplaces should be empty: %v %v", cfg.Agent.Plugins, cfg.Agent.Marketplaces)
 	}
 	if !slices.Equal(cfg.Protect.Paths, requiredProtect) {
 		t.Errorf("protect.paths = %v", cfg.Protect.Paths)
 	}
-}
-
-func machineEqual(a, b Machine) (equal bool) {
-	return a.Template == b.Template && a.MaxAge == b.MaxAge && a.MemoryMiB == b.MemoryMiB && a.CPUs == b.CPUs && slices.Equal(a.Build, b.Build)
-}
-
-func TestParseMachine(t *testing.T) {
-	t.Run("overrides keep the other defaults", func(t *testing.T) {
-		cfg, err := Parse([]byte(minimalConfig + "[machine.sandbox]\nbuild = [\"a\", \"b\"]\nmemory = 4096\nmax_age = \"0\"\n"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		want := Machine{Template: "debian13", Build: []string{"a", "b"}, MaxAge: "0", MemoryMiB: 4096, CPUs: 2}
-		if got := cfg.Machine.Sandbox; !machineEqual(got, want) {
-			t.Errorf("sandbox = %+v, want %+v", got, want)
-		}
-	})
-	t.Run("cpus", func(t *testing.T) {
-		cfg, err := Parse([]byte(minimalConfig + "[machine.sandbox]\ncpus = 6\n"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got := cfg.Machine.Sandbox; got.CPUs != 6 || got.MemoryMiB != 2048 {
-			t.Errorf("sandbox = %+v", got)
-		}
-	})
 }
 
 func TestParseOverrides(t *testing.T) {
@@ -89,17 +58,6 @@ marketplaces = ["o/r"]
 [gate]
 cmd = "make"
 max_fixes = 5
-[network]
-allow = ["proxy.golang.org"]
-[tool.postgres]
-build = ["apt-get install postgresql"]
-setup = ["migrate", "seed"]
-env = { DATABASE_URL = "postgres:///app" }
-prompt = "Postgres"
-[tool.redis]
-on = "sandbox"
-[tool.redis.env]
-REDIS_URL = "redis://localhost"
 `))
 	if err != nil {
 		t.Fatal(err)
@@ -109,18 +67,6 @@ REDIS_URL = "redis://localhost"
 	}
 	if cfg.Gate.MaxFixes != 5 || cfg.Gate.Cmd != "make" {
 		t.Errorf("gate = %+v", cfg.Gate)
-	}
-	if cfg.Tool["postgres"].On != "sandbox" || cfg.Tool["postgres"].Prompt != "Postgres" || !slices.Equal(cfg.Tool["postgres"].Build, []string{"apt-get install postgresql"}) || cfg.Tool["redis"].On != "sandbox" {
-		t.Errorf("tool = %+v", cfg.Tool)
-	}
-	if pg := cfg.Tool["postgres"]; !slices.Equal(pg.Setup, []string{"migrate", "seed"}) || pg.Env["DATABASE_URL"] != "postgres:///app" {
-		t.Errorf("postgres = %+v", pg)
-	}
-	if want := map[string]string{"DATABASE_URL": "postgres:///app", "REDIS_URL": "redis://localhost"}; !maps.Equal(cfg.ToolEnv(), want) {
-		t.Errorf("ToolEnv = %v, want %v", cfg.ToolEnv(), want)
-	}
-	if got := cfg.Tool["postgres"].EnvNames(); !slices.Equal(got, []string{"DATABASE_URL"}) || cfg.Tool["x"].EnvNames() != nil {
-		t.Errorf("EnvNames = %v", got)
 	}
 	if !slices.Equal(cfg.Agent.Plugins, []string{"p@x"}) || !slices.Equal(cfg.Agent.Marketplaces, []string{"o/r"}) {
 		t.Errorf("plugins = %v, marketplaces = %v", cfg.Agent.Plugins, cfg.Agent.Marketplaces)
@@ -194,7 +140,7 @@ func TestLoad(t *testing.T) {
 }
 
 func TestMarshalRoundTrip(t *testing.T) {
-	cfg, err := Parse([]byte(minimalConfig + "[tool.pg]\nprompt = \"p\"\n"))
+	cfg, err := Parse([]byte(minimalConfig + "[protect]\npaths = [\"x/\"]\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,7 +152,7 @@ func TestMarshalRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reparsing %q: %v", out, err)
 	}
-	if !slices.Equal(again.Protect.Paths, cfg.Protect.Paths) || again.Tool["pg"].On != cfg.Tool["pg"].On || again.Tool["pg"].Prompt != "p" || again.Gate != cfg.Gate {
+	if !slices.Equal(again.Protect.Paths, cfg.Protect.Paths) || again.Gate != cfg.Gate {
 		t.Errorf("round trip mismatch:\n%s", out)
 	}
 }

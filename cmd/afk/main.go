@@ -4,7 +4,6 @@ package main
 import (
 	"cmp"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -15,13 +14,10 @@ import (
 
 	"github.com/graf0/afk/chat"
 	"github.com/graf0/afk/config"
-	"github.com/graf0/afk/image"
-	"github.com/graf0/afk/machine"
-	"github.com/graf0/afk/run"
 )
 
 func main() {
-	ctx, abort := handleSignals(context.Background())
+	ctx := handleSignals(context.Background())
 	name := "afk"
 	var err error
 	if filepath.Base(os.Args[0]) == chat.ForgeBinary { // afk mounted in a Chat's Sandbox (ADR-0012)
@@ -30,7 +26,7 @@ func main() {
 	} else {
 		var dir string
 		if dir, err = os.Getwd(); err == nil {
-			err = runCommand(ctx, abort, os.Args[1:], dir, os.Stdout)
+			err = runCommand(ctx, os.Args[1:], dir, os.Stdout)
 		}
 	}
 	if err != nil {
@@ -38,34 +34,28 @@ func main() {
 		for line := range strings.SplitSeq(strings.TrimSuffix(err.Error(), "\n"), "\n") {
 			fmt.Fprintf(os.Stderr, "%s: %s\n", name, line)
 		}
-		if errors.Is(err, chat.ErrNeedsForce) {
-			os.Exit(chat.ExitNeedsForce) // the TUI asks about --force
-		}
 		os.Exit(1)
 	}
 }
 
 // handleSignals turns the first SIGINT/SIGTERM into cancellation of the
-// returned context (graceful stop) and the second into closing abort (stop
-// right now). A third signal gets the default action.
-func handleSignals(parent context.Context) (ctx context.Context, abort <-chan struct{}) {
+// returned context (graceful stop: the Stack goes down) and says so on stderr.
+// A second signal gets the default action: stop right now.
+func handleSignals(parent context.Context) (ctx context.Context) {
 	ctx, cancel := context.WithCancel(parent)
-	hard := make(chan struct{})
-	signals := make(chan os.Signal, 2)
+	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-signals
+		fmt.Fprintln(os.Stderr, "afk: cleaning up; Ctrl-C again aborts")
 		cancel()
-		<-signals
-		close(hard)
 		signal.Stop(signals)
 	}()
-	return ctx, hard
+	return ctx
 }
 
 // runCommand executes the command from args in the Project containing dir.
-// Closing abort stops long work immediately, without cleanup.
-func runCommand(ctx context.Context, abort <-chan struct{}, args []string, dir string, stdout io.Writer) (err error) {
+func runCommand(ctx context.Context, args []string, dir string, stdout io.Writer) (err error) {
 	// The Factory reads .afk.toml only from the base branch, never the working tree (ADR-0002).
 	if len(args) > 0 && args[0] == "factory" {
 		err = runFactory(ctx, args[1:], dir, stdout)
@@ -86,36 +76,10 @@ func runCommand(ctx context.Context, abort <-chan struct{}, args []string, dir s
 			return
 		}
 		_, err = stdout.Write(data)
-	case args[0] == "image":
-		err = runImage(ctx, abort, args[1:], dir, stdout)
 	case args[0] == "chat":
 		err = runChat(ctx, args[1:], dir, stdout)
-	case args[0] == "vm":
-		err = runVM(ctx, args[1:], dir, stdout)
-	case args[0] == "tui": // all Projects: no config of the current one
-		err = runTUI(ctx, args[1:])
-	case args[0] == "sidebar":
-		err = runSidebar(ctx, args[1:])
 	default:
 		err = fmt.Errorf("unknown command %q", args[0])
 	}
-	return
-}
-
-// runImage executes `afk image <subcommand>`.
-func runImage(ctx context.Context, abort <-chan struct{}, args []string, dir string, stdout io.Writer) (err error) {
-	if len(args) != 1 || args[0] != "build" {
-		err = fmt.Errorf("usage: afk image build")
-		return
-	}
-	base, err := run.ReadBase(ctx, dir)
-	if err != nil {
-		return
-	}
-	paths, err := image.DefaultPaths()
-	if err != nil {
-		return
-	}
-	_, err = image.BuildExclusive(ctx, image.Options{Paths: paths, Config: base.Config, Out: stdout, Abort: abort, ProjectSettings: base.Settings}, func() ([]string, error) { return machine.Overlays("") })
 	return
 }

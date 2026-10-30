@@ -10,7 +10,7 @@ import (
 )
 
 const (
-	// TokenEnv carries the Claude Code OAuth token, on the host and in the guest.
+	// TokenEnv carries the Claude Code OAuth token, on the host and in the Sandbox.
 	TokenEnv = "CLAUDE_CODE_OAUTH_TOKEN"
 
 	// tokenFile holds the token in the afk state directory, mode 0600.
@@ -52,7 +52,7 @@ func OAuthToken(stateDir string) (token string, err error) {
 	return
 }
 
-// checkToken rejects a token that would break its passing to the guest (one
+// checkToken rejects a token that would break its passing to the Sandbox (one
 // line on stdin).
 func checkToken(token string) (err error) {
 	if strings.ContainsAny(token, "\r\n") {

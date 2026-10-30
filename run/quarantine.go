@@ -22,7 +22,7 @@ const (
 )
 
 // quarantineConfig hardens every git call on the Quarantine repo, which holds
-// objects from the untrusted guest: no hooks, objects checked on fetch.
+// objects from the untrusted Sandbox: no hooks, objects checked on fetch.
 var quarantineConfig = []string{
 	"-c", "core.hooksPath=/dev/null",
 	"-c", "transfer.fsckObjects=true",
@@ -86,7 +86,7 @@ func (q Quarantine) FetchBase(ctx context.Context, repo, commit, branch string) 
 }
 
 // Base returns the base of branch: what FetchBase last copied there, the
-// start of an earlier Run's guest.
+// start of an earlier Run's Sandbox.
 func (q Quarantine) Base(ctx context.Context, branch string) (commit string, err error) {
 	if commit, err = q.git(ctx, "rev-parse", "--verify", "--end-of-options", baseRef(branch)+"^{commit}"); err != nil {
 		err = fmt.Errorf("reading the base of %s in %s (was its Run started here?): %w", branch, q.Dir, err)
@@ -132,7 +132,7 @@ func (q Quarantine) Bundle(ctx context.Context, branch, path string) (err error)
 
 // --- result ---
 
-// Import fetches HEAD of the bundle at path (from the guest) to the incoming
+// Import fetches HEAD of the bundle at path (from the Sandbox) to the incoming
 // ref of branch and returns its commit.
 func (q Quarantine) Import(ctx context.Context, path, branch string) (head string, err error) {
 	ref := incomingRef(branch)
@@ -180,7 +180,7 @@ func (q Quarantine) Validate(ctx context.Context, base, head string, protected [
 }
 
 // protectedError names, per commit of base..head, the protected paths it
-// touches. Subjects and paths come from the guest.
+// touches. Subjects and paths come from the Sandbox.
 func (q Quarantine) protectedError(ctx context.Context, base, head string, protected []string) (err error) {
 	shas, err := q.git(ctx, "rev-list", base+".."+head)
 	if err != nil {

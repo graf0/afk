@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/graf0/afk/forge"
-	"github.com/graf0/afk/image"
 	"github.com/graf0/afk/run"
 	"github.com/graf0/afk/stack"
 )
@@ -153,8 +152,8 @@ func TestIntegrationChat(t *testing.T) {
 	}
 	name := fmt.Sprintf("chat%d", time.Now().UnixNano()%1_000_000_000)
 	project := "afkt-" + name
-	paths := image.Paths{StateDir: t.TempDir()}
-	t.Cleanup(func() { cleanProject(paths.StateDir, project) })
+	stateDir := t.TempDir()
+	t.Cleanup(func() { cleanProject(stateDir, project) })
 
 	// The host's claude, as the Chat finds it: a symlink to the real file.
 	bin := t.TempDir()
@@ -225,7 +224,7 @@ git push -q origin main`)
 
 	options := func(chatName string, out *syncBuffer) Options {
 		return Options{
-			Base: base, Name: chatName, ClaudeToken: fakeToken, Paths: paths, Forge: github,
+			Base: base, Name: chatName, ClaudeToken: fakeToken, StateDir: stateDir, Forge: github,
 			AfkBinary: afk, In: devNull, Out: out, Err: out,
 		}
 	}
@@ -237,7 +236,7 @@ git push -q origin main`)
 		t.Logf("Run of %s took %s, err = %v, output:\n%s", opts.Name, time.Since(start).Round(time.Second), err, out)
 		return
 	}
-	stackDir := func(chatName string) (dir string) { return stack.Dir(paths.StateDir, project, stack.Chat, chatName) }
+	stackDir := func(chatName string) (dir string) { return stack.Dir(stateDir, project, stack.Chat, chatName) }
 	compose := func(chatName string) (label string) {
 		return fmt.Sprintf("label=com.docker.compose.project=afk_%s_chat_%s", project, chatName)
 	}
@@ -251,11 +250,11 @@ git push -q origin main`)
 		_, err := os.Stat(path)
 		return err == nil
 	}
-	quarantine := filepath.Join(paths.StateDir, project, run.QuarantineName)
+	quarantine := filepath.Join(stateDir, project, run.QuarantineName)
 	// listed is the state `afk chat ls` shows for the Chat chatName, "" without a line.
 	listed := func(chatName string) (state string) {
 		var buf bytes.Buffer
-		if err := List(&buf, paths.StateDir, project, time.Now()); err != nil {
+		if err := List(&buf, stateDir, project, time.Now()); err != nil {
 			t.Fatal(err)
 		}
 		for line := range strings.Lines(buf.String()) {
@@ -310,7 +309,7 @@ git push -q origin main`)
 		if exists(filepath.Join(stackDir("plan"), "afk.sock")) {
 			t.Error("socket in the state of the Chat")
 		}
-		if out, _ := exec.Command("grep", "-rlF", fakeToken, paths.StateDir).Output(); len(out) > 0 {
+		if out, _ := exec.Command("grep", "-rlF", fakeToken, stateDir).Output(); len(out) > 0 {
 			t.Errorf("token in the state directory: %s", out)
 		}
 		if got := sh(t, "/", "git --git-dir="+quarantine+" rev-parse refs/afk/base/chat-plan"); got != base.Commit {
@@ -355,7 +354,7 @@ git push -q origin main`)
 		if _, err := enter(t.Context(), t, opts); err != nil {
 			t.Fatal(err)
 		}
-		memory := filepath.Join(paths.StateDir, project, memoryName)
+		memory := filepath.Join(stateDir, project, memoryName)
 		if got := sh(t, memory, "cat note-plan.md"); got != "remembered-by-plan" {
 			t.Errorf("note of plan = %q", got)
 		}

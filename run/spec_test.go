@@ -40,14 +40,14 @@ func (v *fakeSandboxes) open(ctx context.Context, r run, work workFunc) (res res
 	return work(ctx, g)
 }
 
-// child scripts a VM whose Agent commits file and reports done.
+// child scripts a Sandbox whose Agent commits file and reports done.
 func child(file string) (script func(g *fakeGuest)) {
 	return func(g *fakeGuest) {
 		g.sessions = []func() agent.Report{g.commit(file, agent.Report{Summary: "Did " + file + ".", Deviations: []string{}})}
 	}
 }
 
-// review scripts a VM whose Agent reviews: it commits file (none: no fixes).
+// review scripts a Sandbox whose Agent reviews: it commits file (none: no fixes).
 func review(file string) (script func(g *fakeGuest)) {
 	return func(g *fakeGuest) {
 		report := agent.Report{Summary: "Reviewed.", FindingsFixed: []string{"Nit."}}
@@ -59,7 +59,7 @@ func review(file string) (script func(g *fakeGuest)) {
 	}
 }
 
-// needsInfo scripts a VM whose Agent gives up.
+// needsInfo scripts a Sandbox whose Agent gives up.
 func needsInfo(g *fakeGuest) {
 	g.sessions = []func() agent.Report{func() agent.Report {
 		return agent.Report{Status: agent.StatusNeedsInfo, Reason: "Unclear.", Questions: []string{"Which API?"}}
@@ -87,7 +87,7 @@ func newSpecEnv(t *testing.T) (env specEnv) {
 	return
 }
 
-// spec is a Run of the Spec on a fresh Quarantine repo; boxes plays its VMs.
+// spec is a Run of the Spec on a fresh Quarantine repo; boxes plays its Sandboxes.
 func (env specEnv) spec(t *testing.T, boxes *fakeSandboxes) (s *specRun) {
 	t.Helper()
 	q, err := OpenQuarantine(t.Context(), filepath.Join(t.TempDir(), "quarantine.git"))
@@ -158,7 +158,7 @@ func TestSpecThreeChildren(t *testing.T) {
 		t.Fatalf("writes:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
 	if len(boxes.scripts) != 0 {
-		t.Errorf("%d VMs not used", len(boxes.scripts))
+		t.Errorf("%d Sandboxes not used", len(boxes.scripts))
 	}
 
 	pull := env.fake.bodies[slices.Index(env.fake.requests, "POST /repos/o/r/pulls")]
@@ -334,7 +334,7 @@ func TestSpecResume(t *testing.T) {
 			}
 			// The next child starts from the end of the branch.
 			if got := sh(t, boxes.guests[0].dir, "git log -1 --format=%s HEAD~1"); got != "First (#10)" {
-				t.Errorf("the VM of #11 starts at %q, want the work of #10", got)
+				t.Errorf("the Sandbox of #11 starts at %q, want the work of #10", got)
 			}
 			want := slices.Concat(
 				childWrites(11), childWrites(12),
@@ -356,7 +356,7 @@ func TestSpecResume(t *testing.T) {
 	}
 }
 
-// The VM an earlier Factory left for a child takes the Run of that child
+// The Sandbox an earlier Factory left for a child takes the Run of that child
 // and nothing else; it holds the base of the earlier Run, not today's.
 func TestSpecLeftover(t *testing.T) {
 	env := newSpecEnv(t)

@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -17,34 +16,22 @@ import (
 const FileName = ".afk.toml"
 
 const (
-	// SandboxMachine is the name of the Sandbox VM in [machine.<name>].
-	SandboxMachine = "sandbox"
-
 	// ForgeGitHub and ForgeGitea are the values of forge.kind.
 	ForgeGitHub = "github"
 	ForgeGitea  = "gitea"
 
 	// defaultMaxFixes is the default number of fix attempts after a failed gate.
 	defaultMaxFixes = 3
-
-	// defaultTemplate is the default Template of the Sandbox VM's Base image.
-	defaultTemplate = "debian13"
-
-	// defaultMaxAge is the default Expiry of the Sandbox VM's Base image.
-	defaultMaxAge = "168h"
-
-	// defaultMemoryMiB is the default RAM of the Sandbox VM.
-	defaultMemoryMiB = 2048
-
-	// defaultCPUs is the default number of vCPUs of the Sandbox VM.
-	defaultCPUs = 2
 )
 
 var (
 	// requiredProtectPaths are always protected, regardless of the user's list.
 	// Claude Code picks up .claude/ and .mcp.json in any directory, so they
-	// are protected at any depth ("**/").
-	requiredProtectPaths = []string{FileName, ".github/", ".gitea/", "**/.claude/", "**/.mcp.json"}
+	// are protected at any depth ("**/"). The Dockerfiles of the Stack come
+	// on top of these (stack.Protected): they depend on the compose files.
+	// .env feeds the interpolation of the compose files, and .afk/ is where
+	// the template keeps the Dockerfile of the Sandbox.
+	requiredProtectPaths = []string{FileName, "compose.yml", "compose.afk.yml", ".env", ".afk/", ".github/", ".gitea/", "**/.claude/", "**/.mcp.json"}
 )
 
 // Config is the effective Project config, with defaults applied.
@@ -53,10 +40,7 @@ type Config struct {
 	Labels  Labels            `toml:"labels"`
 	Agent   Agent             `toml:"agent"`
 	Gate    Gate              `toml:"gate"`
-	Machine Machines          `toml:"machine"`
-	Network Network           `toml:"network"`
 	Protect Protect           `toml:"protect"`
-	Tool    map[string]Tool   `toml:"tool"`
 	Expose  map[string]string `toml:"expose"` // compose service -> [address:]host_port:container_port
 	VM      []VM              `toml:"vm"`
 }
@@ -78,8 +62,8 @@ type Labels struct {
 	Spec          string `toml:"spec"`
 }
 
-// Agent configures models and the Claude Code plugins installed in the
-// Base image (ADR-0009).
+// Agent configures models and the Claude Code plugins available to the
+// Agent in the Sandbox (ADR-0009).
 type Agent struct {
 	Model        string   `toml:"model"`
 	ReviewModel  string   `toml:"review_model"`
@@ -91,27 +75,6 @@ type Agent struct {
 type Gate struct {
 	Cmd      string `toml:"cmd"`
 	MaxFixes int    `toml:"max_fixes"`
-}
-
-// Machines are the machines of the Project. Only the Sandbox VM is supported
-// for now; any other [machine.<name>] is rejected.
-type Machines struct {
-	Sandbox Machine `toml:"sandbox"`
-}
-
-// Machine describes a machine and its Base image. Only SandboxMachine is
-// supported for now.
-type Machine struct {
-	Template  string   `toml:"template"`
-	Build     []string `toml:"build"`
-	MaxAge    string   `toml:"max_age"` // Expiry of the Base image; "0": none
-	MemoryMiB int      `toml:"memory"`
-	CPUs      int      `toml:"cpus"`
-}
-
-// Network is the Run's network allowlist.
-type Network struct {
-	Allow []string `toml:"allow"`
 }
 
 // Protect lists paths the agent must not change: a file, a directory
@@ -127,33 +90,11 @@ type VM struct {
 	OS   string `toml:"os"`   // windows | linux
 }
 
-// Tool is a tool the Agent can use (ADR-0011).
-type Tool struct {
-	On     string            `toml:"on"`     // machine the Tool runs on; only SandboxMachine for now
-	Build  []string          `toml:"build"`  // shell commands in the machine's Base image, after the machine's build
-	Setup  []string          `toml:"setup"`  // shell commands in /work after the clone, before the first session
-	Env    map[string]string `toml:"env"`    // variables of setup, the Agent's sessions and the gate
-	Prompt string            `toml:"prompt"` // what the Agent is told about the Tool
-}
-
 // --- accessors ---
 
 // Names returns the names of all labels, in the order of the fields.
 func (l Labels) Names() (names []string) {
 	return []string{l.NeedsTriage, l.NeedsInfo, l.ReadyForAgent, l.ReadyForHuman, l.Wontfix, l.Spec}
-}
-
-// EnvNames are the names of the Tool's env variables, sorted.
-func (t Tool) EnvNames() (names []string) { return slices.Sorted(maps.Keys(t.Env)) }
-
-// ToolEnv is the env of all Tools together; validation guarantees that no
-// name is defined twice.
-func (c Config) ToolEnv() (env map[string]string) {
-	env = make(map[string]string)
-	for _, tool := range c.Tool {
-		maps.Copy(env, tool.Env)
-	}
-	return
 }
 
 // --- loading ---
@@ -205,7 +146,6 @@ func parse(prefix string, data []byte) (cfg Config, err error) {
 		// Unknown keys do not stop the decoding: the rest is validated too.
 		v.reportUnknownKeys(strictErr)
 	}
-	toolDefaults(&cfg)
 	cfg.validate(&v)
 	if err = v.err(prefix); err != nil {
 		return
@@ -234,24 +174,8 @@ func defaults() (cfg Config) {
 			Spec:          "spec",
 		},
 		Gate: Gate{MaxFixes: defaultMaxFixes},
-		Machine: Machines{Sandbox: Machine{
-			Template:  defaultTemplate,
-			MaxAge:    defaultMaxAge,
-			MemoryMiB: defaultMemoryMiB,
-			CPUs:      defaultCPUs,
-		}},
 	}
 	return
-}
-
-// toolDefaults sets the machine of Tools that name none.
-func toolDefaults(cfg *Config) {
-	for name, tool := range cfg.Tool {
-		if tool.On == "" {
-			tool.On = SandboxMachine
-			cfg.Tool[name] = tool
-		}
-	}
 }
 
 // FindRoot walks up from dir to the first directory containing .git

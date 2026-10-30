@@ -1,8 +1,0 @@
-#cloud-config
-users:
-  - name: agent
-    sudo: ALL=(ALL) NOPASSWD:ALL
-    shell: /bin/bash
-    ssh_authorized_keys:
-      - {{ .PublicKey }}
-ssh_pwauth: false

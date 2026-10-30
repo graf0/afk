@@ -107,49 +107,15 @@ func TestPromptResumed(t *testing.T) {
 	}
 }
 
-func TestToolsSection(t *testing.T) {
-	task := Task{BaseRef: "origin/main", Tools: []Tool{{Name: "playwright", Prompt: "npx playwright screenshot"}, {Name: "postgres", Prompt: "psql app"}}}
-	prompts := map[string]string{
-		"work":   Prompt(task),
-		"fix":    FixPrompt(task, "make", "out"),
-		"review": ReviewPrompt(task),
-	}
-	for name, prompt := range prompts {
-		for _, want := range []string{"Narzędzia", "`playwright`: npx playwright screenshot", "`postgres`: psql app"} {
-			if !strings.Contains(prompt, want) {
-				t.Errorf("%s prompt lacks %q:\n%s", name, want, prompt)
-			}
-		}
-		if strings.Index(prompt, "`playwright`") > strings.Index(prompt, "`postgres`") {
-			t.Errorf("%s prompt: tools out of order", name)
-		}
-	}
-}
-
-func TestToolsSectionNamesOnlyAndIndentsContinuation(t *testing.T) {
-	task := Task{BaseRef: "origin/main", Tools: []Tool{{Name: "bare"}, {Name: "multi", Prompt: "line1\nline2"}}}
-	got := Prompt(task)
-	if want := "- `bare`\n- `multi`: line1\n  line2\n"; !strings.Contains(got, want) {
-		t.Errorf("prompt lacks %q:\n%s", want, got)
-	}
-}
-
-func TestToolsSectionListsEnvNamesNotValues(t *testing.T) {
-	task := Task{BaseRef: "origin/main", Tools: []Tool{{Name: "pg", Prompt: "psql", Env: []string{"DATABASE_URL", "PGHOST"}}, {Name: "bare", Env: []string{"X"}}}}
+// TestPromptsMentionNoMachineToolsOrAllowlist: the Agent works in a Sandbox
+// next to a Stack, not in a VM with Tools behind an egress allowlist.
+func TestPromptsMentionNoMachineToolsOrAllowlist(t *testing.T) {
+	task := Task{BaseRef: "origin/main", Branch: "ticket-1", RepoDir: "/work/repo", TicketPath: "/work/ticket.md", SpecPath: "/work/spec.md", Plugins: []string{skillsPlugin}, Protected: []string{".afk.toml"}, Resumed: true}
 	for name, prompt := range map[string]string{"work": Prompt(task), "fix": FixPrompt(task, "make", "out"), "review": ReviewPrompt(task)} {
-		for _, want := range []string{"- `pg`: psql\n  Zmienne środowiskowe: `DATABASE_URL`, `PGHOST`\n", "- `bare`\n  Zmienne środowiskowe: `X`\n"} {
-			if !strings.Contains(prompt, want) {
-				t.Errorf("%s prompt lacks %q:\n%s", name, want, prompt)
+		for _, banned := range []string{"VM", "maszyn", "Narzędzi", "allowlist", "proxy", "lista dozwolonych", "domen"} {
+			if strings.Contains(strings.ToLower(prompt), strings.ToLower(banned)) {
+				t.Errorf("%s prompt mentions %q:\n%s", name, banned, prompt)
 			}
-		}
-	}
-}
-
-func TestNoToolsSectionWithoutTools(t *testing.T) {
-	task := Task{BaseRef: "origin/main"}
-	for name, prompt := range map[string]string{"work": Prompt(task), "fix": FixPrompt(task, "make", "out"), "review": ReviewPrompt(task)} {
-		if strings.Contains(prompt, "Narzędzia") {
-			t.Errorf("%s prompt has a tools section without Tools:\n%s", name, prompt)
 		}
 	}
 }

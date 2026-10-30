@@ -13,9 +13,9 @@ import (
 // titleInterval is how often the Factory refreshes the terminal title.
 const titleInterval = 10 * time.Second
 
-// Title keeps the terminal (tmux pane) title of an `afk factory` on a TTY:
+// Title keeps the terminal title of an `afk factory` on a TTY:
 // the ticket, the age of its Run and the time since the last output, set
-// with OSC 2 (docs/workflow.md, TUI). It is also the Factory's output
+// with OSC 2 (docs/workflow.md). It is also the Factory's output
 // stream: every write counts as an event, and writes are serialized with
 // the title ones. A nil *Title (no TTY) sets no title.
 type Title struct {

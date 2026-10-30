@@ -10,30 +10,17 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
-	"sync"
+	"slices"
 	"time"
-
-	"golang.org/x/crypto/ssh"
 
 	"github.com/graf0/afk/agent"
 	"github.com/graf0/afk/forge"
-	"github.com/graf0/afk/image"
-	"github.com/graf0/afk/sandbox"
+	"github.com/graf0/afk/stack"
 )
 
 const (
-	// Paths of the Chat's guest (a VM until #64): the clone, and files next to it.
-	guestWork = "/work"
-	// GuestRepo is the Agent's clone in a Chat.
-	GuestRepo = guestWork + "/repo"
 	// guestStart is where the clone fetches the tip of a Spec's branch.
-	guestStart  = "refs/afk/start"
-	guestBundle = guestWork + "/base.bundle"
-
-	// Commit identity of the Agent; it has no other.
-	guestGitName  = sandbox.GitName
-	guestGitEmail = sandbox.GitEmail
+	guestStart = "refs/afk/start"
 
 	// QuarantineName is the Quarantine repo in a Project's state directory.
 	QuarantineName = "quarantine.git"
@@ -44,7 +31,7 @@ type Options struct {
 	Base        Base
 	Ticket      forge.Ticket
 	ClaudeToken string
-	Paths       image.Paths
+	StateDir    string // ~/.local/state/afk
 	Out         io.Writer
 	Forge       forge.Forge // Remote is where ticket-N is pushed
 	// AgentBinary is the Agent's command in the Sandbox, a path there or
@@ -74,15 +61,31 @@ type run struct {
 	tip string
 	// spec is the Spec of the Ticket, given to the Agent as context.
 	spec *forge.Ticket
+	// stackFiles holds the Dockerfiles of the Stack, known once it is up
+	// (shared by the copies of the run, as the Stack's state is).
+	stackFiles *stackFiles
+}
+
+// stackFiles are the protected paths a Stack adds to [protect] (stack.Protected).
+type stackFiles struct{ paths []string }
+
+// protected is every path the result must not change: [protect], plus the
+// Dockerfiles of the Stack once it is up.
+func (r run) protected() (paths []string) {
+	paths = r.Base.Config.Protect.Paths
+	if r.stackFiles != nil {
+		paths = slices.Concat(paths, r.stackFiles.paths)
+	}
+	return
 }
 
 // newRun is the state of a Run of opts.Ticket.
 func newRun(ctx context.Context, opts Options) (r run, err error) {
-	r = run{Options: opts, branch: ticketName(opts.Ticket.Number)}
-	if r.project, err = image.ProjectName(opts.Base.Config.Forge.Repo); err != nil {
+	r = run{Options: opts, branch: ticketName(opts.Ticket.Number), stackFiles: &stackFiles{}}
+	if r.project, err = stack.ProjectName(opts.Base.Config.Forge.Repo); err != nil {
 		return
 	}
-	r.stateDir = filepath.Join(opts.Paths.StateDir, r.project)
+	r.stateDir = filepath.Join(opts.StateDir, r.project)
 	r.quarantine, err = OpenQuarantine(ctx, filepath.Join(r.stateDir, QuarantineName))
 	return
 }
@@ -180,25 +183,6 @@ func say(w io.Writer, format string, args ...any) {
 	_, _ = fmt.Fprintf(w, "= "+format+"\n", args...)
 }
 
-// remote runs command in the guest; its stderr (sanitized, truncated) goes
-// into the error. Cancelling ctx closes the session.
-func remote(ctx context.Context, client *ssh.Client, command string, stdin io.Reader, stdout io.Writer) (err error) {
-	session, err := client.NewSession()
-	if err != nil {
-		err = fmt.Errorf("opening ssh session: %w", err)
-		return
-	}
-	defer func() { _ = session.Close() }()
-	defer context.AfterFunc(ctx, func() { _ = session.Close() })()
-	var stderr tailBuffer
-	session.Stdin, session.Stdout, session.Stderr = stdin, stdout, &stderr
-	if err = session.Run(command); err != nil {
-		// Both the exit message and stderr come from the guest.
-		err = fmt.Errorf("%s: %s", agent.Sanitize(err.Error()), agent.Sanitize(strings.TrimSpace(stderr.String())))
-	}
-	return
-}
-
 // tailBuffer keeps the last max bytes written to it.
 type tailBuffer struct {
 	data []byte
@@ -220,7 +204,7 @@ func (b *tailBuffer) String() (s string) { return string(b.data) }
 const logRotateSize = 128 << 20
 
 // rotatingLog writes to path; a write that would take it past max bytes
-// first moves it to path.1 (replacing the previous one). The guest can't fill
+// first moves it to path.1 (replacing the previous one). The Sandbox can't fill
 // the host's disk (at most ~2×max) and a long Run is never stopped for its
 // log; the oldest part of the stream is lost instead.
 type rotatingLog struct {
@@ -285,46 +269,5 @@ func (l *limitWriter) Write(p []byte) (n int, err error) {
 	}
 	n, err = l.w.Write(p)
 	l.left -= int64(n)
-	return
-}
-
-// DenialLog is the file of the Egress proxy's denials (Chat in a VM), one line per Write.
-// The file is created by the first denial: a Run without any leaves none.
-type DenialLog struct {
-	path string
-
-	mu    sync.Mutex
-	out   *rotatingLog // bounded like the log: the guest decides how many it causes
-	count int
-}
-
-// NewDenialLog is the DenialLog in the file at path.
-func NewDenialLog(path string) (l *DenialLog) { return &DenialLog{path: path} }
-
-// Path is the file of the log.
-func (l *DenialLog) Path() (path string) { return l.path }
-
-func (l *DenialLog) Write(p []byte) (n int, err error) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if l.out == nil {
-		if l.out, err = newRotatingLog(l.path); err != nil {
-			return
-		}
-	}
-	if n, err = l.out.Write(p); err == nil {
-		l.count++
-	}
-	return
-}
-
-// Close closes the file and returns the number of denials written.
-func (l *DenialLog) Close() (denied int, err error) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	denied = l.count
-	if l.out != nil {
-		err = l.out.Close()
-	}
 	return
 }
