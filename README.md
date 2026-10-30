@@ -1,6 +1,77 @@
 # afk
 
-Fabryka AI: bierze tickety z Forge (GitHub, Gitea) i implementuje je bez nadzoru, każdy w osobnej, odizolowanej VM. Pojęcia: [`GLOSSARY.md`](GLOSSARY.md), reszta dokumentacji: [`docs/`](docs/README.md).
+Fabryka AI: bierze tickety z trackera i bez nadzoru implementuje je w kodzie, każdy w osobnej, odizolowanej maszynie wirtualnej. Pojęcia: [`GLOSSARY.md`](GLOSSARY.md), reszta dokumentacji: [`docs/`](docs/README.md).
+
+## Wymagania hosta
+
+- Linux x86_64 z KVM (`/dev/kvm`), libvirt (`qemu:///system`), `qemu-img`, `xorriso`, `git`; użytkownik w grupach `libvirt` i `kvm` ([libvirt.md](docs/libvirt.md)).
+- Katalog `/var/lib/afk` z grupą `kvm`, zapisywalny dla użytkownika: `sudo install -d -o "$USER" -g kvm -m 2775 /var/lib/afk`.
+- tmux ≥ 3.3 — tylko dla `afk tui`.
+- Go (wersja z `go.mod`) do instalacji: `go install ./cmd/afk` w klonie tego repo. Packera `afk` pobiera sam ([images.md](docs/images.md)).
+
+## Poświadczenia
+
+- Claude: `claude setup-token`, token w `CLAUDE_CODE_OAUTH_TOKEN` albo w pliku `~/.local/state/afk/claude-oauth-token` (tryb `0600`).
+- Forge: GitHub — `GITHUB_TOKEN` albo zalogowane `gh`; Gitea — `GITEA_TOKEN` albo `~/.local/state/afk/gitea-token` (tryb `0600`). Szczegóły: [`[forge]`](#forge).
+
+## Getting Started
+
+W klonie Projectu (z `origin` w Forge):
+
+1. Utwórz `.afk.toml`:
+
+   ```toml
+   [forge]
+   kind = "github"
+   repo = "owner/name"
+
+   [gate]
+   cmd = "go test ./..."
+   ```
+
+2. `afk config` — sprawdza plik i wypisuje efektywną konfigurację z wartościami domyślnymi.
+3. Commit i push na gałąź bazową: reszta komend czyta `.afk.toml` z `origin/HEAD`, nie z drzewa roboczego.
+4. Załóż w Forge labele z [`[labels]`](#labels) — `afk` ich nie tworzy. GitHub: `for l in ready-for-agent needs-info needs-triage ready-for-human wontfix spec; do gh label create --force "$l"; done`.
+5. `afk image build` — buduje Base image (Factory zbuduje go też sama, gdy brak).
+6. Nadaj ticketowi label `ready-for-agent` i uruchom `afk factory` (wszystkie gotowe) albo `afk factory '#12'`.
+7. `afk chat new plan` — Chat do planowania w osobnej VM.
+8. `afk tui` — wszystkie Chaty, Factory i porzucone Runy w jednym oknie tmux.
+
+Przepływ Factory i Chat: [workflow.md](docs/workflow.md).
+
+## Komendy
+
+| Komenda | Opis |
+|---|---|
+| `afk` | Sprawdza `.afk.toml` z drzewa roboczego |
+| `afk config` | Sprawdza `.afk.toml` i wypisuje efektywną konfigurację |
+| `afk image build` | Buduje Base image Projectu |
+| `afk factory ['*' \| '#N' ...]` | Realizuje gotowe tickety (domyślnie wszystkie) albo wymienione, po kolei |
+| `afk chat new <nazwa> [--model …] [--effort …]` | Tworzy Chat i wchodzi do niego |
+| `afk chat attach <nazwa>` | Wraca do Chat |
+| `afk chat export <nazwa>` | Wypycha commity Chat na branch `chat-<nazwa>` |
+| `afk chat shell <nazwa>` | Shell w VM Chat |
+| `afk chat rm [--force] <nazwa>` | Usuwa Chat i jego VM |
+| `afk chat list` | Lista Chatów Projectu |
+| `afk vm up` | Diagnostyka: startuje Sandbox VM i sprawdza ssh |
+| `afk vm list` | Lista VM Projectu |
+| `afk vm shell <vm>` | Shell w VM, z Egress proxy |
+| `afk vm kill <vm>` | Niszczy VM |
+| `afk tui` | TUI na tmux: Chaty, Factory, porzucone Runy |
+| `afk sidebar` | Lewy panel TUI, uruchamiany przez `afk tui` |
+
+## Skróty TUI
+
+Bez prefiksu tmux; reszta klawiszy idzie do Agenta ([workflow.md](docs/workflow.md#tui)).
+
+| Klawisz | Akcja |
+|---|---|
+| `M-↑` / `M-↓` | poprzedni / następny wpis |
+| `M-n` | nowy Chat (pyta o nazwę) |
+| `M-F` | nowa Factory (pyta o selektor, domyślnie `*`) |
+| `M-x` | zamknij Chat (eksport / usuń / anuluj) / Factory: działającą przerywa jak Ctrl-C po potwierdzeniu, zakończoną zamyka (okno) / zniszcz VM porzuconego Run |
+| `M-e` | eksport Chat |
+| `M-s` | shell w VM (Chat, porzucony Run; przy Factory tylko komunikat) |
 
 ## `.afk.toml`
 

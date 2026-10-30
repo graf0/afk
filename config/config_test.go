@@ -218,21 +218,33 @@ func mustMkdir(t *testing.T, path string) {
 	}
 }
 
-// TestParseReadmeExample keeps the .afk.toml example of the README valid.
+// TestParseReadmeExample keeps the .afk.toml examples of the README valid:
+// the Getting Started one and the full one before the reference.
 func TestParseReadmeExample(t *testing.T) {
 	readme, err := os.ReadFile(filepath.Join("..", "README.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, block, found := strings.Cut(string(readme), "```toml\n")
-	if !found {
-		t.Fatal("no toml block in README.md")
+	var configs []Config
+	rest := string(readme)
+	for {
+		var block string
+		var found bool
+		if _, block, found = strings.Cut(rest, "```toml\n"); !found {
+			break
+		}
+		var example string
+		example, rest, _ = strings.Cut(block, "```")
+		cfg, err := Parse([]byte(example))
+		if err != nil {
+			t.Fatalf("README example %d: %v", len(configs)+1, err)
+		}
+		configs = append(configs, cfg)
 	}
-	example, _, _ := strings.Cut(block, "```")
-	cfg, err := Parse([]byte(example))
-	if err != nil {
-		t.Fatalf("README example: %v", err)
+	if len(configs) != 2 {
+		t.Fatalf("%d toml blocks in README.md, want 2", len(configs))
 	}
+	cfg := configs[1]
 	if len(cfg.Tool["postgres"].Setup) != 2 || cfg.Tool["postgres"].Env["DATABASE_URL"] == "" || cfg.Tool["playwright"].Env["PLAYWRIGHT_BROWSERS_PATH"] == "" {
 		t.Errorf("tools = %+v", cfg.Tool)
 	}
