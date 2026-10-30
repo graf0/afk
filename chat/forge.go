@@ -20,8 +20,6 @@ import (
 	"syscall"
 	"time"
 
-	"golang.org/x/crypto/ssh"
-
 	"github.com/graf0/afk/agent"
 	"github.com/graf0/afk/config"
 	"github.com/graf0/afk/forge"
@@ -29,18 +27,15 @@ import (
 )
 
 const (
-	// ForgeBinary is the name `afk` runs as in the guest, and in $PATH there:
-	// a copy of the host's binary (ADR-0012).
+	// ForgeBinary is the name `afk` runs as in the Sandbox, and in $PATH there:
+	// the host's binary, mounted read-only (ADR-0012).
 	ForgeBinary = "afk-forge"
-
-	// ForgeSocket is where the channel to afk appears inside the guest.
-	ForgeSocket = forgeSocketDir + "/afk.sock"
 
 	// issuesName is the file of the Chat's state with the numbers of the issues it created, a line each.
 	issuesName = "issues"
 )
 
-// --- protocol: what the guest sends and the host answers ---
+// --- protocol: what the Sandbox sends and the host answers ---
 
 // createRequest is the body of POST /issues.
 type createRequest struct {
@@ -78,13 +73,9 @@ func issueNumber(s string) (n int, err error) {
 	return
 }
 
-// --- host: the channel ---
+// --- host: the ticket routes of the channel ---
 
-const (
-	forgeSocketDir = "/run/afk"
-
-	maxForgeBody = 1 << 20
-)
+const maxForgeBody = 1 << 20
 
 // forgeChannel is what a Chat's afk-forge works on: the Project's Forge and
 // labels, the Chat's name (the footer of what it writes) and the file in its
@@ -96,30 +87,23 @@ type forgeChannel struct {
 	IssuesPath    string
 }
 
-// forgeServer answers the guest's afk-forge calls with the Project's Forge,
-// one forgeReply per call. Every call goes to log, unknown routes too.
+// forgeServer answers the Sandbox's afk-forge calls with the Project's Forge,
+// one forgeReply per call. Every call goes to log.
 type forgeServer struct {
 	forgeChannel
 	log *log.Logger
 }
 
-func newForgeServer(ch forgeChannel, logTo io.Writer) (s *forgeServer) {
-	return &forgeServer{forgeChannel: ch, log: log.New(logTo, "", log.LstdFlags)}
-}
-
-func (s *forgeServer) handler() (handler http.Handler) {
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /issues/{n}", s.view)
-	mux.HandleFunc("GET /issues", s.list)
-	mux.HandleFunc("POST /issues", s.create)
-	mux.HandleFunc("POST /issues/{n}/comments", s.comment)
-	mux.HandleFunc("PATCH /issues/{n}", s.edit)
-	// Patterns with a method win over "/", but "/" matches every method: a
-	// known path with another method lands here too (404, not the mux's 405).
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		s.reply(w, r.Method+" "+r.URL.Path, "", "", http.StatusNotFound, errors.New("no such route"))
-	})
-	return mux
+// forgeRoutes is the ticket part of the channel.
+func forgeRoutes(ch forgeChannel) (group routeGroup) {
+	return func(mux *http.ServeMux, logger *log.Logger) {
+		s := &forgeServer{forgeChannel: ch, log: logger}
+		mux.HandleFunc("GET /issues/{n}", s.view)
+		mux.HandleFunc("GET /issues", s.list)
+		mux.HandleFunc("POST /issues", s.create)
+		mux.HandleFunc("POST /issues/{n}/comments", s.comment)
+		mux.HandleFunc("PATCH /issues/{n}", s.edit)
+	}
 }
 
 // request reads the issue number of r's path (when the route has one) and
@@ -353,7 +337,7 @@ func (s *forgeServer) triageLabels(labels []string) (out []string, replaced bool
 }
 
 // replacedNote marks op as having its ready-for-agent replaced, when it was,
-// and words the warning for the guest's stderr.
+// and words the warning for the Sandbox's stderr.
 func (s *forgeServer) replacedNote(op string, replaced bool) (noted, warning string) {
 	noted = op
 	if replaced {
@@ -401,7 +385,7 @@ func (s *forgeServer) noteIssue(n int) (err error) {
 	return
 }
 
-// reply logs the call and answers with output and a warning for the guest's
+// reply logs the call and answers with output and a warning for the Sandbox's
 // stderr, or with failure (status) when err is set.
 func (s *forgeServer) reply(w http.ResponseWriter, op, output, warning string, failure int, err error) {
 	body := forgeReply{Output: output, Warning: warning}
@@ -412,8 +396,11 @@ func (s *forgeServer) reply(w http.ResponseWriter, op, output, warning string, f
 	} else {
 		s.log.Printf("%s: ok", op)
 	}
-	_ = json.NewEncoder(w).Encode(body)
+	_ = jsonEncode(w, body)
 }
+
+// jsonEncode writes v as the one JSON document of a reply.
+func jsonEncode(w io.Writer, v any) (err error) { return json.NewEncoder(w).Encode(v) }
 
 // titleLine is title sanitized like the Agent's text of a Run, on one line:
 // AgentText may add a truncation note on a line of its own.
@@ -432,58 +419,7 @@ func cleanLabels(labels []string) (out []string) {
 	return
 }
 
-// serveForge puts this binary in the guest as afk-forge and serves the
-// channel over a reverse unix socket on client, logging each call to logPath;
-// no port is opened on the host. stop closes the socket, which then
-// disappears from the guest, and waits for the server.
-func serveForge(ctx context.Context, client *ssh.Client, ch forgeChannel, logPath string) (stop func(), err error) {
-	self, err := os.Executable()
-	if err != nil {
-		err = fmt.Errorf("finding afk's own binary: %w", err)
-		return
-	}
-	binary, err := os.Open(self)
-	if err != nil {
-		err = fmt.Errorf("opening %s: %w", self, err)
-		return
-	}
-	defer func() { _ = binary.Close() }()
-	// install replaces the file: a running afk-forge of an earlier attach is no obstacle.
-	if err = run.Upload(ctx, client, `t=$(mktemp) && trap 'rm -f "$t"' EXIT && cat >"$t" && sudo install -m 0755 "$t" /usr/local/bin/`+ForgeBinary, binary); err != nil {
-		err = fmt.Errorf("copying afk to the guest: %w", err)
-		return
-	}
-	// A socket left by an attach that died is not unlinked by sshd on its own.
-	if err = run.NewExec(client, nil)(ctx, "sudo install -d -o agent -m 0755 "+forgeSocketDir+" && rm -f "+ForgeSocket, io.Discard); err != nil {
-		err = fmt.Errorf("preparing the guest's %s: %w", ForgeSocket, err)
-		return
-	}
-	logFile, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
-	if err != nil {
-		err = fmt.Errorf("opening %s: %w", logPath, err)
-		return
-	}
-	ln, err := client.ListenUnix(ForgeSocket)
-	if err != nil {
-		_ = logFile.Close()
-		err = fmt.Errorf("opening the channel on guest %s: %w", ForgeSocket, err)
-		return
-	}
-	server := &http.Server{Handler: newForgeServer(ch, logFile).handler(), BaseContext: func(net.Listener) context.Context { return ctx }}
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		_ = server.Serve(ln)
-	}()
-	stop = func() {
-		_ = server.Close() // closes ln too
-		<-done
-		_ = logFile.Close()
-	}
-	return
-}
-
-// --- guest: afk-forge ---
+// --- Sandbox: afk-forge ---
 
 const forgeUsage = `usage:
   afk-forge issue view <n>
@@ -672,7 +608,7 @@ func sendForge(ctx context.Context, socket string, call forgeCall, stdout, stder
 	}
 	resp, err := client.Do(req)
 	if errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ECONNREFUSED) {
-		err = errors.New("no channel to afk (works only in an `afk chat attach` session)")
+		err = errors.New("no channel to afk (works only in a Sandbox of `afk chat`)")
 		return
 	}
 	if err != nil {

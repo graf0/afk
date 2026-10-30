@@ -40,12 +40,24 @@ type Base struct {
 // Project config from the tip of origin's default branch (origin/HEAD, else
 // origin/main).
 func ReadBase(ctx context.Context, dir string) (base Base, err error) {
+	return readBase(ctx, dir, true)
+}
+
+// ReadBaseLocal is ReadBase without the fetch: the origin refs as they are.
+// For the commands that start nothing (the Project's name is all they need).
+func ReadBaseLocal(ctx context.Context, dir string) (base Base, err error) {
+	return readBase(ctx, dir, false)
+}
+
+func readBase(ctx context.Context, dir string, fetch bool) (base Base, err error) {
 	if base.Repo, err = git(ctx, "-C", dir, "rev-parse", "--show-toplevel"); err != nil {
 		return
 	}
-	if _, err = git(ctx, "-C", base.Repo, "fetch", "--quiet", "origin"); err != nil {
-		err = fmt.Errorf("fetching the base branch: %w", err)
-		return
+	if fetch {
+		if _, err = git(ctx, "-C", base.Repo, "fetch", "--quiet", "origin"); err != nil {
+			err = fmt.Errorf("fetching the base branch: %w", err)
+			return
+		}
 	}
 	ref, refErr := git(ctx, "-C", base.Repo, "symbolic-ref", "--quiet", originHead)
 	fellBack := refErr != nil || !strings.HasPrefix(ref, originPrefix)

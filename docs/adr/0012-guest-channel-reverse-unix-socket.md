@@ -13,3 +13,7 @@ Agent w Chat tworzy i czyta tickety, a w M4 podnosi Tool VM, więc potrzebuje dr
 ## Consequences
 
 Socket istnieje tylko przy attach: shell w VM Chat nie ma kanału. Binarka `afk` trafia do niezaufanej VM — nie może zawierać sekretów. Windows (M4) wymaga cross-builda `afk`. Tool VM (M4) używa tego samego kanału.
+
+## Update (ADR-0013)
+
+Transport w modelu kontenerowym: zamiast odwrotnego tunelu ssh `afk` słucha na unix sockecie w runtime dir hosta (`$XDG_RUNTIME_DIR/afk/<hash>.sock`, tryb `0600`), który montuje jako plik `/run/afk/afk.sock` tylko do Sandboxa danego Chatu (nie do innych serwisów Stacku, nie do Runów). Klientem jest binarka `afk` hosta, montowana tylko do odczytu jako `$HOME/bin/afk-forge`; adres socketu bierze ze zmiennej `AFK_SOCKET`. Socket żyje z procesem `afk chat` (jeden proces na Chat, lock). Trasy to grupy (`chat.routeGroup`): dziś tickety, dalej PR, Stack i VM testowe.

@@ -2,6 +2,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -23,9 +24,9 @@ func main() {
 	ctx, abort := handleSignals(context.Background())
 	name := "afk"
 	var err error
-	if filepath.Base(os.Args[0]) == chat.ForgeBinary { // the copy in a Chat's VM (ADR-0012)
+	if filepath.Base(os.Args[0]) == chat.ForgeBinary { // afk mounted in a Chat's Sandbox (ADR-0012)
 		name = chat.ForgeBinary
-		err = chat.RunForge(ctx, chat.ForgeSocket, os.Args[1:], os.Stdin, os.Stdout, os.Stderr)
+		err = chat.RunForge(ctx, cmp.Or(os.Getenv(chat.SocketEnv), chat.ForgeSocket), os.Args[1:], os.Stdin, os.Stdout, os.Stderr)
 	} else {
 		var dir string
 		if dir, err = os.Getwd(); err == nil {

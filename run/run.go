@@ -19,6 +19,7 @@ import (
 	"github.com/graf0/afk/agent"
 	"github.com/graf0/afk/forge"
 	"github.com/graf0/afk/image"
+	"github.com/graf0/afk/sandbox"
 )
 
 const (
@@ -31,8 +32,8 @@ const (
 	guestBundle = guestWork + "/base.bundle"
 
 	// Commit identity of the Agent; it has no other.
-	guestGitName  = "afk agent"
-	guestGitEmail = "agent@afk.invalid"
+	guestGitName  = sandbox.GitName
+	guestGitEmail = sandbox.GitEmail
 
 	// QuarantineName is the Quarantine repo in a Project's state directory.
 	QuarantineName = "quarantine.git"
@@ -177,11 +178,6 @@ func (r run) say(format string, args ...any) { say(r.Out, format, args...) }
 // say prints a line of afk itself to w.
 func say(w io.Writer, format string, args ...any) {
 	_, _ = fmt.Fprintf(w, "= "+format+"\n", args...)
-}
-
-// Upload runs command in the guest with stdin: a file sent to it.
-func Upload(ctx context.Context, client *ssh.Client, command string, stdin io.Reader) (err error) {
-	return remote(ctx, client, command, stdin, nil)
 }
 
 // remote runs command in the guest; its stderr (sanitized, truncated) goes

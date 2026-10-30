@@ -3,25 +3,34 @@ package chat
 import (
 	"fmt"
 	"io"
+	"os"
 	"text/tabwriter"
 	"time"
 
-	"github.com/graf0/afk/machine"
+	"github.com/graf0/afk/stack"
 )
 
-// List prints the Chats among machines, one per line: name, state of the VM
-// (running / shut off) and age at now.
-func List(w io.Writer, machines []machine.Machine, now time.Time) (err error) {
+// List prints the Chats of the project, one per line: name, state (running
+// when a process serves its channel, else stopped) and how long ago it was
+// last started (at now). The state directories are the only record of Chats.
+func List(w io.Writer, stateDir, project string, now time.Time) (err error) {
+	names, err := stack.List(stateDir, project, stack.Chat)
+	if err != nil {
+		return
+	}
 	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
-	for _, m := range machines {
-		if m.Kind != machine.KindChat {
-			continue
-		}
-		state := "shut off"
-		if m.Running {
+	for _, name := range names {
+		dir := stack.Dir(stateDir, project, stack.Chat, name)
+		state := "stopped"
+		if running(dir) {
 			state = "running"
 		}
-		if _, err = fmt.Fprintf(tw, "%s\t%s\t%s\n", m.ID, state, formatAge(now.Sub(m.Created), m.Created.IsZero())); err != nil {
+		// The lock file is touched by every start; a Chat never started has the directory's.
+		info, statErr := os.Stat(lockPath(dir))
+		if statErr != nil {
+			info, statErr = os.Stat(dir)
+		}
+		if _, err = fmt.Fprintf(tw, "%s\t%s\t%s\n", name, state, formatAge(now.Sub(info.ModTime()), statErr != nil)); err != nil {
 			return
 		}
 	}

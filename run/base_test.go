@@ -73,6 +73,24 @@ git push -q origin trunk`)
 
 // TestReadBaseIgnoresWorkingTree covers `afk image build` and `afk vm up`:
 // both take .afk.toml and settings.json only from ReadBase.
+func TestReadBaseLocalDoesNotFetch(t *testing.T) {
+	root, user, base := userRepo(t)
+	sh(t, root, `
+git clone -q origin.git other && cd other
+echo n > n && git add n && git commit -qm next && git push -q origin main`)
+	got, err := ReadBaseLocal(t.Context(), user)
+	if err != nil || got.Commit != base {
+		t.Errorf("ReadBaseLocal = %q, %v; want the origin/main it already has, %s", got.Commit, err, base)
+	}
+	sh(t, user, "git remote set-url origin /no/such/origin") // not even reachable
+	if _, err = ReadBaseLocal(t.Context(), user); err != nil {
+		t.Errorf("without the remote: %v", err)
+	}
+	if _, err = ReadBase(t.Context(), user); err == nil {
+		t.Error("ReadBase of an unreachable origin: want an error")
+	}
+}
+
 func TestReadBaseIgnoresWorkingTree(t *testing.T) {
 	_, user, _ := userRepo(t)
 	sh(t, user, `printf '[forge]\nkind = "gitea"\nrepo = "x/y"\nurl = "https://g.example"\n[gate]\ncmd = "false"\n' > .afk.toml

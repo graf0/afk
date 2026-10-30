@@ -7,10 +7,10 @@ Fabryka AI: bierze tickety z Forge (GitHub, Gitea) i bez nadzoru implementuje je
 ## Instalacja i aktualizacja
 
 ```sh
-go install github.com/graf0/afk/cmd/afk@latest
+CGO_ENABLED=0 go install github.com/graf0/afk/cmd/afk@latest
 ```
 
-Aktualizacja to ta sama komenda.
+Aktualizacja to ta sama komenda. `CGO_ENABLED=0` daje statyczną binarkę: `afk` jest montowany do Sandboxa jako `afk-forge`, a obraz Sandboxa może mieć inne glibc niż host.
 
 ## Wymagania hosta
 
@@ -53,8 +53,8 @@ Wszystko działa na pierwszym planie. Zamknięcie `afk` kończy Stack (`compose 
 |---|---|
 | `afk config` | Sprawdza `.afk.toml` z drzewa roboczego i wypisuje efektywną konfigurację oraz publiczny klucz ssh dla VM testowych |
 | `afk factory ['*' \| '#N' ...]` | Realizuje gotowe tickety (domyślnie wszystkie) albo wymienione, po kolei. Najpierw wznawia porzucone Runy |
-| `afk chat <nazwa> [--expose] [--rm] [-- args claude]` | Tworzy Chat albo wraca do niego (`claude --continue`). `--expose` publikuje porty z `[expose]`, `--rm` usuwa Chat po wyjściu |
-| `afk chat ls` | Lista Chatów Projectu |
+| `afk chat <nazwa> [--expose] [--rm] [-- args claude]` | Tworzy Chat albo wraca do niego (`claude --continue`). `--expose` publikuje porty z `[expose]`, `--rm` usuwa Chat po wyjściu z claude (po przerwaniu sygnałem Chat zostaje) |
+| `afk chat ls` | Lista Chatów Projectu. `ls`, `shell` i `rm` nie robią `git fetch`: wystarcza lokalny `origin/HEAD` |
 | `afk chat shell <nazwa>` | Bash w Sandboxie działającego Chatu |
 | `afk chat rm <nazwa>` | Usuwa Chat: klon, home Agenta, volume'y |
 

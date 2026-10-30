@@ -5,323 +5,550 @@ package chat
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
-	"github.com/graf0/afk/config"
 	"github.com/graf0/afk/forge"
 	"github.com/graf0/afk/image"
-	"github.com/graf0/afk/machine"
 	"github.com/graf0/afk/run"
+	"github.com/graf0/afk/stack"
 )
 
-// Run manually on a host with KVM and libvirt, with a Base image built for
-// the project (the image must carry the default `afk` key):
+// Run manually on a host with rootless podman, its socket and docker-compose
+// v2 (README, "Wymagania hosta"):
 //
-//	AFK_TEST_PROJECT=afk-vm-test go test -tags integration -run Integration -v ./chat/
+//	go test -tags integration -run Integration -v ./chat/
 //
-// The Agent is replaced by a script that checks what a Chat gives it.
+// The fixture needs a local base image with bash, git and getent (default
+// docker.io/library/golang:1.27; AFK_TEST_IMAGE overrides it). The Agent is a
+// fake script put in the place of the host's claude: no Claude token and no
+// network are needed. afk-forge is the real afk, built from cmd/afk.
 
-const projectConfig = `[forge]
+const (
+	defaultTestImage = "docker.io/library/golang:1.27"
+	fakeToken        = "fake-42"
+)
+
+const (
+	fixtureCompose = `services:
+  svc:
+    image: %s
+    command: ["sleep", "infinity"]
+`
+	fixtureComposeAfk = `services:
+  afk:
+    build:
+      context: .afk
+    depends_on: [svc]
+    volumes:
+      - cache:/cache
+  afk-setup:
+    image: %s
+    command: sh -c 'test -f /t/hello.txt && touch /t/setup-saw-clone'
+    volumes:
+      - ${AFK_TREE}:/t
+volumes:
+  cache:
+    name: ${AFK_CACHE}-cache
+`
+	fixtureConfig = `[forge]
 kind = "github"
-repo = "%s"
+repo = "afkt/%s"
 [gate]
 cmd = "true"
-[tool.fake]
-setup = ["echo setup > setup-ran"]
-env = { TOOL_VAR = "tool-value" }
 `
+)
 
-// fakeClaude runs in the guest instead of `claude …`.
-const fakeClaude = `set -eu
+// fakeClaude checks what a Chat gives the Agent, then behaves as the MODE-x
+// argument (after --) says.
+const fakeClaude = `#!/bin/bash
+set -eu
 fail() { echo "FAKE: $*" >&2; exit 1; }
-claude --version >/dev/null || fail "no claude in the image"
-grep -q '"hasCompletedOnboarding": true' ~/.claude.json || fail "onboarding not skipped"
-[ "$PWD" = /work/repo ] || fail "not in the clone: $PWD"
-[ "$(git rev-parse --abbrev-ref HEAD)" = chat-itest ] || fail "wrong branch"
+trap 'echo "FAKE: line $LINENO failed: $BASH_COMMAND" >&2' ERR
+mode=default
+skip=
+for arg in "$@"; do
+	if [ -n "$skip" ]; then skip=; echo "FAKE-ARG: <value>"; continue; fi
+	case "$arg" in
+		MODE-*) mode=${arg#MODE-} ;;
+		--append-system-prompt|--settings) skip=1 ;;
+	esac
+	echo "FAKE-ARG: $arg"
+done
+name=$(basename "$(dirname "$PWD")")
+key=$(printf %s "$PWD" | sed 's/[^a-zA-Z0-9]/-/g')
+projects="$HOME/.claude/projects/$key"
+[ "$CLAUDE_CODE_OAUTH_TOKEN" = "fake-$((6 * 7))" ] || fail "token not in the environment"
+[ "$(git rev-parse --abbrev-ref HEAD)" = "chat-$name" ] || fail "wrong branch"
 git rev-parse -q --verify origin/main >/dev/null || fail "no origin/main"
-[ "$(cat setup-ran)" = setup ] || fail "setup of the Tool did not run"
-[ "$TOOL_VAR" = tool-value ] || fail "env of the Tool missing"
-[ "$CLAUDE_CODE_OAUTH_TOKEN" = fake-42 ] || fail "token not in the environment"
-! grep -rqsF "$CLAUDE_CODE_OAUTH_TOKEN" /work /home/agent /tmp || fail "token on disk"
-public=$(curl -s -m 20 -o /dev/null -w '%{http_code}' https://example.com/ || true)
-private=$(curl -s -m 20 -o /dev/null -w '%{http_connect}' https://10.99.0.1/ || true)
-[ "$public" != 000 ] || fail "public host unreachable"
-[ "$private" = 403 ] || fail "private address not denied: $private"
+[ -f hello.txt ] || fail "the clone is not checked out"
+[ -f setup-saw-clone ] || fail "afk-setup did not see the clone"
+[ "$GIT_AUTHOR_NAME" = "afk agent" ] || fail "no git identity"
+if grep -rqsF "$CLAUDE_CODE_OAUTH_TOKEN" "$PWD" "$HOME" /tmp; then fail "token on disk"; fi
+[ "$(command -v afk-forge)" = "$HOME/bin/afk-forge" ] || fail "afk-forge is not on the PATH: $(command -v afk-forge)"
+[ ! -w "$HOME/bin/afk-forge" ] || fail "afk-forge is writable"
+[ ! -w "$HOME/bin/claude" ] || fail "claude is writable"
+[ ! -w "$HOME/.claude/settings.json" ] || fail "settings.json is writable"
+[ "$AFK_SOCKET" = /run/afk/afk.sock ] && [ -S "$AFK_SOCKET" ] || fail "no channel socket"
+socks=$(find / \( -path /proc -o -path /sys \) -prune -o -name '*.sock' -print 2>/dev/null || true)
+[ "$socks" = /run/afk/afk.sock ] || fail "sockets in the Sandbox: $socks"
+[ -z "${DOCKER_HOST:-}${CONTAINER_HOST:-}" ] || fail "podman socket in the environment"
+getent hosts svc >/dev/null || fail "service svc of the Stack not reachable"
 [ "$(afk-forge issue list --label bug)" = "#1  [bug]  Itest ticket" ] || fail "afk-forge issue list"
-echo first > session-marker
-echo work > work.txt && git add work.txt && git commit -qm "work in the chat"
-sync # the VM is destroyed (power off) later
+[ -d "$projects/memory" ] || fail "no memory directory under $projects"
+touch "$HOME/probe" && rm "$HOME/probe" || fail "home is not writable"
+case "$mode" in
+	read-memory)
+		[ "$(cat "$projects/memory/note-plan.md")" = remembered-by-plan ] || fail "memory of the other Chat missing"
+		;;
+	sleep)
+		echo SLEEPING
+		exec sleep 600
+		;;
+	exit3)
+		exit 3
+		;;
+	*)
+		echo "remembered-by-$name" > "$projects/memory/note-$name.md"
+		touch "$projects/session.jsonl" # a conversation to continue
+		afk-forge issue create --title "Idea" --label ready-for-agent
+		echo first > session-marker
+		echo work > work.txt && git add work.txt && git commit -q --allow-empty -m "work in the chat"
+		;;
+esac
 `
 
-// fakeContinue runs in the guest on Attach: the same clone, the same env.
-const fakeContinue = `set -eu
-fail() { echo "FAKE: $*" >&2; exit 1; }
-[ "$PWD" = /work/repo ] || fail "not in the clone: $PWD"
-[ "$(cat session-marker)" = first ] || fail "not the clone of the first session"
-[ "$TOOL_VAR" = tool-value ] || fail "env of the Tool missing"
-[ "$CLAUDE_CODE_OAUTH_TOKEN" = fake-42 ] || fail "token not in the environment"
-public=$(curl -s -m 20 -o /dev/null -w '%{http_code}' https://example.com/ || true)
-private=$(curl -s -m 20 -o /dev/null -w '%{http_connect}' https://10.99.0.1/ || true)
-[ "$public" != 000 ] || fail "public host unreachable"
-[ "$private" = 403 ] || fail "private address not denied: $private"
-`
+// syncBuffer is a bytes.Buffer the Sandbox's stderr and the Chat can both write.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
 
-func TestIntegrationNew(t *testing.T) {
-	project := os.Getenv("AFK_TEST_PROJECT")
-	if project == "" {
-		t.Skip("AFK_TEST_PROJECT not set")
+func (b *syncBuffer) Write(p []byte) (n int, err error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() (s string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func TestIntegrationChat(t *testing.T) {
+	testImage := os.Getenv("AFK_TEST_IMAGE")
+	if testImage == "" {
+		testImage = defaultTestImage
 	}
-	owner, name, _ := strings.Cut(project, "-")
-	realPaths, err := image.DefaultPaths()
-	if err != nil {
+	if err := exec.Command("podman", "image", "exists", testImage).Run(); err != nil {
+		t.Skipf("test image %s is not available locally: %v", testImage, err)
+	}
+	name := fmt.Sprintf("chat%d", time.Now().UnixNano()%1_000_000_000)
+	project := "afkt-" + name
+	paths := image.Paths{StateDir: t.TempDir()}
+	t.Cleanup(func() { cleanProject(paths.StateDir, project) })
+
+	// The host's claude, as the Chat finds it: a symlink to the real file.
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "claude-2.0.0"), []byte(fakeClaude), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// Own state directory, with the real `afk` ssh key the image trusts.
-	paths := realPaths
-	paths.StateDir = t.TempDir()
-	if err = os.CopyFS(filepath.Join(paths.StateDir, "ssh"), os.DirFS(filepath.Join(realPaths.StateDir, "ssh"))); err != nil {
+	if err := os.Symlink("claude-2.0.0", filepath.Join(bin, "claude")); err != nil {
 		t.Fatal(err)
 	}
-	conn, err := machine.Connect()
-	if err != nil {
-		t.Skipf("no libvirt: %v", err)
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	// The real afk, for afk-forge: the test binary is no afk.
+	afk := filepath.Join(t.TempDir(), "afk")
+	build := exec.Command("go", "build", "-o", afk, "../cmd/afk")
+	build.Env = append(os.Environ(), "CGO_ENABLED=0")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("building afk: %v\n%s", err, out)
 	}
-	t.Cleanup(func() { _ = conn.Close() })
 
+	isolateGit(t)
 	root := t.TempDir()
-	repo := filepath.Join(root, "repo")
-	remoteDir := filepath.Join(root, "origin.git")
-	cfgText := strings.Replace(projectConfig, "%s", owner+"/"+name, 1)
-	script := `set -eu
-git init -q -b main origin.git --bare
-git init -q -b main repo
-cd repo
+	user, remoteDir := filepath.Join(root, "user"), filepath.Join(root, "origin.git")
+	sh(t, root, `
+git init -q --bare -b main origin.git
+git init -q -b main user
+cd user
 echo hello > hello.txt
 cat > .afk.toml <<'EOF'
-` + cfgText + `EOF
+`+fmt.Sprintf(fixtureConfig, name)+`EOF
 git add -A
-git -c user.name=t -c user.email=t@t commit -qm base
-git rev-parse HEAD`
-	cmd := exec.Command("bash", "-c", script)
-	cmd.Dir = root
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("%v\n%s", err, out)
-	}
-	commit := strings.TrimSpace(string(out))
-	cfg, err := config.ParseNamed("test", []byte(cfgText))
+git commit -qm config
+git remote add origin ../origin.git
+git push -q origin main`)
+	withoutStack, err := run.ReadBase(t.Context(), user) // before the Project has a Stack
 	if err != nil {
 		t.Fatal(err)
 	}
-	opts := Options{
-		Base:        run.Base{Repo: repo, Branch: "main", Commit: commit, Config: cfg},
-		Name:        "itest",
-		Effort:      "low",
-		ClaudeToken: "fake-42",
-		Paths:       paths,
-		Forge:       remoteOnly{remote: forge.Remote{Repo: owner + "/" + name, URL: remoteDir}},
-		Command:     []string{"bash", "-c", fakeClaude},
+	files := map[string]string{
+		"compose.yml":     fmt.Sprintf(fixtureCompose, testImage),
+		"compose.afk.yml": fmt.Sprintf(fixtureComposeAfk, testImage),
+		".afk/Dockerfile": "FROM " + testImage + "\n",
 	}
-	var output bytes.Buffer
-	opts.Out = &output
-	t.Cleanup(func() { _ = conn.Kill("afk-chat-itest") })
-
-	err = New(t.Context(), opts)
-	t.Logf("output:\n%s", &output)
-	if err != nil {
-		t.Fatal(err)
-	}
-	m, err := conn.Get("afk-chat-itest")
-	if err != nil {
-		t.Fatalf("the VM must stay after the Agent ends: %v", err)
-	}
-	if !m.Running || m.Kind != machine.KindChat || m.Effort != "low" || m.Repo != repo || m.Created.IsZero() {
-		t.Errorf("machine = %+v", m)
-	}
-	logs, _ := filepath.Glob(filepath.Join(paths.StateDir, m.Project, "logs", "chat-itest-*-egress.txt"))
-	var denials []byte
-	if len(logs) == 1 {
-		denials, _ = os.ReadFile(logs[0])
-	}
-	if !strings.Contains(string(denials), "10.99.0.1") {
-		t.Errorf("egress denials = %q, want the private address", denials)
-	}
-
-	forgeLogs, _ := filepath.Glob(filepath.Join(paths.StateDir, m.Project, "logs", "chat-itest-*-forge.txt"))
-	var forgeLog []byte
-	if len(forgeLogs) == 1 {
-		forgeLog, _ = os.ReadFile(forgeLogs[0])
-	}
-	if !strings.Contains(string(forgeLog), `list label="bug" state=open: ok`) {
-		t.Errorf("forge log = %q, want the afk-forge call", forgeLog)
-	}
-
-	// The second Chat of the name is refused, before any VM.
-	output.Reset()
-	if err = New(t.Context(), opts); err == nil || !strings.Contains(err.Error(), "already exists") {
-		t.Errorf("second New: err = %v, want a refusal", err)
-	}
-
-	// A second process holding the Chat's lock: Attach is refused with its PID.
-	chatDir := filepath.Join(paths.StateDir, m.Project, stateName, "itest")
-	unlock, err := lockChat("itest", chatDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = Attach(t.Context(), opts); err == nil || !strings.Contains(err.Error(), "PID "+strconv.Itoa(os.Getpid())) {
-		t.Errorf("Attach of a Chat in use: err = %v, want a refusal naming the PID", err)
-	}
-	// Export does not take the lock: it pushes the Chat's commit to the remote.
-	output.Reset()
-	err = Export(t.Context(), opts)
-	t.Logf("export output:\n%s", &output)
-	if err != nil {
-		t.Fatalf("Export while the Chat is in use: %v", err)
-	}
-	tip := func() string {
-		out, _ := exec.Command("git", "--git-dir", remoteDir, "log", "-1", "--format=%H %s", "chat-itest").CombinedOutput()
-		return strings.TrimSpace(string(out))
-	}
-	if got := tip(); !strings.HasSuffix(got, " work in the chat") || !strings.Contains(output.String(), "exported chat-itest at "+got[:12]) {
-		t.Errorf("remote chat-itest = %q, output:\n%s", got, &output)
-	}
-	unlock()
-
-	// The host restarts: the VM is shut off.
-	shutOff := func() {
-		t.Helper()
-		if out, virshErr := exec.Command("virsh", "-c", "qemu:///system", "destroy", "afk-chat-itest").CombinedOutput(); virshErr != nil {
-			t.Fatalf("virsh destroy: %v\n%s", virshErr, out)
+	for path, content := range files {
+		if err = os.MkdirAll(filepath.Dir(filepath.Join(user, path)), 0o755); err != nil {
+			t.Fatal(err)
 		}
-		if m, err = conn.Get("afk-chat-itest"); err != nil || m.Running {
-			t.Fatalf("after destroy: %+v, %v", m, err)
-		}
-	}
-	// Export starts it, finds nothing new and pushes nothing.
-	shutOff()
-	before := tip()
-	output.Reset()
-	if err = Export(t.Context(), opts); err != nil || !strings.Contains(output.String(), "no new commits") || tip() != before {
-		t.Errorf("second Export: %v, tip %q, output:\n%s", err, tip(), &output)
-	}
-	// Attach starts it and returns to the same clone.
-	shutOff()
-	output.Reset()
-	opts.Command = []string{"bash", "-c", fakeContinue}
-	err = Attach(t.Context(), opts)
-	t.Logf("attach output:\n%s", &output)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if m, err = conn.Get("afk-chat-itest"); err != nil || !m.Running {
-		t.Errorf("the VM must run after Attach: %+v, %v", m, err)
-	}
-	if !strings.Contains(output.String(), "starting VM") {
-		t.Errorf("Attach did not report starting the VM:\n%s", &output)
-	}
-
-	// --- rm ---
-	stateDir := filepath.Join(paths.StateDir, m.Project)
-	quarantine, err := run.OpenQuarantine(t.Context(), filepath.Join(stateDir, run.QuarantineName))
-	if err != nil {
-		t.Fatal(err)
-	}
-	overlayDir := filepath.Join(machine.DefaultRoot, "chats", "itest")
-	remove := func(force bool) error {
-		output.Reset()
-		err := Remove(t.Context(), opts, force)
-		t.Logf("rm (force %v): %v\n%s", force, err, &output)
-		return err
-	}
-	attachWith := func(script string) {
-		t.Helper()
-		opts.Command = []string{"bash", "-c", "set -eu; " + script}
-		if err := Attach(t.Context(), opts); err != nil {
+		if err = os.WriteFile(filepath.Join(user, path), []byte(content), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
-	// The Chat in use refuses, force or not; the VM stays.
-	unlock, err = lockChat("itest", chatDir)
+	sh(t, user, "git add -A && git commit -qm stack && git push -q origin main")
+	base, err := run.ReadBase(t.Context(), user)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = remove(true); err == nil || !strings.Contains(err.Error(), "PID "+strconv.Itoa(os.Getpid())) {
-		t.Errorf("Remove of a Chat in use: err = %v", err)
+
+	var created []forge.Ticket
+	var comments, edits []string
+	github := fakeForge{
+		tickets: []forge.Ticket{{Number: 1, Title: "Itest ticket", Labels: []string{"bug"}}},
+		created: &created, comments: &comments, edits: &edits,
+		remote: forge.Remote{Repo: "afkt/" + name, URL: remoteDir},
 	}
-	unlock()
-	// The files the first session left are uncommitted work.
-	if err = remove(false); err == nil || !strings.Contains(err.Error(), "uncommitted path(s)") {
-		t.Errorf("Remove of a dirty Chat: err = %v", err)
-	}
-	// A commit that was not exported.
-	attachWith("git clean -fdxq && echo more > more.txt && git add more.txt && git commit -qm unexported")
-	if err = remove(false); err == nil || !strings.Contains(err.Error(), "1 commit(s) after the last export") {
-		t.Errorf("Remove with an unexported commit: err = %v", err)
-	}
-	if _, err = conn.Get("afk-chat-itest"); err != nil {
-		t.Errorf("a refused Remove must keep the VM: %v", err)
-	}
-	// Exported and clean: removed without force, everything but the branch.
-	if err = Export(t.Context(), opts); err != nil {
+	devNull, err := os.Open(os.DevNull)
+	if err != nil {
 		t.Fatal(err)
 	}
-	wantTip := tip()
-	if err = remove(false); err != nil {
-		t.Fatalf("Remove of a clean, exported Chat: %v", err)
-	}
-	gone := func(chat, branch, overlay string) {
-		t.Helper()
-		if _, getErr := conn.Get("afk-chat-" + chat); getErr == nil {
-			t.Errorf("VM of %s still exists", chat)
+	t.Cleanup(func() { _ = devNull.Close() })
+
+	options := func(chatName string, out *syncBuffer) Options {
+		return Options{
+			Base: base, Name: chatName, ClaudeToken: fakeToken, Paths: paths, Forge: github,
+			AfkBinary: afk, In: devNull, Out: out, Err: out,
 		}
-		for _, dir := range []string{filepath.Join(stateDir, stateName, chat), overlay} {
-			if _, statErr := os.Stat(dir); statErr == nil {
-				t.Errorf("%s still exists", dir)
+	}
+	enter := func(ctx context.Context, t *testing.T, opts Options) (out string, err error) {
+		t.Helper()
+		start := time.Now()
+		err = Run(ctx, opts)
+		out = opts.Out.(*syncBuffer).String()
+		t.Logf("Run of %s took %s, err = %v, output:\n%s", opts.Name, time.Since(start).Round(time.Second), err, out)
+		return
+	}
+	stackDir := func(chatName string) (dir string) { return stack.Dir(paths.StateDir, project, stack.Chat, chatName) }
+	compose := func(chatName string) (label string) {
+		return fmt.Sprintf("label=com.docker.compose.project=afk_%s_chat_%s", project, chatName)
+	}
+	containers := func(chatName string) (ids string) {
+		return podman(t, "ps", "-a", "--quiet", "--filter", compose(chatName))
+	}
+	volumes := func(chatName string) (ids string) {
+		return podman(t, "volume", "ls", "--quiet", "--filter", compose(chatName))
+	}
+	exists := func(path string) (ok bool) {
+		_, err := os.Stat(path)
+		return err == nil
+	}
+	quarantine := filepath.Join(paths.StateDir, project, run.QuarantineName)
+	// listed is the state `afk chat ls` shows for the Chat chatName, "" without a line.
+	listed := func(chatName string) (state string) {
+		var buf bytes.Buffer
+		if err := List(&buf, paths.StateDir, project, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		for line := range strings.Lines(buf.String()) {
+			if fields := strings.Fields(line); len(fields) == 3 && fields[0] == chatName {
+				return fields[1]
 			}
 		}
-		if base, baseErr := quarantine.Base(t.Context(), branch); baseErr == nil {
-			t.Errorf("Quarantine base of %s still exists: %s", branch, base)
+		return ""
+	}
+
+	t.Run("no compose.afk.yml on the base branch: the template is for the CLI to offer", func(t *testing.T) {
+		opts := options("tpl", &syncBuffer{})
+		opts.Base = withoutStack
+		_, err := enter(t.Context(), t, opts)
+		if !errors.Is(err, stack.ErrNoComposeAfk) {
+			t.Errorf("err = %v, want stack.ErrNoComposeAfk", err)
+		}
+		if exists(stackDir("tpl")) || exists(filepath.Join(quarantine, "refs", "afk", "base", "chat-tpl")) {
+			t.Error("a Chat that never started stays")
+		}
+	})
+
+	t.Run("new Chat: the Agent gets its Sandbox, the Stack ends with claude, the state stays", func(t *testing.T) {
+		out, err := enter(t.Context(), t, options("plan", &syncBuffer{}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, want := range []string{"Sandbox container afk_" + project + "_chat_plan", "Stack of Chat plan is down", "--dangerously-skip-permissions"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("output lacks %q", want)
+			}
+		}
+		if strings.Contains(out, "--continue") {
+			t.Error("a new Chat continues nothing")
+		}
+		if containers("plan") != "" {
+			t.Errorf("containers after claude ended: %q", containers("plan"))
+		}
+		if !exists(filepath.Join(stackDir("plan"), "repo", ".git")) || !exists(filepath.Join(stackDir("plan"), "home")) {
+			t.Error("clone or home gone")
+		}
+		if got := sh(t, filepath.Join(stackDir("plan"), "repo"), "git log -1 --format=%s chat-plan"); got != "work in the chat" {
+			t.Errorf("commit on chat-plan = %q", got)
+		}
+		if volumes("plan") == "" {
+			t.Error("the cache volume of the Chat is gone with its Stack")
+		}
+		// The ticket tool refused ready-for-agent.
+		if len(created) != 1 || strings.Join(created[0].Labels, ",") != "needs-triage" {
+			t.Errorf("created = %+v, want one issue with needs-triage", created)
+		}
+		if exists(filepath.Join(stackDir("plan"), "afk.sock")) {
+			t.Error("socket in the state of the Chat")
+		}
+		if out, _ := exec.Command("grep", "-rlF", fakeToken, paths.StateDir).Output(); len(out) > 0 {
+			t.Errorf("token in the state directory: %s", out)
+		}
+		if got := sh(t, "/", "git --git-dir="+quarantine+" rev-parse refs/afk/base/chat-plan"); got != base.Commit {
+			t.Errorf("base in the Quarantine repo = %q", got)
+		}
+		if got := listed("plan"); got != "stopped" {
+			t.Errorf("ls shows plan as %q", got)
+		}
+	})
+
+	t.Run("returning: --continue, the work is there", func(t *testing.T) {
+		out, err := enter(t.Context(), t, options("plan", &syncBuffer{}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(out, "FAKE-ARG: --continue") {
+			t.Error("a Chat that exists gets --continue")
+		}
+		if got := sh(t, filepath.Join(stackDir("plan"), "repo"), "cat session-marker"); got != "first" {
+			t.Errorf("session-marker = %q", got)
+		}
+		if containers("plan") != "" {
+			t.Error("Stack up after the second session")
+		}
+	})
+
+	t.Run("args after -- replace --continue", func(t *testing.T) {
+		opts := options("plan", &syncBuffer{})
+		opts.Args = []string{"--resume", "abc"}
+		out, err := enter(t.Context(), t, opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(out, "FAKE-ARG: --resume\nFAKE-ARG: abc") || strings.Contains(out, "--continue") {
+			t.Errorf("output:\n%s", out)
+		}
+	})
+
+	t.Run("memory of the Project is shared by its Chats", func(t *testing.T) {
+		opts := options("second", &syncBuffer{})
+		opts.Args = []string{"MODE-read-memory"}
+		if _, err := enter(t.Context(), t, opts); err != nil {
+			t.Fatal(err)
+		}
+		memory := filepath.Join(paths.StateDir, project, memoryName)
+		if got := sh(t, memory, "cat note-plan.md"); got != "remembered-by-plan" {
+			t.Errorf("note of plan = %q", got)
+		}
+		// Not in the home of either Chat: it is a mount.
+		if out, _ := exec.Command("sh", "-c", "ls "+stackDir("plan")+"/home/.claude/projects/*/memory | head -3").CombinedOutput(); strings.Contains(string(out), "note-plan.md") {
+			t.Errorf("the memory is a copy in the home of the Chat: %s", out)
+		}
+	})
+
+	t.Run("running Chat: ls, shell, one process, the socket only in its Sandbox, then a signal", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		opts := options("live", &syncBuffer{})
+		opts.Args = []string{"MODE-sleep"}
+		in, inWrite, err := os.Pipe() // an open terminal: never at EOF
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = in.Close(); _ = inWrite.Close() }()
+		opts.In = in
+		done := make(chan error, 1)
+		go func() { done <- Run(ctx, opts) }()
+		out := opts.Out.(*syncBuffer)
+		for i := 0; !strings.Contains(out.String(), "SLEEPING"); i++ {
+			select {
+			case err := <-done:
+				t.Fatalf("Run ended early: %v\n%s", err, out.String())
+			case <-time.After(500 * time.Millisecond):
+			}
+			if i > 240 {
+				t.Fatalf("no session after two minutes:\n%s", out.String())
+			}
+		}
+		if got := listed("live"); got != "running" {
+			t.Errorf("ls shows live as %q, want running", got)
+		}
+		// One process per Chat.
+		if _, err := enter(t.Context(), t, options("live", &syncBuffer{})); err == nil || !strings.Contains(err.Error(), "in use by another afk process") {
+			t.Errorf("second process: err = %v", err)
+		}
+		if err := Remove(t.Context(), options("live", &syncBuffer{})); err == nil || !strings.Contains(err.Error(), "in use by another afk process") {
+			t.Errorf("rm of a running Chat: err = %v", err)
+		}
+		// A shell in the running Chat's Sandbox has the channel.
+		shellIn, shellInWrite, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = shellInWrite.WriteString(`echo "in:$PWD"; afk-forge issue view 1 | head -1; exit 0` + "\n")
+		_ = shellInWrite.Close()
+		shellOpts := options("live", &syncBuffer{})
+		shellOpts.In = shellIn
+		if err = Shell(t.Context(), shellOpts); err != nil {
+			t.Fatalf("shell: %v\n%s", err, shellOpts.Out.(*syncBuffer).String())
+		}
+		if got := shellOpts.Out.(*syncBuffer).String(); !strings.Contains(got, "in:"+filepath.Join(stackDir("live"), "repo")) || !strings.Contains(got, "# #1 Itest ticket") {
+			t.Errorf("shell output:\n%s", got)
+		}
+		// Not in the other services of the Stack.
+		svc := podman(t, "ps", "--quiet", "--filter", compose("live"), "--filter", "label=com.docker.compose.service=svc")
+		if svc == "" {
+			t.Fatal("service svc is not running")
+		}
+		if out, err := exec.Command("podman", "exec", svc, "sh", "-c", "ls /run/afk 2>&1; find / -xdev -name '*.sock' 2>/dev/null").CombinedOutput(); err == nil && strings.Contains(string(out), "afk.sock") {
+			t.Errorf("service svc sees the channel socket: %s", out)
+		}
+		// A signal ends the session: the Stack goes down, the state stays.
+		cancel()
+		select {
+		case err = <-done:
+			if !errors.Is(err, context.Canceled) {
+				t.Errorf("err = %v, want the interruption", err)
+			}
+		case <-time.After(2 * time.Minute):
+			t.Fatal("Run did not end after the signal")
+		}
+		if containers("live") != "" {
+			t.Errorf("containers after the signal: %q", containers("live"))
+		}
+		if !exists(filepath.Join(stackDir("live"), "repo", ".git")) {
+			t.Error("state of the interrupted Chat is gone")
+		}
+		if got := listed("live"); got != "stopped" {
+			t.Errorf("ls shows live as %q, want stopped", got)
+		}
+		// And a shell has nothing to enter.
+		if err = Shell(t.Context(), shellOpts); err == nil || !strings.Contains(err.Error(), "not running") {
+			t.Errorf("shell of a stopped Chat: err = %v", err)
+		}
+	})
+
+	t.Run("claude fails: the Stack goes down, the Chat stays", func(t *testing.T) {
+		opts := options("fails", &syncBuffer{})
+		opts.Args = []string{"MODE-exit3"}
+		_, err := enter(t.Context(), t, opts)
+		if err == nil || !strings.Contains(err.Error(), "claude in chat fails") {
+			t.Errorf("err = %v", err)
+		}
+		if containers("fails") != "" || !exists(filepath.Join(stackDir("fails"), "repo", ".git")) {
+			t.Errorf("containers %q, state %v", containers("fails"), exists(stackDir("fails")))
+		}
+	})
+
+	t.Run("--rm: nothing of the Chat is left", func(t *testing.T) {
+		opts := options("tmp", &syncBuffer{})
+		opts.Remove = true
+		out, err := enter(t.Context(), t, opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(out, "Chat tmp removed") {
+			t.Error("output does not say it removed the Chat")
+		}
+		if exists(stackDir("tmp")) || containers("tmp") != "" || volumes("tmp") != "" {
+			t.Errorf("left: state %v, containers %q, volumes %q", exists(stackDir("tmp")), containers("tmp"), volumes("tmp"))
+		}
+		if exists(filepath.Join(quarantine, "refs", "afk", "base", "chat-tmp")) {
+			t.Error("refs in the Quarantine repo")
+		}
+	})
+
+	t.Run("rm: clone, home, volumes and refs of a stopped Chat", func(t *testing.T) {
+		var out syncBuffer
+		if err := Remove(t.Context(), options("plan", &out)); err != nil {
+			t.Fatalf("%v\n%s", err, out.String())
+		}
+		if exists(stackDir("plan")) || containers("plan") != "" || volumes("plan") != "" {
+			t.Errorf("left: state %v, containers %q, volumes %q", exists(stackDir("plan")), containers("plan"), volumes("plan"))
+		}
+		if exists(filepath.Join(quarantine, "refs", "afk", "base", "chat-plan")) {
+			t.Error("refs in the Quarantine repo")
+		}
+		if err := Remove(t.Context(), options("plan", &out)); err == nil || !strings.Contains(err.Error(), "does not exist") {
+			t.Errorf("rm again: err = %v", err)
+		}
+		// The name is free again.
+		if _, err := enter(t.Context(), t, options("plan", &syncBuffer{})); err != nil {
+			t.Errorf("a Chat of a removed name: %v", err)
+		}
+	})
+}
+
+// --- helpers ---
+
+func isolateGit(t *testing.T) {
+	t.Helper()
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	for _, name := range []string{"GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME"} {
+		t.Setenv(name, "t")
+	}
+	for _, name := range []string{"GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL"} {
+		t.Setenv(name, "t@example.com")
+	}
+}
+
+// sh runs script with bash in dir.
+func sh(t *testing.T, dir, script string) (out string) {
+	t.Helper()
+	cmd := exec.Command("bash", "-euc", script)
+	cmd.Dir = dir
+	data, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("%s: %v\n%s", script, err, data)
+	}
+	return strings.TrimSpace(string(data))
+}
+
+func podman(t *testing.T, args ...string) (out string) {
+	t.Helper()
+	data, err := exec.Command("podman", args...).CombinedOutput()
+	if err != nil {
+		t.Fatalf("podman %v: %v: %s", args, err, data)
+	}
+	return strings.TrimSpace(string(data))
+}
+
+// cleanProject removes what a test left: the Stacks of its Chats, their
+// volumes and the images it built.
+func cleanProject(stateDir, project string) {
+	ctx := context.Background()
+	names, _ := stack.List(stateDir, project, stack.Chat)
+	for _, name := range names {
+		if st, err := stack.Open(stateDir, project, stack.Chat, name); err == nil {
+			_ = st.Remove(ctx)
 		}
 	}
-	gone("itest", "chat-itest", overlayDir)
-	if tip() != wantTip || wantTip == "" {
-		t.Errorf("remote chat-itest = %q, want it untouched at %q", tip(), wantTip)
+	volumes, _ := exec.Command("podman", "volume", "ls", "--quiet", "--filter", "name=afk_"+project+"_").Output()
+	for _, volume := range strings.Fields(string(volumes)) {
+		_ = exec.Command("podman", "volume", "rm", "--force", volume).Run()
 	}
-	if err = remove(false); err == nil || !strings.Contains(err.Error(), "does not exist") {
-		t.Errorf("second Remove: err = %v", err)
+	images, _ := exec.Command("podman", "images", "--quiet", "--filter", "reference=localhost/afk/"+project+"/*").Output()
+	for _, id := range strings.Fields(string(images)) {
+		_ = exec.Command("podman", "rmi", "--force", id).Run()
 	}
-
-	// A Chat with an unexported commit goes with --force, VM never started.
-	opts.Name = "itest2"
-	opts.Command = []string{"bash", "-c", "git commit -q --allow-empty -m unexported"}
-	t.Cleanup(func() { _ = conn.Kill("afk-chat-itest2") })
-	if err = New(t.Context(), opts); err != nil {
-		t.Fatal(err)
-	}
-	if err = remove(false); err == nil || !strings.Contains(err.Error(), "1 commit(s) after the base") {
-		t.Errorf("Remove of a Chat with an unexported commit: err = %v", err)
-	}
-	if err = remove(true); err != nil {
-		t.Fatal(err)
-	}
-	gone("itest2", "chat-itest2", filepath.Join(machine.DefaultRoot, "chats", "itest2"))
-}
-
-// remoteOnly is a Forge of which Chat uses only the remote, and the one ticket
-// afk-forge lists.
-type remoteOnly struct {
-	forge.Forge
-	remote forge.Remote
-}
-
-func (f remoteOnly) Remote() (remote forge.Remote) { return f.remote }
-
-func (f remoteOnly) List(_ context.Context, label string, state forge.State) (tickets []forge.Ticket, err error) {
-	tickets = []forge.Ticket{{Number: 1, Title: "Itest ticket", Labels: []string{"bug"}}}
-	return
 }

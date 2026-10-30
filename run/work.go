@@ -42,12 +42,6 @@ type result struct {
 	gateRuns int // numbers the gate's output files
 }
 
-// execCommand is the shell command NewExec sends to a Chat's guest: command in
-// the clone, with the env of the Tools.
-func execCommand(env map[string]string, command string) (full string) {
-	return agent.ExportEnv(env) + "cd " + GuestRepo + " && " + command
-}
-
 // bashCommand runs script in bash, its stderr in its stdout.
 func bashCommand(script string) (command string) {
 	return "bash -c " + agent.ShellQuote(script) + " 2>&1"
@@ -218,14 +212,6 @@ func (r run) fetchResult(ctx context.Context, g guest) (head string, err error) 
 
 // ExecFunc runs command in the guest's clone, its stdout going to stdout.
 type ExecFunc func(ctx context.Context, command string, stdout io.Writer) (err error)
-
-// NewExec is the ExecFunc over client, with env (of the Tools) set for every command.
-func NewExec(client *ssh.Client, env map[string]string) (exec ExecFunc) {
-	return func(ctx context.Context, command string, stdout io.Writer) (err error) {
-		err = remote(ctx, client, execCommand(env, command), nil, stdout)
-		return
-	}
-}
 
 // Dirty returns the uncommitted changes of the guest's clone, `git status
 // --porcelain`: empty when it is clean.

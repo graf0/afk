@@ -1,10 +1,12 @@
-package run
+package sandbox
 
 import (
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/graf0/afk/stack"
 )
 
 // hostPlugins is a ~/.claude/plugins of two marketplaces, with a plugin in
@@ -49,7 +51,7 @@ func TestPluginView(t *testing.T) {
 	if err = json.Unmarshal(files["known_marketplaces.json"], &known); err != nil || len(known) != 2 || known["other"] != nil {
 		t.Errorf("known_marketplaces.json = %s, %v", files["known_marketplaces.json"], err)
 	}
-	got := map[string]sandboxMount{}
+	got := map[string]stack.Mount{}
 	for _, m := range mounts {
 		got[m.Target] = m
 	}
@@ -61,7 +63,7 @@ func TestPluginView(t *testing.T) {
 			t.Errorf("%s is not mounted read-only: %+v", target, m)
 		}
 	}
-	if m := got[plugins+"/data"]; m.Source != "/data" || m.ReadOnly || !m.dir {
+	if m := got[plugins+"/data"]; m.Source != "/data" || m.ReadOnly || !m.Dir {
 		t.Errorf("data mount = %+v, want the Run's own writable directory", m)
 	}
 	if _, ok := got[plugins+"/cache/official/c/1"]; ok || len(got) != 7 {
@@ -89,5 +91,34 @@ func TestPluginViewRefuses(t *testing.T) {
 	}
 	if _, _, err := pluginView(t.TempDir(), "/ctx", "/data", []string{"a@official"}); err == nil {
 		t.Error("a host without plugins: want an error")
+	}
+}
+
+func TestClaudeSettings(t *testing.T) {
+	read := func(data []byte) (settings map[string]any) {
+		t.Helper()
+		if err := json.Unmarshal(data, &settings); err != nil {
+			t.Fatalf("%v: %s", err, data)
+		}
+		return
+	}
+	data, err := claudeSettings(nil, nil)
+	if err != nil || len(read(data)) != 0 {
+		t.Errorf("no settings, no plugins = %s, %v; want {}", data, err)
+	}
+	// The Project's settings stay; the effective plugins are all on.
+	data, err = claudeSettings([]byte(`{"model":"x","enabledPlugins":{"a@m":true,"off@m":false}}`), []string{"a@m", "b@m"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings := read(data)
+	enabled, _ := settings["enabledPlugins"].(map[string]any)
+	if settings["model"] != "x" || enabled["a@m"] != true || enabled["b@m"] != true || enabled["off@m"] != false {
+		t.Errorf("settings = %s", data)
+	}
+	for _, bad := range []string{`{`, `{"enabledPlugins":[]}`} {
+		if _, err = claudeSettings([]byte(bad), nil); err == nil {
+			t.Errorf("settings %q: want an error", bad)
+		}
 	}
 }

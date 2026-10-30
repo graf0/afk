@@ -16,11 +16,19 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"syscall"
+	"time"
+
+	"golang.org/x/term"
 )
 
 const (
 	sandboxService = "afk"
 	setupService   = "afk-setup"
+	podmanBinary   = "podman"
+
+	// terminateWait is how long a terminated Attach gets to restore the terminal.
+	terminateWait = 10 * time.Second
 
 	// Kinds of Stack; they name its state directory and compose project.
 	Chat Kind = "chat"
@@ -316,7 +324,7 @@ func (s *Stack) revision(ctx context.Context, path string) (id string, err error
 func (s *Stack) build(ctx context.Context, images map[string]string) (err error) {
 	var missing []string
 	for _, name := range slices.Sorted(maps.Keys(images)) {
-		if exec.CommandContext(ctx, "podman", "image", "exists", images[name]).Run() != nil {
+		if exec.CommandContext(ctx, podmanBinary, "image", "exists", images[name]).Run() != nil {
 			missing = append(missing, name)
 		}
 	}
@@ -414,6 +422,49 @@ func (s *Stack) Exec(ctx context.Context, command string, stdout io.Writer) (err
 	return
 }
 
+// Attach runs command with bash in the tree, in the Sandbox, on the caller's
+// streams: with a terminal for in it gets a pty, so an interactive program
+// works. A failure of the command comes back as its exit status.
+func (s *Stack) Attach(ctx context.Context, command string, in *os.File, out, errOut io.Writer) (err error) {
+	args := []string{"exec"}
+	if !term.IsTerminal(int(in.Fd())) {
+		args = append(args, "--no-TTY")
+	}
+	args = append(args, "--workdir", s.Tree(), sandboxService, "bash", "-c", command)
+	cmd, err := s.command(ctx, true, args...)
+	if err != nil {
+		return
+	}
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = in, out, errOut
+	// SIGTERM, not the SIGKILL of exec.CommandContext: docker-compose puts the
+	// terminal in raw mode and restores it on the way out.
+	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
+	cmd.WaitDelay = terminateWait
+	if err = cmd.Run(); err != nil {
+		err = fmt.Errorf("%s exec: %w", composeBinary, err)
+	}
+	return
+}
+
+// Container is the name of the Sandbox's container, for the one who wants to
+// `podman exec` into it by hand.
+func (s *Stack) Container(ctx context.Context) (name string, err error) {
+	out, err := exec.CommandContext(ctx, podmanBinary, "ps", "--format", "{{.Names}}",
+		"--filter", "label=com.docker.compose.project="+s.ProjectName(),
+		"--filter", "label=com.docker.compose.service="+sandboxService).Output()
+	if err != nil {
+		err = fmt.Errorf("finding the Sandbox container: %w", err)
+		return
+	}
+	names := strings.Fields(string(out))
+	if len(names) == 0 {
+		err = errors.New("the Sandbox container is not running")
+		return
+	}
+	name = names[0]
+	return
+}
+
 // Down removes the containers and the network of the Stack. Volumes and the
 // state stay.
 func (s *Stack) Down(ctx context.Context) (err error) {
@@ -440,7 +491,7 @@ func (s *Stack) Remove(ctx context.Context) (err error) {
 	if err = s.Down(ctx); err != nil {
 		return
 	}
-	out, err := exec.CommandContext(ctx, "podman", "volume", "ls", "--quiet",
+	out, err := exec.CommandContext(ctx, podmanBinary, "volume", "ls", "--quiet",
 		"--filter", "label=com.docker.compose.project="+s.ProjectName()).Output()
 	if err != nil {
 		err = fmt.Errorf("listing volumes: %w", err)
@@ -450,14 +501,14 @@ func (s *Stack) Remove(ctx context.Context) (err error) {
 		if s.opts.Kind == Run && strings.HasPrefix(volume, s.cacheScope()+"-") {
 			continue
 		}
-		if removeOut, removeErr := exec.CommandContext(ctx, "podman", "volume", "rm", "--force", volume).CombinedOutput(); removeErr != nil {
+		if removeOut, removeErr := exec.CommandContext(ctx, podmanBinary, "volume", "rm", "--force", volume).CombinedOutput(); removeErr != nil {
 			err = fmt.Errorf("removing volume %s: %w: %s", volume, removeErr, strings.TrimSpace(string(removeOut)))
 			return
 		}
 	}
 	if err = os.RemoveAll(s.dir); err != nil {
 		// Mount points of nested volumes can belong to a subuid.
-		if out, unshareErr := exec.CommandContext(ctx, "podman", "unshare", "rm", "-rf", s.dir).CombinedOutput(); unshareErr != nil {
+		if out, unshareErr := exec.CommandContext(ctx, podmanBinary, "unshare", "rm", "-rf", s.dir).CombinedOutput(); unshareErr != nil {
 			err = fmt.Errorf("removing %s: %w: %s", s.dir, unshareErr, strings.TrimSpace(string(out)))
 			return
 		}

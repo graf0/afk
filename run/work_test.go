@@ -354,16 +354,6 @@ func TestTaskTools(t *testing.T) {
 	}
 }
 
-// TestExecCommandSetsEnv runs the command Exec sends to the guest: the env of
-// the Tools is there for setup and the gate, which both go through Exec.
-func TestExecCommandSetsEnv(t *testing.T) {
-	cmd := exec.Command("bash", "-c", strings.ReplaceAll(execCommand(map[string]string{"DATABASE_URL": "pg:///it's"}, `printf %s "$DATABASE_URL"`), GuestRepo, t.TempDir()))
-	out, err := cmd.Output()
-	if err != nil || string(out) != "pg:///it's" {
-		t.Errorf("got %q, %v", out, err)
-	}
-}
-
 // TestGuestBranchFetch uses the exported API as Chat will: a GuestBranch and an
 // exec in the guest, not the Run (the fixture only sets them up).
 func TestGuestBranchFetch(t *testing.T) {

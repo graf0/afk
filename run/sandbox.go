@@ -3,28 +3,23 @@ package run
 import (
 	"cmp"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
-	"maps"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
 
 	"github.com/graf0/afk/agent"
+	"github.com/graf0/afk/sandbox"
 	"github.com/graf0/afk/stack"
 )
 
 const (
 	// Files next to the clone, in the Run's context directory: read-only in
 	// the Sandbox, written by the host alone.
-	contextName        = "context"
-	ticketFileName     = "TICKET.md"
-	specFileName       = "SPEC.md"
-	claudeSettingsName = "settings.json"
+	contextName    = "context"
+	ticketFileName = "TICKET.md"
+	specFileName   = "SPEC.md"
 
 	// defaultAgent is the host's claude, mounted read-only into the Agent's $HOME.
 	defaultAgent = `"$HOME/bin/claude"`
@@ -102,12 +97,6 @@ func (r run) contextFile(name string) (path string) { return filepath.Join(r.con
 
 // --- stack ---
 
-// sandboxMount is a bind mount of the Sandbox; dir says what is mounted.
-type sandboxMount struct {
-	stack.Mount
-	dir bool
-}
-
 // enter runs work in the Sandbox of the Run's Stack: in the state an earlier
 // Factory left when there is one (opts.Resume), else in a fresh clone.
 func (r run) enter(ctx context.Context, work workFunc) (res result, err error) {
@@ -122,11 +111,11 @@ func (r run) enter(ctx context.Context, work workFunc) (res result, err error) {
 			return
 		}
 	}
-	files, mounts, err := r.sandbox()
+	view, err := r.sandbox()
 	if err != nil {
 		return
 	}
-	st, err := r.newStack(repo, mounts)
+	st, err := r.newStack(repo, view.Mounts)
 	if err != nil {
 		return
 	}
@@ -170,7 +159,14 @@ func (r run) enter(ctx context.Context, work workFunc) (res result, err error) {
 			err = errors.Join(err, st.Down(cleanup))
 		}
 	}()
-	if err = r.prepareContext(st, files, mounts); err != nil {
+	if resume {
+		// The Sandbox of a Factory that was killed may still run, and its Agent
+		// owns the home: nothing of it may run while the mount points are made.
+		if err = st.Down(ctx); err != nil {
+			return
+		}
+	}
+	if err = r.prepareContext(st, view); err != nil {
 		return
 	}
 	if err = st.Up(ctx); err != nil {
@@ -192,40 +188,22 @@ func (r run) enter(ctx context.Context, work workFunc) (res result, err error) {
 }
 
 // sandbox is what the host gives the Sandbox besides the Stack's own mounts:
-// the files of the context directory and the mounts. It is the one list: the
-// Stack mounts them, prepareContext makes their mount points.
-func (r run) sandbox() (files map[string][]byte, mounts []sandboxMount, err error) {
-	home, err := os.UserHomeDir()
+// the view of the Agent (package sandbox) and the context directory with the
+// ticket, written by the host, read-only for the Agent, outside the clone and
+// home.
+func (r run) sandbox() (view sandbox.View, err error) {
+	view, err = sandbox.Build(sandbox.Options{
+		ContextDir: r.contextDir(), DataDir: r.pluginDataDir(),
+		Settings: r.Base.Settings, Plugins: r.Base.Plugins, NoClaude: r.AgentBinary != "",
+	})
 	if err != nil {
-		err = fmt.Errorf("finding the home directory: %w", err)
 		return
 	}
-	settings, err := claudeSettings(r.Base.Settings, r.Base.Plugins)
-	if err != nil {
-		return
-	}
-	files = map[string][]byte{ticketFileName: []byte(agent.TicketFile(r.Ticket)), claudeSettingsName: settings}
+	view.Files[ticketFileName] = []byte(agent.TicketFile(r.Ticket))
 	if r.spec != nil {
-		files[specFileName] = []byte(agent.TicketFile(*r.spec))
+		view.Files[specFileName] = []byte(agent.TicketFile(*r.spec))
 	}
-	// Written by the host, read-only for the Agent, outside the clone and home.
-	mounts = []sandboxMount{
-		{Mount: stack.Mount{Source: r.contextDir(), Target: r.contextDir(), ReadOnly: true}, dir: true},
-		{Mount: stack.Mount{Source: r.contextFile(claudeSettingsName), Target: filepath.Join(home, ".claude", claudeSettingsName), ReadOnly: true}},
-	}
-	if r.AgentBinary == "" {
-		var binary string
-		if binary, err = hostClaude(); err != nil {
-			return
-		}
-		mounts = append(mounts, sandboxMount{Mount: stack.Mount{Source: binary, Target: filepath.Join(home, "bin", "claude"), ReadOnly: true}})
-	}
-	pluginFiles, pluginMounts, err := pluginView(home, r.contextDir(), r.pluginDataDir(), r.Base.Plugins)
-	if err != nil {
-		return
-	}
-	maps.Copy(files, pluginFiles)
-	mounts = append(mounts, pluginMounts...)
+	view.Mounts = append(view.Mounts, stack.Mount{Source: r.contextDir(), Target: r.contextDir(), ReadOnly: true, Dir: true})
 	return
 }
 
@@ -234,142 +212,24 @@ func (r run) pluginDataDir() (dir string) { return filepath.Join(r.stackDir(), "
 
 // newStack is the Stack of the Run from the base commit in repo: its token and
 // mounts.
-func (r run) newStack(repo string, mounts []sandboxMount) (st *stack.Stack, err error) {
-	env := map[string]string{
-		"GIT_AUTHOR_NAME": guestGitName, "GIT_AUTHOR_EMAIL": guestGitEmail,
-		"GIT_COMMITTER_NAME": guestGitName, "GIT_COMMITTER_EMAIL": guestGitEmail,
-		"DISABLE_AUTOUPDATER": "1",
-	}
-	if r.ClaudeToken != "" {
-		env[agent.TokenEnv] = r.ClaudeToken
-	}
-	plain := make([]stack.Mount, len(mounts))
-	for i, m := range mounts {
-		plain[i] = m.Mount
-	}
+func (r run) newStack(repo string, mounts []stack.Mount) (st *stack.Stack, err error) {
 	st, err = stack.New(stack.Options{
 		Repo: repo, Commit: r.Base.Commit, Project: r.project, Kind: stack.Run, Name: r.stackName(),
-		StateDir: r.Paths.StateDir, Env: env, Mounts: plain, Out: r.Out,
+		StateDir: r.Paths.StateDir, Env: sandbox.Env(r.ClaudeToken), Mounts: mounts, Out: r.Out,
 	})
-	return
-}
-
-// hostClaude is the file of the host's claude: the target of a symlink,
-// which would be a dangling link in the Sandbox.
-func hostClaude() (path string, err error) {
-	found, err := exec.LookPath("claude")
-	if err != nil {
-		err = fmt.Errorf("claude is not on the PATH: %w", err)
-		return
-	}
-	path, err = filepath.EvalSymlinks(found)
 	return
 }
 
 // --- context ---
 
-// prepareContext writes the files of the context directory and makes the mount
-// points of mounts in the Agent's home. A Run's clone and home may be the
-// Agent's work of an earlier Factory: only files are touched here, never git,
-// and symlinks in the way of a mount point go.
-func (r run) prepareContext(st *stack.Stack, files map[string][]byte, mounts []sandboxMount) (err error) {
-	if err = os.MkdirAll(r.contextDir(), 0o755); err != nil {
-		err = fmt.Errorf("creating the context directory: %w", err)
-		return
-	}
-	if files[specFileName] == nil {
+// prepareContext prepares the view in the context directory and the Agent's
+// home. A Run's clone and home may be the Agent's work of an earlier Factory.
+func (r run) prepareContext(st *stack.Stack, view sandbox.View) (err error) {
+	if view.Files[specFileName] == nil {
 		if err = os.RemoveAll(r.contextFile(specFileName)); err != nil {
 			return
 		}
 	}
-	for name, data := range files {
-		if err = os.WriteFile(r.contextFile(name), data, 0o644); err != nil {
-			err = fmt.Errorf("writing %s: %w", name, err)
-			return
-		}
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		err = fmt.Errorf("finding the home directory: %w", err)
-		return
-	}
-	for _, dir := range []string{st.Home(), r.pluginDataDir()} {
-		if err = os.MkdirAll(dir, 0o755); err != nil {
-			err = fmt.Errorf("creating %s: %w", dir, err)
-			return
-		}
-	}
-	// The tree is mounted under the home when the state directory is.
-	points := append([]sandboxMount{{Mount: stack.Mount{Target: st.Tree()}, dir: true}}, mounts...)
-	for _, m := range points {
-		rel, relErr := filepath.Rel(home, m.Target)
-		if relErr != nil || rel == "." || strings.HasPrefix(rel, "..") {
-			continue // not in the home: no mount point of ours
-		}
-		if err = mountPoint(st.Home(), rel, m.dir); err != nil {
-			err = fmt.Errorf("mount point %s: %w", m.Target, err)
-			return
-		}
-	}
-	return
-}
-
-// mountPoint makes rel in the Agent's home what a mount over it needs: a
-// directory or a file, never a symlink. The Agent can write in its home, and
-// podman makes the mount points it finds missing as a subuid.
-func mountPoint(home, rel string, isDir bool) (err error) {
-	path := home
-	parts := strings.Split(rel, "/")
-	for i, part := range parts {
-		path = filepath.Join(path, part)
-		wantDir := i < len(parts)-1 || isDir
-		info, statErr := os.Lstat(path)
-		if statErr == nil && (info.Mode()&os.ModeSymlink != 0 || info.IsDir() != wantDir) {
-			if err = os.RemoveAll(path); err != nil { // a link goes, not what it points to
-				return
-			}
-			statErr = fs.ErrNotExist
-		}
-		switch {
-		case errors.Is(statErr, fs.ErrNotExist) && wantDir:
-			err = os.Mkdir(path, 0o755)
-		case errors.Is(statErr, fs.ErrNotExist):
-			err = os.WriteFile(path, nil, 0o644)
-		default:
-			err = statErr
-		}
-		if err != nil {
-			return
-		}
-	}
-	return
-}
-
-// claudeSettings is the settings.json of the Agent: the Project's from the
-// base branch, with every effective plugin enabled (ADR-0009).
-func claudeSettings(project []byte, plugins []string) (data []byte, err error) {
-	settings := map[string]json.RawMessage{}
-	if len(project) > 0 {
-		if err = json.Unmarshal(project, &settings); err != nil {
-			err = fmt.Errorf("parsing %s: %w", settingsPath, err)
-			return
-		}
-	}
-	enabled := map[string]bool{}
-	if raw, ok := settings["enabledPlugins"]; ok {
-		if err = json.Unmarshal(raw, &enabled); err != nil {
-			err = fmt.Errorf("parsing enabledPlugins in %s: %w", settingsPath, err)
-			return
-		}
-	}
-	for _, id := range plugins {
-		enabled[id] = true
-	}
-	if len(enabled) > 0 {
-		if settings["enabledPlugins"], err = json.Marshal(enabled); err != nil {
-			return
-		}
-	}
-	data, err = json.MarshalIndent(settings, "", "  ")
+	err = view.Prepare(st.Home(), st.Tree())
 	return
 }

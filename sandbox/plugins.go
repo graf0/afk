@@ -1,4 +1,4 @@
-package run
+package sandbox
 
 import (
 	"encoding/json"
@@ -19,7 +19,7 @@ import (
 // ctxDir (the caller writes them), dataDir is the plugins' own data
 // directory: a writable, per-Run one, not the host's. Without ids there is
 // nothing (nil).
-func pluginView(home, ctxDir, dataDir string, ids []string) (files map[string][]byte, mounts []sandboxMount, err error) {
+func pluginView(home, ctxDir, dataDir string, ids []string) (files map[string][]byte, mounts []stack.Mount, err error) {
 	if len(ids) == 0 {
 		return
 	}
@@ -44,7 +44,7 @@ func pluginView(home, ctxDir, dataDir string, ids []string) (files map[string][]
 	ro := func(path string) {
 		if !seen[path] {
 			seen[path] = true
-			mounts = append(mounts, sandboxMount{Mount: stack.Mount{Source: path, Target: path, ReadOnly: true}, dir: true})
+			mounts = append(mounts, stack.Mount{Source: path, Target: path, ReadOnly: true, Dir: true})
 		}
 	}
 	for _, id := range ids {
@@ -87,9 +87,9 @@ func pluginView(home, ctxDir, dataDir string, ids []string) (files map[string][]
 		return
 	}
 	for name := range files {
-		mounts = append(mounts, sandboxMount{Mount: stack.Mount{Source: filepath.Join(ctxDir, name), Target: filepath.Join(plugins, name), ReadOnly: true}})
+		mounts = append(mounts, stack.Mount{Source: filepath.Join(ctxDir, name), Target: filepath.Join(plugins, name), ReadOnly: true})
 	}
-	mounts = append(mounts, sandboxMount{Mount: stack.Mount{Source: dataDir, Target: filepath.Join(plugins, "data")}, dir: true})
+	mounts = append(mounts, stack.Mount{Source: dataDir, Target: filepath.Join(plugins, "data"), Dir: true})
 	return
 }
 
@@ -123,4 +123,33 @@ func readJSON(path string, into any) (err error) {
 func within(dir, path string) (ok bool) {
 	rel, err := filepath.Rel(dir, path)
 	return err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && filepath.IsAbs(path)
+}
+
+// claudeSettings is the settings.json of the Agent: the Project's from the
+// base branch, with every effective plugin enabled (ADR-0009).
+func claudeSettings(project []byte, plugins []string) (data []byte, err error) {
+	settings := map[string]json.RawMessage{}
+	if len(project) > 0 {
+		if err = json.Unmarshal(project, &settings); err != nil {
+			err = fmt.Errorf("parsing .claude/settings.json: %w", err)
+			return
+		}
+	}
+	enabled := map[string]bool{}
+	if raw, ok := settings["enabledPlugins"]; ok {
+		if err = json.Unmarshal(raw, &enabled); err != nil {
+			err = fmt.Errorf("parsing enabledPlugins in .claude/settings.json: %w", err)
+			return
+		}
+	}
+	for _, id := range plugins {
+		enabled[id] = true
+	}
+	if len(enabled) > 0 {
+		if settings["enabledPlugins"], err = json.Marshal(enabled); err != nil {
+			return
+		}
+	}
+	data, err = json.MarshalIndent(settings, "", "  ")
+	return
 }

@@ -51,24 +51,10 @@ func (s *Stack) config(ctx context.Context) (services map[string]composeService,
 // generated file is left out, for the commands that run before it exists.
 // The socket is only in the environment of this process, never of the Sandbox.
 func (s *Stack) compose(ctx context.Context, override bool, stdout io.Writer, args ...string) (err error) {
-	if _, err = os.Stat(s.socket); err != nil {
-		err = fmt.Errorf("podman socket: %w (systemctl --user enable --now podman.socket)", err)
+	cmd, err := s.command(ctx, override, args...)
+	if err != nil {
 		return
 	}
-	global := []string{"--ansi", "never", "--progress", "plain", "--project-name", s.ProjectName()}
-	if _, statErr := os.Stat(s.exportDir()); statErr == nil {
-		global = append(global, "--project-directory", s.exportDir(),
-			"--file", filepath.Join(s.exportDir(), composeFile), "--file", filepath.Join(s.exportDir(), composeAfkFile))
-		if _, statErr = os.Stat(s.overridePath()); override && statErr == nil {
-			global = append(global, "--file", s.overridePath())
-		}
-	} else if args[0] != "down" && args[0] != "rm" {
-		err = errors.New("the Stack has no export of the base branch: Up first")
-		return
-	}
-	cmd := exec.CommandContext(ctx, composeBinary, append(global, args...)...)
-	cmd.Dir = s.dir // nothing outside the state is ever the project directory
-	cmd.Env = append(hostEnv(os.Environ()), "DOCKER_HOST=unix://"+s.socket, "AFK_TREE="+s.Tree(), "AFK_CACHE="+s.cacheScope())
 	tail := &tailBuffer{max: errorTail}
 	cmd.Stderr = tail
 	if s.opts.Out != nil {
@@ -84,6 +70,30 @@ func (s *Stack) compose(ctx context.Context, override bool, stdout io.Writer, ar
 	if err = cmd.Run(); err != nil {
 		err = fmt.Errorf("%s %s: %w: %s", composeBinary, args[0], err, strings.TrimSpace(tail.String()))
 	}
+	return
+}
+
+// command is the docker-compose command of compose, not started: streams are
+// the caller's.
+func (s *Stack) command(ctx context.Context, override bool, args ...string) (cmd *exec.Cmd, err error) {
+	if _, err = os.Stat(s.socket); err != nil {
+		err = fmt.Errorf("podman socket: %w (systemctl --user enable --now podman.socket)", err)
+		return
+	}
+	global := []string{"--ansi", "never", "--progress", "plain", "--project-name", s.ProjectName()}
+	if _, statErr := os.Stat(s.exportDir()); statErr == nil {
+		global = append(global, "--project-directory", s.exportDir(),
+			"--file", filepath.Join(s.exportDir(), composeFile), "--file", filepath.Join(s.exportDir(), composeAfkFile))
+		if _, statErr = os.Stat(s.overridePath()); override && statErr == nil {
+			global = append(global, "--file", s.overridePath())
+		}
+	} else if args[0] != "down" && args[0] != "rm" {
+		err = errors.New("the Stack has no export of the base branch: Up first")
+		return
+	}
+	cmd = exec.CommandContext(ctx, composeBinary, append(global, args...)...)
+	cmd.Dir = s.dir // nothing outside the state is ever the project directory
+	cmd.Env = append(hostEnv(os.Environ()), "DOCKER_HOST=unix://"+s.socket, "AFK_TREE="+s.Tree(), "AFK_CACHE="+s.cacheScope())
 	return
 }
 

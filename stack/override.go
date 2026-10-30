@@ -26,6 +26,7 @@ type Mount struct {
 	Source   string
 	Target   string
 	ReadOnly bool
+	Dir      bool // a directory: the mount point in the Agent's home is made as one
 }
 
 // overrideInput is what the override of afk adds to the Project's files.

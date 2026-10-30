@@ -1,151 +1,161 @@
 package chat
 
 import (
+	"bytes"
 	"context"
-	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/graf0/afk/config"
 	"github.com/graf0/afk/forge"
 	"github.com/graf0/afk/image"
-	"github.com/graf0/afk/machine"
 	"github.com/graf0/afk/run"
+	"github.com/graf0/afk/stack"
 )
 
 func TestValidateName(t *testing.T) {
-	for name, ok := range map[string]bool{
-		"plan": true, "a": true, "x-1": true, "0": true, strings.Repeat("a", 32): true,
-		"": false, "-x": false, "Plan": false, "a_b": false, "a b": false, "a/b": false, "ż": false,
-		strings.Repeat("a", 33): false,
-	} {
-		if err := ValidateName(name); (err == nil) != ok {
-			t.Errorf("ValidateName(%q) = %v, want ok=%t", name, err, ok)
+	for _, name := range []string{"plan", "a", "x-1", "0abc", strings.Repeat("a", 32)} {
+		if err := ValidateName(name); err != nil {
+			t.Errorf("%q: %v", name, err)
+		}
+	}
+	for _, name := range []string{"", "-x", "x-", "A", "a b", "a_b", "a/b", "..", strings.Repeat("a", 33), "ls", "shell", "rm"} {
+		if err := ValidateName(name); err == nil {
+			t.Errorf("%q: want an error", name)
 		}
 	}
 }
 
-func TestValidateEffort(t *testing.T) {
-	for effort, ok := range map[string]bool{"": true, "low": true, "xhigh": true, "max": true, "extreme": false, "High": false} {
-		if err := ValidateEffort(effort); (err == nil) != ok {
-			t.Errorf("ValidateEffort(%q) = %v, want ok=%t", effort, err, ok)
-		}
-	}
-}
-
-func TestSessionCommand(t *testing.T) {
-	s := session{Env: map[string]string{"DB": "pg://x y"}, Model: "opus", Effort: "high", Prompt: "it's a prompt"}
-	got := s.command()
-	for _, want := range []string{
-		"export DB='pg://x y' && export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
-		"https_proxy='http://127.0.0.1:3128'",
-		"IFS= read -r CLAUDE_CODE_OAUTH_TOKEN",
-		"stty echo",
-		"cd '/work/repo' && exec 'claude' '--dangerously-skip-permissions' '--model' 'opus' '--effort' 'high' '--append-system-prompt' 'it'\\''s a prompt'",
-	} {
-		if !strings.Contains(got, want) {
-			t.Errorf("command lacks %q:\n%s", want, got)
-		}
-	}
-	// The token is read before anything of the Agent runs.
-	if strings.Index(got, "read -r") > strings.Index(got, "exec ") {
-		t.Errorf("token read after exec:\n%s", got)
-	}
-	// Model and effort are left out when not set; Command replaces the claude line.
-	got = session{Command: []string{"claude", "--version"}}.command()
-	if !strings.HasSuffix(got, "&& exec 'claude' '--version'") || strings.Contains(got, "--effort") {
-		t.Errorf("command = %s", got)
-	}
-	got = session{Continue: true, Model: "opus"}.command()
-	if !strings.Contains(got, "'--dangerously-skip-permissions' $resume '--model' 'opus'") ||
-		!strings.Contains(got, "/.claude/projects/-work-repo/*.jsonl") || !strings.Contains(got, "resume=--continue") {
-		t.Errorf("no --continue only with a conversation: %s", got)
-	}
-	got = session{Prompt: "p"}.command()
-	if strings.Contains(got, "--model") || strings.Contains(got, "--effort") {
-		t.Errorf("default command passes model or effort: %s", got)
-	}
-}
-
-func TestSkipFirstStart(t *testing.T) {
-	home := t.TempDir()
-	if err := os.WriteFile(filepath.Join(home, ".claude.json"), []byte(`{"userID":"u","projects":{"/x":{"a":1}}}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	guest := func(ctx context.Context, command string, stdout io.Writer) (err error) {
-		cmd := exec.CommandContext(ctx, "bash", "-c", command)
-		cmd.Env = append(os.Environ(), "HOME="+home)
-		cmd.Stdout = stdout
-		return cmd.Run()
-	}
-	if err := skipFirstStart(t.Context(), guest); err != nil {
-		t.Fatal(err)
-	}
-	read := func(path string) (m map[string]any) {
-		t.Helper()
-		data, err := os.ReadFile(filepath.Join(home, path))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err = json.Unmarshal(data, &m); err != nil {
-			t.Fatal(err)
-		}
-		return
-	}
-	got := read(".claude.json")
-	projects := got["projects"].(map[string]any)
-	if got["userID"] != "u" || got["hasCompletedOnboarding"] != true || projects["/x"] == nil ||
-		projects[run.GuestRepo].(map[string]any)["hasTrustDialogAccepted"] != true {
-		t.Errorf(".claude.json = %v", got)
-	}
-	if got = read(".claude/settings.json"); got["skipDangerousModePermissionPrompt"] != true {
-		t.Errorf("settings.json = %v", got)
-	}
-
-	if _, err := mergeJSON([]byte("[1]"), func(map[string]any) {}); err == nil {
-		t.Error("a non-object accepted")
-	}
-	if merged, err := mergeJSON([]byte("null"), func(m map[string]any) { m["k"] = 1 }); err != nil || !strings.Contains(string(merged), `"k": 1`) {
-		t.Errorf("null: %s, %v", merged, err)
-	}
-}
-
-func TestAttachRefusals(t *testing.T) {
-	cfg, err := config.ParseNamed("test", []byte("[forge]\nkind = \"github\"\nrepo = \"o/n\"\n[gate]\ncmd = \"true\"\n"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	opts := Options{Base: run.Base{Config: cfg}, Name: "x", ClaudeToken: "t", Paths: image.Paths{StateDir: t.TempDir()}}
-	if err = Attach(t.Context(), opts); err == nil || !strings.Contains(err.Error(), "does not exist") {
-		t.Errorf("unknown Chat: err = %v", err)
-	}
-	// A Chat in use is refused with the PID of the holder, before libvirt.
-	chatDir := filepath.Join(opts.Paths.StateDir, "o-n", stateName, "x")
-	if err = os.MkdirAll(chatDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	unlock, err := lockChat("x", chatDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer unlock()
-	if err = Attach(t.Context(), opts); err == nil || !strings.Contains(err.Error(), "PID "+strconv.Itoa(os.Getpid())) {
-		t.Errorf("Chat in use: err = %v", err)
+func TestClaudeProjectKey(t *testing.T) {
+	if got := claudeProjectKey("/home/u/.local/state/afk/o-r/chats/x/repo"); got != "-home-u--local-state-afk-o-r-chats-x-repo" {
+		t.Errorf("key = %q", got)
 	}
 }
 
 func TestSystemPrompt(t *testing.T) {
-	got := systemPrompt("plan", "main")
-	for _, want := range []string{`"plan"`, "origin/main", "chat-plan", "afk-forge", "afk chat export", "/work/repo"} {
+	got := systemPrompt("plan", "main", "/s/repo")
+	for _, want := range []string{`"plan"`, "origin/main", "chat-plan", "afk-forge", "ready-for-agent", "/s/repo"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("prompt lacks %q:\n%s", want, got)
 		}
 	}
+}
+
+func TestCommand(t *testing.T) {
+	newOne := &chat{Options: Options{Name: "plan", Base: run.Base{Branch: "main"}}, dir: "/s/chats/plan", created: true}
+	oldOne := &chat{Options: Options{Name: "plan", Base: run.Base{Branch: "main", Config: config.Config{Agent: config.Agent{Model: "opus"}}}}, dir: "/s/chats/plan"}
+	withArgs := &chat{Options: Options{Name: "plan", Args: []string{"--resume", "a b"}, AgentBinary: "/bin/fake"}, dir: "/s/chats/plan"}
+
+	got := newOne.command()
+	for _, want := range []string{`export PATH="$HOME/bin:$PATH"; exec "$HOME/bin/claude" '--dangerously-skip-permissions'`, "skipDangerousModePermissionPrompt", "--append-system-prompt"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("new chat: command lacks %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "continue") || strings.Contains(got, "--model") {
+		t.Errorf("new chat without a model continues nothing:\n%s", got)
+	}
+
+	// An old Chat continues, but only when Claude Code has a conversation for the clone.
+	got = oldOne.command()
+	for _, want := range []string{"'--model' 'opus'", "resume=--continue", "projects/-s-chats-plan-repo/*.jsonl", "$resume"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("old chat: command lacks %q:\n%s", want, got)
+		}
+	}
+
+	// Args after -- replace --continue.
+	got = withArgs.command()
+	if !strings.Contains(got, "'--resume' 'a b'") || strings.Contains(got, "continue") || !strings.Contains(got, "exec '/bin/fake'") {
+		t.Errorf("args: command =\n%s", got)
+	}
+}
+
+func TestSandboxMounts(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	c := &chat{
+		Options:  Options{Name: "plan", AgentBinary: "/bin/fake", AfkBinary: "/usr/bin/afk-host", ClaudeToken: "t"},
+		stateDir: "/s/o-r", dir: "/s/o-r/chats/plan", socket: "/run/user/1/afk/ab/afk.sock",
+	}
+	view, err := c.sandbox()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.Files["settings.json"] == nil {
+		t.Error("no settings.json for the Agent")
+	}
+	got := map[string]stack.Mount{}
+	for _, m := range view.Mounts {
+		got[m.Target] = m
+	}
+	if m := got[filepath.Join(home, "bin", "afk-forge")]; m.Source != "/usr/bin/afk-host" || !m.ReadOnly {
+		t.Errorf("afk-forge = %+v, want the host's afk, read-only", m)
+	}
+	if m := got["/run/afk"]; m.Source != "/run/user/1/afk/ab" || m.ReadOnly || !m.Dir {
+		t.Errorf("channel = %+v, want the directory of the Chat's socket (a file would pin an old inode)", m)
+	}
+	memory := filepath.Join(home, ".claude", "projects", "-s-o-r-chats-plan-repo", "memory")
+	if m := got[memory]; m.Source != "/s/o-r/claude-memory" || m.ReadOnly || !m.Dir {
+		t.Errorf("memory = %+v, want the Project's directory under the key of the clone", m)
+	}
+	if m := got[filepath.Join(home, ".claude", "settings.json")]; !m.ReadOnly {
+		t.Errorf("settings = %+v, want read-only", m)
+	}
+	if _, ok := got[filepath.Join(home, "bin", "claude")]; ok {
+		t.Error("the host's claude is mounted though AgentBinary is set")
+	}
+	env := c.env()
+	if env[SocketEnv] != ForgeSocket || env["CLAUDE_CODE_OAUTH_TOKEN"] != "t" {
+		t.Errorf("env = %v", env)
+	}
+}
+
+// --- lifecycle, with a Stack that only records ---
+
+// fakeStack records what the Chat does with its Stack. onAttach is the session.
+type fakeStack struct {
+	calls    []string
+	upErr    error
+	onAttach func(ctx context.Context, command string) (err error)
+	cleanup  []error // ctx.Err() of the calls that end the Stack
+}
+
+func (f *fakeStack) Up(context.Context) (err error) { f.calls = append(f.calls, "Up"); return f.upErr }
+func (f *fakeStack) Setup(context.Context) (err error) {
+	f.calls = append(f.calls, "Setup")
+	return
+}
+func (f *fakeStack) Exec(_ context.Context, command string, _ io.Writer) (err error) {
+	f.calls = append(f.calls, "Exec "+command)
+	return
+}
+func (f *fakeStack) Container(context.Context) (name string, err error) {
+	f.calls = append(f.calls, "Container")
+	return "afk_o-r_chat_plan-afk-1", nil
+}
+func (f *fakeStack) Attach(ctx context.Context, command string, _ *os.File, _, _ io.Writer) (err error) {
+	f.calls = append(f.calls, "Attach")
+	if f.onAttach != nil {
+		err = f.onAttach(ctx, command)
+	}
+	return
+}
+func (f *fakeStack) Down(ctx context.Context) (err error) {
+	f.calls = append(f.calls, "Down")
+	f.cleanup = append(f.cleanup, ctx.Err())
+	return
+}
+func (f *fakeStack) Remove(ctx context.Context) (err error) {
+	f.calls = append(f.calls, "Remove")
+	f.cleanup = append(f.cleanup, ctx.Err())
+	return
 }
 
 func gitIn(t *testing.T, dir string, args ...string) {
@@ -158,43 +168,280 @@ func gitIn(t *testing.T, dir string, args ...string) {
 	}
 }
 
-func TestCheckNew(t *testing.T) {
+// lifecycle is a Chat of a user repository with one commit and a remote with
+// the branch chat-taken, with a fake Stack to run it in.
+type lifecycle struct {
+	opts  Options
+	stack *fakeStack
+	out   *bytes.Buffer
+}
+
+func newLifecycle(t *testing.T) (l *lifecycle) {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	runtimeDir, err := os.MkdirTemp("", "afk") // short: a socket path is
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(runtimeDir) })
+	t.Setenv("XDG_RUNTIME_DIR", runtimeDir)
 	root := t.TempDir()
-	remoteDir := filepath.Join(root, "origin.git")
-	work := filepath.Join(root, "work")
-	for _, dir := range []string{remoteDir, work} {
+	user, remoteDir := filepath.Join(root, "user"), filepath.Join(root, "origin.git")
+	for _, dir := range []string{user, remoteDir} {
 		if err := os.Mkdir(dir, 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
 	gitIn(t, remoteDir, "init", "-q", "--bare", "-b", "main")
-	gitIn(t, work, "init", "-q", "-b", "chat-taken")
-	gitIn(t, work, "commit", "-q", "--allow-empty", "-m", "x")
-	gitIn(t, work, "push", "-q", remoteDir, "chat-taken")
-	remote := forge.Remote{Repo: "o/r", URL: remoteDir}
-
-	quarantine, err := run.OpenQuarantine(t.Context(), filepath.Join(root, "quarantine.git"))
+	gitIn(t, user, "init", "-q", "-b", "main")
+	gitIn(t, user, "commit", "-q", "--allow-empty", "-m", "base")
+	gitIn(t, user, "branch", "chat-taken")
+	gitIn(t, user, "push", "-q", remoteDir, "chat-taken")
+	out, err := exec.Command("git", "-C", user, "rev-parse", "HEAD").Output()
 	if err != nil {
 		t.Fatal(err)
 	}
-	stateDir := filepath.Join(root, "chats")
-	if err = os.MkdirAll(filepath.Join(stateDir, "has-state"), 0o755); err != nil {
-		t.Fatal(err)
+	l = &lifecycle{stack: &fakeStack{}, out: &bytes.Buffer{}}
+	l.opts = Options{
+		Base: run.Base{
+			Repo: user, Branch: "main", Commit: strings.TrimSpace(string(out)),
+			Config: config.Config{Forge: config.Forge{Repo: "o/r"}},
+		},
+		Name: "plan", ClaudeToken: "fake", Paths: image.Paths{StateDir: filepath.Join(root, "state")},
+		Forge:       fakeForge{remote: forge.Remote{Repo: "o/r", URL: remoteDir}},
+		AgentBinary: "/bin/fake", AfkBinary: os.Args[0], Out: l.out,
 	}
-	machines := []machine.Machine{
-		{Name: "afk-chat-has-vm", Kind: machine.KindChat, ID: "has-vm"},
-		{Name: "afk-run-fresh", Kind: machine.KindRun, ID: "fresh"}, // a Run's id is no Chat's
+	return
+}
+
+// enter is Run without the real Stack.
+func (l *lifecycle) enter(ctx context.Context) (c *chat, err error) {
+	if c, err = newChat(ctx, l.opts); err != nil {
+		return
 	}
-	for name, want := range map[string]string{
-		"fresh":     "",
-		"Bad Name":  "invalid Chat name",
-		"has-vm":    "already exists (VM afk-chat-has-vm)",
-		"has-state": "already exists",
-		"taken":     "branch chat-taken already exists on o/r",
-	} {
-		err := checkNew(t.Context(), name, machines, filepath.Join(stateDir, name), quarantine, remote)
-		if (want == "") != (err == nil) || (err != nil && !strings.Contains(err.Error(), want)) {
-			t.Errorf("checkNew(%q) = %v, want %q", name, err, want)
+	view, err := c.sandbox()
+	if err != nil {
+		return
+	}
+	unlock, err := c.begin()
+	if err != nil {
+		return
+	}
+	defer unlock()
+	err = c.enter(ctx, l.stack, view)
+	return
+}
+
+func (l *lifecycle) exists(t *testing.T, path string) (ok bool) {
+	t.Helper()
+	_, err := os.Lstat(path)
+	return err == nil
+}
+
+func TestEnterNewChat(t *testing.T) {
+	l := newLifecycle(t)
+	var command string
+	var socketDuring bool
+	var branchBase string
+	l.stack.onAttach = func(_ context.Context, cmd string) (err error) {
+		command = cmd
+		socket, _ := socketPath(filepath.Join(l.opts.Paths.StateDir, "o-r", "chats", "plan"))
+		_, statErr := os.Stat(socket)
+		socketDuring = statErr == nil && running(filepath.Join(l.opts.Paths.StateDir, "o-r", "chats", "plan"))
+		return
+	}
+	c, err := l.enter(t.Context())
+	if err != nil {
+		t.Fatalf("%v\n%s", err, l.out)
+	}
+	if len(l.stack.calls) != 6 || !strings.HasPrefix(l.stack.calls[2], "Exec git checkout -q -B 'chat-plan' ") ||
+		!slices.Equal(slices.Concat(l.stack.calls[:2], l.stack.calls[3:]), []string{"Up", "Container", "Setup", "Attach", "Down"}) {
+		t.Errorf("calls = %q, want Up, Container, checkout in the Sandbox, Setup, Attach, Down", l.stack.calls)
+	}
+	if !socketDuring {
+		t.Error("no channel socket while claude runs")
+	}
+	if l.exists(t, c.socket) {
+		t.Error("the socket stays after the session")
+	}
+	if !l.exists(t, filepath.Join(c.tree(), ".git")) || strings.Contains(command, "continue") {
+		t.Errorf("clone present %v; command = %s", l.exists(t, filepath.Join(c.tree(), ".git")), command)
+	}
+	if branchBase, err = c.quarantine.Base(t.Context(), "chat-plan"); err != nil || branchBase != l.opts.Base.Commit {
+		t.Errorf("base in the Quarantine repo = %q, %v", branchBase, err)
+	}
+	for _, want := range []string{"Sandbox container afk_o-r_chat_plan-afk-1", "state stays in " + c.dir} {
+		if !strings.Contains(l.out.String(), want) {
+			t.Errorf("output lacks %q:\n%s", want, l.out)
 		}
 	}
+	// The clone is only inited and fetched on the host: no checkout (ADR-0002).
+	if l.exists(t, filepath.Join(c.tree(), "base.txt")) {
+		t.Error("files checked out on the host")
+	}
+}
+
+func TestEnterReturningChat(t *testing.T) {
+	l := newLifecycle(t)
+	if _, err := l.enter(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	for name, tc := range map[string]struct {
+		args []string
+		want string
+	}{"continues": {nil, "resume=--continue"}, "args replace --continue": {[]string{"--resume"}, "'--resume'"}} {
+		t.Run(name, func(t *testing.T) {
+			l.stack = &fakeStack{}
+			l.opts.Args = tc.args
+			var command string
+			l.stack.onAttach = func(_ context.Context, cmd string) (err error) { command = cmd; return }
+			if _, err := l.enter(t.Context()); err != nil {
+				t.Fatalf("%v\n%s", err, l.out)
+			}
+			// Down first: a Sandbox of a killed afk may still run in the Agent's home.
+			if !slices.Equal(l.stack.calls, []string{"Down", "Up", "Container", "Setup", "Attach", "Down"}) {
+				t.Errorf("calls = %q: a returning Chat is brought down first and not checked out again", l.stack.calls)
+			}
+			if !strings.Contains(command, tc.want) || (tc.args != nil) == strings.Contains(command, "continue") {
+				t.Errorf("command = %s, want %q", command, tc.want)
+			}
+		})
+	}
+}
+
+func TestEnterReturningWithoutClone(t *testing.T) {
+	l := newLifecycle(t)
+	c, err := newChat(t.Context(), l.opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.MkdirAll(c.dir, 0o700); err != nil { // a start that died before the clone
+		t.Fatal(err)
+	}
+	if _, err = l.enter(t.Context()); err == nil || !strings.Contains(err.Error(), "afk chat rm plan") {
+		t.Errorf("err = %v, want a pointer to `afk chat rm`", err)
+	}
+	if slices.Contains(l.stack.calls, "Up") || !l.exists(t, c.dir) {
+		t.Errorf("calls = %q; state kept = %v", l.stack.calls, l.exists(t, c.dir))
+	}
+}
+
+func TestEnterUpFails(t *testing.T) {
+	boom := errors.New("boom")
+	l := newLifecycle(t)
+	l.stack.upErr = boom
+	c, err := newChat(t.Context(), l.opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = l.enter(t.Context()); !errors.Is(err, boom) {
+		t.Fatalf("err = %v, want boom", err)
+	}
+	if !slices.Equal(l.stack.calls[len(l.stack.calls)-1:], []string{"Remove"}) {
+		t.Errorf("calls = %q: a new Chat that never started is removed", l.stack.calls)
+	}
+	if _, baseErr := c.quarantine.Base(t.Context(), "chat-plan"); baseErr == nil {
+		t.Error("the base of the failed Chat stays in the Quarantine repo")
+	}
+
+	// An old Chat is the Agent's: its state stays, the Stack goes down.
+	l = newLifecycle(t)
+	if _, err = l.enter(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	l.stack = &fakeStack{upErr: boom}
+	if _, err = l.enter(t.Context()); !errors.Is(err, boom) {
+		t.Fatalf("err = %v, want boom", err)
+	}
+	if !slices.Equal(l.stack.calls, []string{"Down", "Up", "Down"}) {
+		t.Errorf("calls = %q, want Down, Up, Down", l.stack.calls)
+	}
+}
+
+func TestEnterExistingBranch(t *testing.T) {
+	l := newLifecycle(t)
+	l.opts.Name = "taken" // chat-taken is on the Forge
+	if _, err := l.enter(t.Context()); err == nil || !strings.Contains(err.Error(), "branch chat-taken already exists") {
+		t.Errorf("err = %v", err)
+	}
+	if slices.Contains(l.stack.calls, "Up") || l.stack.calls[len(l.stack.calls)-1] != "Remove" {
+		t.Errorf("calls = %q", l.stack.calls)
+	}
+}
+
+func TestEnterSessionEnds(t *testing.T) {
+	t.Run("claude fails: the Stack goes down, the state stays", func(t *testing.T) {
+		l := newLifecycle(t)
+		l.stack.onAttach = func(context.Context, string) (err error) { return errors.New("exit status 1") }
+		c, err := l.enter(t.Context())
+		if err == nil || !strings.Contains(err.Error(), "claude in chat plan") {
+			t.Errorf("err = %v", err)
+		}
+		if last := l.stack.calls[len(l.stack.calls)-1]; last != "Down" || !l.exists(t, c.tree()) {
+			t.Errorf("calls = %q", l.stack.calls)
+		}
+	})
+
+	t.Run("--rm removes the Chat after claude", func(t *testing.T) {
+		l := newLifecycle(t)
+		l.opts.Remove = true
+		c, err := l.enter(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := l.stack.calls[len(l.stack.calls)-2:]; !slices.Equal(got, []string{"Attach", "Remove"}) {
+			t.Errorf("calls = %q, want Remove right after Attach", l.stack.calls)
+		}
+		if _, baseErr := c.quarantine.Base(t.Context(), "chat-plan"); baseErr == nil {
+			t.Error("the Chat's refs stay in the Quarantine repo")
+		}
+		if !strings.Contains(l.out.String(), "Chat plan removed") {
+			t.Errorf("output:\n%s", l.out)
+		}
+	})
+
+	t.Run("a signal ends the session: Down with a live context, even with --rm", func(t *testing.T) {
+		l := newLifecycle(t)
+		l.opts.Remove = true
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		l.stack.onAttach = func(ctx context.Context, _ string) (err error) {
+			cancel()
+			<-ctx.Done()
+			return errors.New("signal: killed")
+		}
+		c, err := l.enter(ctx)
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("err = %v, want the interruption", err)
+		}
+		if last := l.stack.calls[len(l.stack.calls)-1]; last != "Down" || len(l.stack.cleanup) != 1 || l.stack.cleanup[0] != nil {
+			t.Errorf("calls = %q, cleanup ctx errors = %v: Down must run on a context that is not cancelled", l.stack.calls, l.stack.cleanup)
+		}
+		if !l.exists(t, c.tree()) {
+			t.Error("the clone of an interrupted Chat is gone")
+		}
+	})
+}
+
+// One process per Chat: a second one is refused while the first holds the lock.
+func TestEnterChatInUse(t *testing.T) {
+	l := newLifecycle(t)
+	l.stack.onAttach = func(ctx context.Context, _ string) (err error) {
+		second := newLifecycleFrom(l)
+		_, err = second.enter(ctx)
+		if err == nil || !strings.Contains(err.Error(), "in use by another afk process") {
+			t.Errorf("second process: err = %v", err)
+		}
+		err = nil
+		return
+	}
+	if _, err := l.enter(t.Context()); err != nil {
+		t.Fatalf("%v\n%s", err, l.out)
+	}
+}
+
+func newLifecycleFrom(l *lifecycle) (second *lifecycle) {
+	opts := l.opts
+	opts.Out = &bytes.Buffer{}
+	return &lifecycle{opts: opts, stack: &fakeStack{}, out: &bytes.Buffer{}}
 }

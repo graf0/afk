@@ -132,6 +132,26 @@ func TestIntegrationStack(t *testing.T) {
 		}
 	})
 
+	t.Run("attach: stdin and stdout of the caller, exit status back; container name", func(t *testing.T) {
+		pipeIn, pipeOut, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = pipeOut.WriteString("from stdin\n")
+		_ = pipeOut.Close()
+		var out, errOut bytes.Buffer
+		if err = chat.Attach(t.Context(), "read line; echo \"got $line in $PWD\"; echo oops >&2; exit 3", pipeIn, &out, &errOut); err == nil || !strings.Contains(err.Error(), "exit status 3") {
+			t.Errorf("Attach err = %v, want the exit status of the command", err)
+		}
+		if want := "got from stdin in " + chat.Tree(); strings.TrimSpace(out.String()) != want || strings.TrimSpace(errOut.String()) != "oops" {
+			t.Errorf("out %q, err %q; want %q on stdout", out.String(), errOut.String(), want)
+		}
+		name, err := chat.Container(t.Context())
+		if err != nil || !strings.HasPrefix(name, chat.ProjectName()) {
+			t.Errorf("Container = %q, %v", name, err)
+		}
+	})
+
 	t.Run("files written in the Sandbox belong to the host user", func(t *testing.T) {
 		execOut(t, chat, "touch written")
 		info, err := os.Stat(filepath.Join(chat.Tree(), "written"))

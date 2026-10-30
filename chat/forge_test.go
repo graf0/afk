@@ -6,8 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
-	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -30,7 +28,10 @@ type fakeForge struct {
 	comments *[]string // "#n: body"
 	pull     int       // the number of the one pull request
 	edits    *[]string // "#n title=… body=…", "#n +label", "#n -label"
+	remote   forge.Remote
 }
+
+func (f fakeForge) Remote() (remote forge.Remote) { return f.remote }
 
 func (f fakeForge) EditIssue(_ context.Context, n int, title, body *string) (err error) {
 	edit := fmt.Sprintf("#%d", n)
@@ -113,8 +114,8 @@ func (f fakeForge) List(_ context.Context, label string, state forge.State) (tic
 	return
 }
 
-// serveFake serves the channel of Chat "chat-1" on a unix socket and returns
-// its path, the log and the file of the Chat's issues.
+// serveFake serves the ticket routes of Chat "chat-1" on a unix socket and
+// returns its path, the log and the file of the Chat's issues.
 func serveFake(t *testing.T, f forge.Forge) (socket, logPath, issuesPath string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -123,15 +124,13 @@ func serveFake(t *testing.T, f forge.Forge) (socket, logPath, issuesPath string)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ln, err := net.Listen("unix", socket)
+	stop, err := serveChannel(t.Context(), socket, logFile, forgeRoutes(forgeChannel{
+		Forge: f, ProjectLabels: config.Labels{NeedsTriage: "needs-triage", ReadyForAgent: "ready-for-agent"}, Chat: "chat-1", IssuesPath: issuesPath,
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := &http.Server{Handler: newForgeServer(forgeChannel{
-		Forge: f, ProjectLabels: config.Labels{NeedsTriage: "needs-triage", ReadyForAgent: "ready-for-agent"}, Chat: "chat-1", IssuesPath: issuesPath,
-	}, logFile).handler()}
-	go func() { _ = server.Serve(ln) }()
-	t.Cleanup(func() { _ = server.Close(); _ = logFile.Close() })
+	t.Cleanup(func() { stop(); _ = logFile.Close() })
 	return
 }
 
@@ -317,35 +316,6 @@ func TestRunForgeEdit(t *testing.T) {
 
 	log, _ := os.ReadFile(logPath)
 	for _, want := range []string{"edit #6 add=[] remove=[] body: error: title and body: #6 is ready-for-agent", `edit #3 add=["bug" "needs-triage"] remove=["ready-for-agent"] (ready-for-agent replaced): ok`, `edit #4 add=["bug"] remove=[] title body: ok`, `edit #3 add=["bug"] remove=[] body: error: title and body: #3 was not created by this Chat`, "edit #9 add=[\"bug\"] remove=[]: error: #9 is a pull request"} {
-		if !strings.Contains(string(log), want) {
-			t.Errorf("log lacks %q:\n%s", want, log)
-		}
-	}
-}
-
-func TestForgeUnknownRoute(t *testing.T) {
-	socket, logPath, _ := serveFake(t, fakeForge{})
-	client := &http.Client{Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (conn net.Conn, err error) {
-		conn, err = (&net.Dialer{}).DialContext(ctx, "unix", socket)
-		return
-	}}}
-	// A known path with another method falls to "/" as well: 404, not 405.
-	for _, tc := range []struct{ method, path string }{{"DELETE", "/issues/3"}, {"GET", "/nope"}} {
-		req, err := http.NewRequestWithContext(t.Context(), tc.method, "http://afk"+tc.path, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		resp, err := client.Do(req)
-		if err != nil {
-			t.Fatal(err)
-		}
-		_ = resp.Body.Close()
-		if resp.StatusCode != http.StatusNotFound {
-			t.Errorf("%s %s: status %d, want 404", tc.method, tc.path, resp.StatusCode)
-		}
-	}
-	log, _ := os.ReadFile(logPath)
-	for _, want := range []string{"DELETE /issues/3: error: no such route", "GET /nope: error: no such route"} {
 		if !strings.Contains(string(log), want) {
 			t.Errorf("log lacks %q:\n%s", want, log)
 		}
