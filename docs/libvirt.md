@@ -1,114 +1,31 @@
-# libvirt
+# VM testowe (libvirt)
 
-Połączenie `qemu:///system` przez `digitalocean/go-libvirt` (przypięty commit). Użytkownik `afk` musi mieć dostęp do gniazda libvirt i być w grupie `kvm`.
+libvirt służy już tylko do jednego: Agent w Chat steruje istniejącymi VM testowymi z `[[vm]]` (ADR-0013). `afk` ich nie tworzy, nie buduje i nie niszczy. Factory ich nie dostaje. Składnia `afk-forge vm`: [agents/issue-tracker.md](agents/issue-tracker.md).
 
-## Sandbox VM (pakiet `machine`)
+## Host
 
-Diagnostyka: `afk vm up` (start + ssh, wypisuje nazwę i czas), `afk vm shell <vm>` (shell z tunelem Egress proxy), `afk vm kill <vm>`. Konfigurację (`.afk.toml`, `.claude/settings.json`) `up`, `list` i `shell` biorą z gałęzi bazowej (ADR-0010); `kill` jej nie potrzebuje.
+- `virsh` w `PATH` i dostęp użytkownika do `qemu:///system` (`libvirt` w grupach). `afk` woła `virsh --connect qemu:///system …` jako argv, nigdy przez powłokę; nazwa domeny trafia do `virsh` dopiero po znalezieniu w `[[vm]]`, nazwa snapshotu po dopasowaniu `[A-Za-z0-9][A-Za-z0-9_.-]{0,63}`.
+- Domena musi istnieć. Zwracany adres to dzierżawa DHCP libvirt (`domifaddr --source lease`); bez niej `address` w `vm list` jest pusty.
+- Ekran: `virsh screenshot` (PNG). Wejście (`key`, `type`, `click`, `move`): komendy QMP budowane przez `afk` z walidowanych argumentów (klawisze z listy dozwolonych, tekst US-ASCII), nigdy przekazywane od Agenta. Piksele `click`/`move` są względem ostatniego zrzutu tej VM, więc zrzut jest wymagany wcześniej.
 
-- Nazwa `afk-<run|chat>-<id>` — wspólna dla domeny, sieci i nwfiltra; katalog `/var/lib/afk/{runs,chats}/<id>/`.
-- `<metadata>` domeny (`xmlns:afk='https://github.com/graf0/afk/machine'`): Project, rodzaj, identyfikator, adres gościa, klucz hosta, ścieżka repo, model, effort i czas utworzenia (dla Chat: `afk chat list`). To jedyny stan — `afk vm shell` czyta z niego, dokąd i z jakim kluczem się łączyć.
-- Podsieć `10.99.<n>.0/24`, most `afkbr<n>`: najniższe `n` wolne wśród sieci libvirt (adres lub nazwa mostu). Most wyprowadzony z `n`, więc libvirt odrzuca drugą sieć na tym samym `n` już przy define („nazwa mostka … jest już używana”) → ponowna próba (max 5). Sprawdzone: 3 równoległe `vm up` dostały 0, 1, 2.
-- `kill`: destroy + undefine domeny, sieci, nwfiltra (w tej kolejności — filtr w użyciu nie da się usunąć), `rm -rf` katalogu; brakujące części pomija. Nieudany lub anulowany `up` woła to samo (test: anulowanie w 0–2 s nie zostawia QEMU ani niczego w libvirt).
-- Domena trwała (define + create), nie transient — po restarcie hosta zostaje wyłączona i `kill` ją sprząta.
+## Przygotowanie VM testowej
 
-## Klucz hosta per VM
+Robi to człowiek, poza `afk`. Sprawdzone na spike'ach Windows (dawny Base image):
 
-Klony Base image mają wspólne klucze hosta sshd → TOFU nie wchodzi w grę. `afk` generuje ed25519 per VM i przypina go (`ssh.FixedHostKey`, `HostKeyAlgorithms` tylko ed25519; inny klucz → `ErrHostKey` bez ponawiania).
+- Domena: `q35`, KVM, `cpu mode='host-passthrough'` (z domyślnym `qemu64` Windows wpada w pętlę restartów), sieć libvirt z DHCP (adres z dzierżawy), karta wideo (dla `virsh screenshot`) i `<input type='tablet' bus='usb'/>`: `click`/`move` wysyłają osie absolutne, bez tabletu kursor ich nie słucha.
+- Autologon konta, na którym Agent testuje UI: zrzut i wejście działają na konsoli VM, więc bez zalogowanej sesji Agent widzi ekran logowania.
+- Windows 11: OpenSSH Server z MSI `PowerShell/Win32-OpenSSH` (FoD `OpenSSH.Server` bywa `NotPresent`, ADR-0007), `sshd` automatycznie, reguła firewalla na 22. Dla konta z grupy Administratorzy klucz idzie do `C:\ProgramData\ssh\administrators_authorized_keys` z ACL tylko Administratorzy + SYSTEM, inaczej sshd go ignoruje. Windows OpenSSH zabija procesy sesji po jej zamknięciu: długie operacje synchronicznie albo przez zadanie harmonogramu.
+- Kilka VM Windows z jednego obrazu: klony bez sysprepu (`sysprep /generalize /oobe /mode:vm`) mają ten sam SID i nie łączą się ze sobą po SMB/NTLM (Server 2025, Win11 24H2+, KB5070568; ADR-0005).
+- Przed pracą Agenta zrób snapshot czystego stanu: `vm revert` wraca do nazwanego snapshotu.
 
-Dostarczenie: poświadczenie systemd przez SMBIOS (cloud-init w obrazie wyłączony):
+## ssh
 
-```xml
-<sysinfo type='smbios'><oemStrings>
-  <entry>io.systemd.credential.binary:tmpfiles.extra=BASE64</entry>
-</oemStrings></sysinfo>
-<os>…<smbios mode='sysinfo'/></os>
-```
+`afk` generuje jeden klucz ed25519 na Project (`~/.local/state/afk/<project>/vm-ssh/`) przy pierwszym użyciu albo przy `afk config`, który wypisuje część publiczną. Człowiek wkleja ją do `authorized_keys` konta `user` z `[[vm]]` na każdej VM. Klucz prywatny i konfiguracja ssh (alias na nazwę VM, bez zapamiętywania kluczy hosta, bo VM są cudze) są montowane do `~/.ssh` Sandboxa Chatu. Agent łączy się przez `ssh -o HostName=<adres z vm list> <vm> <polecenie>`.
 
-`BASE64` to konfiguracja tmpfiles (`f+~` = utwórz lub nadpisz, argument w base64):
+## Własność
 
-```
-f+~ /etc/ssh/ssh_host_ed25519_key 0600 root root - <base64 PEM>
-f+~ /etc/ssh/ssh_host_ed25519_key.pub 0644 root root - <base64 klucza publicznego>
-```
+Pierwsza operacja zmieniająca (wszystkie poza `list` i `screenshot`) zajmuje VM dla Chatu (`flock` w `~/.local/state/afk/vm-locks/`) do `vm release` albo końca `afk chat`; inny Chat dostaje 409. `vm list` pokazuje właściciela.
 
-`systemd-tmpfiles-setup.service` (przed `sysinit.target`) zapisuje klucz przed `ssh.service`. Sprawdzone w Debianie 13 (systemd 257): odcisk w gościu = odcisk z `<metadata>`. Klucz prywatny jest widoczny w XML domeny i w linii poleceń QEMU (`-smbios type=11`) — dla użytkowników hosta, nie dla innych VM.
+## Adresy w `[expose]`
 
-## Dysk Run
-
-```sh
-qemu-img create -q -u -f qcow2 -F qcow2 -b /var/lib/afk/base/<name>/<img>.qcow2 <run>/disk.qcow2 64G
-chmod g+rw <run>/disk.qcow2
-```
-
-- `-u`: nie otwieraj bazy (może być używana przez inne VM).
-- Na każdym dysku `<seclabel model='dac' relabel='no'/>` w `<source>`. Bez tego libvirt robi chown bazy na `libvirt-qemu` 0640 i nie zawsze przywraca. Seclabel na całą domenę psuje swtpm (ADR-0001).
-
-## Domena — referencja
-
-Wspólne:
-
-```xml
-<domain type='kvm'>
-  <memory unit='GiB'>2</memory><vcpu>2</vcpu>
-  <os><type arch='x86_64' machine='q35'>hvm</type><boot dev='hd'/></os>
-  <features><acpi/><apic/></features>
-  <cpu mode='host-passthrough'/>
-  <clock offset='utc'/>
-  <devices>
-    <disk type='file' device='disk'>
-      <driver name='qemu' type='qcow2' discard='unmap'/>
-      <source file='RUN/disk.qcow2'><seclabel model='dac' relabel='no'/></source>
-      <target dev='vda' bus='virtio'/>
-    </disk>
-    <interface type='network'>
-      <source network='afk-run-ID'/><mac address='52:54:00:af:00:0a'/>
-      <model type='virtio'/><filterref filter='afk-run-ID'/>
-    </interface>
-    <memballoon model='virtio'><stats period='2'/></memballoon>
-    <rng model='virtio'><backend model='random'>/dev/urandom</backend></rng>
-    <channel type='unix'><target type='virtio' name='org.qemu.guest_agent.0'/></channel>
-    <input type='tablet' bus='usb'/><input type='keyboard' bus='usb'/>
-    <graphics type='vnc' port='-1' listen='127.0.0.1'/>
-    <video><model type='virtio'/></video>
-  </devices>
-</domain>
-```
-
-Windows (UEFI) dodatkowo — 4 GiB RAM:
-
-```xml
-<os>
-  <type arch='x86_64' machine='q35'>hvm</type>
-  <loader readonly='yes' type='pflash'>/usr/share/OVMF/OVMF_CODE_4M.fd</loader>
-  <nvram template='/var/lib/afk/base/NAME/efivars.fd'>RUN/VARS.fd</nvram>
-</os>
-<features><acpi/><apic/><hyperv mode='custom'>
-  <relaxed state='on'/><vapic state='on'/><spinlocks state='on' retries='8191'/><vpindex state='on'/>
-  <runtime state='on'/><synic state='on'/><stimer state='on'/><reset state='on'/>
-  <frequencies state='on'/><tlbflush state='on'/><ipi state='on'/>
-</hyperv></features>
-<clock offset='localtime'><timer name='hypervclock' present='yes'/><timer name='hpet' present='no'/></clock>
-```
-
-Win11: `<tpm model='tpm-crb'><backend type='emulator' version='2.0'/></tpm>`. Sprzątanie: `undefine --nvram --tpm`.
-
-Sprzęt musi odpowiadać buildowi Packera (q35, virtio, OVMF 4M, `cpu_model=host`).
-
-## go-libvirt — wyniki
-
-- Define/start/destroy/undefine, sieci, nwfilter, balloon, zdarzenia — działa.
-- `DomainScreenshot` zwraca błąd XDR, ale pełny PNG jest w buforze strumienia → obejście: ignorować ten błąd, gdy bufor jest poprawnym PNG. Bug do zgłoszenia upstream.
-- QMP `screendump` zwraca sukces, ale pliku nie ma — AppArmor blokuje zapis. Zasada: sukces QMP ≠ efekt.
-- Balloon 4G → 2G na żywo działa (`DomainSetMemory`).
-- Wejście: QMP `input-send-event` przez libvirt (absolutne współrzędne tabletu USB, przyciski) i `send-key` — klik w Start i wpisanie tekstu w Notatniku działa.
-- Anulowanie kontekstu jest obowiązkowe — inaczej zostają osierocone procesy QEMU.
-
-## Czasy (start → ssh)
-
-| Obraz | Czas |
-|---|---|
-| Debian 13 | 9 s (spike); `afk vm up`: 6–8 s |
-| Server 2025, klon bez sysprepu | 19–23 s |
-| Win11 z vTPM, klon bez sysprepu | 19 s |
-| Windows po sysprepie, do `IMAGE_STATE_COMPLETE` | 53–61 s |
+Do VM testowej publikuj porty na adres mostka libvirt (np. `192.168.122.1:8081:8080`), nie na `0.0.0.0` ([README](../README.md#expose)).

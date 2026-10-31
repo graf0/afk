@@ -3,7 +3,7 @@
 Issues and specs for this repo live as GitHub issues. Two environments, pick by what is installed (`command -v afk-forge` / `command -v gh`):
 
 - **Host**: `gh` is available. Use it for everything (**Host: `gh`** below).
-- **Chat** (VM without `gh`): `afk-forge` is available. Use it (**Chat: `afk-forge`** below). Operations marked _host only_ do not exist there: say so and hand them to the human instead of improvising.
+- **Chat** (Sandbox without `gh`): `afk-forge` is available. Use it (**Chat: `afk-forge`** below). Operations marked _host only_ do not exist there: say so and hand them to the human instead of improvising.
 
 Never use `gh` in Chat or `afk-forge` on the host.
 

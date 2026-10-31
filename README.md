@@ -1,8 +1,6 @@
 # afk
 
-Fabryka AI: bierze tickety z Forge (GitHub, Gitea) i bez nadzoru implementuje je w kodzie. Każdy ticket dostaje osobny Sandbox, czyli kontener podman z Agentem (Claude Code), obok własnego Stacku Projectu (baza, serwer, frontend). Planowanie i eksperymenty człowiek robi z Agentem w Chatach, też odizolowanych. Pojęcia: [`GLOSSARY.md`](GLOSSARY.md), decyzje: [`docs/adr/`](docs/adr/).
-
-> Stan: migracja z Sandbox VM na kontenery (ADR-0013) jest w toku. README opisuje docelowe zachowanie.
+Fabryka AI: bierze tickety z Forge (GitHub, Gitea) i bez nadzoru implementuje je w kodzie. Każdy ticket dostaje osobny Sandbox, czyli kontener podman z Agentem (Claude Code), obok własnego Stacku Projectu (baza, serwer, frontend). Planowanie i eksperymenty człowiek robi z Agentem w Chatach, też odizolowanych. Pojęcia: [`GLOSSARY.md`](GLOSSARY.md), szczegóły działania: [`docs/`](docs/), decyzje: [`docs/adr/`](docs/adr/).
 
 ## Instalacja i aktualizacja
 
@@ -158,4 +156,4 @@ VM testowe dostępne dla Agenta w Chat (Factory ich nie dostaje). `afk` ich nie 
 |---|---|
 | `paths` | Ścieżki, których wynik Agenta nie może zmienić: plik, katalog (`dir/`) albo dowolna głębokość (`**/`) |
 
-Zawsze chronione są: `.afk.toml`, `compose.yml`, `compose.afk.yml`, Dockerfile'e z `build:` w compose, `.github/`, `.gitea/`, `**/.claude/` i `**/.mcp.json`.
+Zawsze chronione są: `.afk.toml`, `compose.yml`, `compose.afk.yml`, `.env`, `.afk/`, Dockerfile'e z `build:` w compose, `.github/`, `.gitea/`, `**/.claude/` i `**/.mcp.json`.

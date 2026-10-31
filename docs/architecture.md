@@ -9,56 +9,56 @@ Bez `internal/`:
 | `cmd/afk` | CLI |
 | `config/` | `.afk.toml` |
 | `forge/` | GitHub, Gitea (REST) |
-| `machine/` | Sandbox VM i Tool VM przez libvirt |
-| `image/` | Template → Base image (Packer CLI); nie `template`, kolizja z `text/template` |
-| `agent/` | Claude Code w VM: prompt, sesja ssh, raport |
-| `egress/` | Egress proxy |
-| `run/` | Orkiestracja Run |
-| `factory/` | Pętla Factory: selektor, rezerwacje (`flock`), kolejne Run |
-| `chat/` | Chat: VM, interaktywny Agent na pty, eksport, serwer kanału `afk-forge` (ADR-0012) |
-| `tui/` | Sidebar (bubbletea v2) i sterowanie serwerem `tmux -L afk` (ADR-0008) |
+| `stack/` | Stack: compose z gałęzi bazowej, override `afk`, budowa obrazów, `Up`/`Exec`/`Down`/`Remove`, szablon `compose.afk.yml` |
+| `sandbox/` | Widok hosta w Sandboxie: tożsamość i token Agenta, `claude`, ustawienia i pluginy |
+| `agent/` | Claude Code: prompt, sesja, raport |
+| `run/` | Orkiestracja Run, Quarantine repo, rezerwacje, Factory (selektor, kolejne Run, wznowienia) |
+| `chat/` | Chat: interaktywny Agent, serwer kanału `afk-forge` (ADR-0012), `[expose]`, VM testowe |
 
-Interfejs tylko tam, gdzie są co najmniej dwie implementacje: `Forge` (GitHub, Gitea). `machine.Machine` to struktura; interfejs dopiero, gdy druga implementacja (Windows, Tool VM) go wymusi.
+Interfejs tylko tam, gdzie są co najmniej dwie implementacje: `Forge` (GitHub, Gitea).
 
-Stan bez bazy danych: przynależność VM w `<metadata>` domeny libvirt, rezerwacje `flock`, logi w plikach (szczegóły: [workflow.md](workflow.md#stan)).
+Stan bez bazy danych: katalogi stanu Stacków, rezerwacje `flock`, logi w plikach ([workflow.md](workflow.md#stan)).
 
-## Zależności zatwierdzone
+## Zależności
 
-- `github.com/digitalocean/go-libvirt` — przypięty commit
 - `github.com/pelletier/go-toml/v2`
-- `charm.land/bubbletea/v2` + bubbles, lipgloss
-- `golang.org/x/crypto/ssh`
+- `golang.org/x/term`
 
-Packer nie jest zależnością Go — to binarka pobierana w czasie działania (ADR-0006). tmux — zależność systemowa hosta (ADR-0008).
+Narzędzia hosta wołane jako procesy: `git`, `claude`, `podman`, `docker-compose` v2, a dla VM testowych `virsh` i `ssh-keygen` ([libvirt.md](libvirt.md)).
 
-## Kanał do VM
+## Stack i Sandbox
 
-ssh wszędzie, także Windows (sshd + klucz `afk` w obrazie). vsock odrzucony (brak na Windows, kanał inicjowany z gościa). Sterowanie ekranem: CLI `afk-screen` w VM przez tunel ssh, zrzuty PNG. Kanał gość → `afk` (`afk-forge`, w M4 Tool VM): odwrotny unix socket na ssh, HTTP+JSON; klient to binarka `afk` skopiowana do VM jako `afk-forge`, tryb po `argv[0]` (ADR-0012).
+Stack to projekt compose z `compose.yml` i `compose.afk.yml` z gałęzi bazowej (ADR-0013, ADR-0010) plus override generowany przez `afk`. Pliki są eksportowane z commita gałęzi bazowej (`git archive`), nigdy z drzewa Agenta. `afk` woła `docker-compose` v2 z `DOCKER_HOST` na sockecie rootless podmana (`$XDG_RUNTIME_DIR/podman/podman.sock`). Format plików i zmienne `${AFK_TREE}`, `${AFK_CACHE}`: [README](../README.md#project).
+
+Serwis `afk` to Sandbox. Override nadaje mu: `command: sleep infinity`, `init: true`, `userns_mode: keep-id` (pliki w drzewie należą do użytkownika hosta), drzewo Chatu albo Runu pod tą samą ścieżką co na hoście, `$HOME` Agenta, plik środowiska `0600` (token Claude'a, tożsamość gita), `claude` hosta tylko do odczytu oraz, w Chacie, socket `afk-forge`. Porty z `compose.yml` są usuwane, publikuje je tylko `[expose]`.
+
+Obrazy z `build:` są budowane z gałęzi bazowej, gdy ich brak. Tag to hash drzewa gita kontekstu builda, więc zmiana definicji daje nowy obraz, a niezmieniona nic nie przebudowuje.
+
+Stack żyje z procesem `afk` (ADR-0015): `afk chat` i `afk factory` robią `compose down` przy wyjściu, a stan zostaje.
+
+### Izolacja
+
+- Sandbox nie widzi sekretów hosta; poświadczeń hosta (Forge, libvirt) używa wyłącznie przez socket `afk` ([workflow.md](workflow.md#afk-forge)), który dostaje sam Sandbox Chatu. Run nie ma kanału.
+- Token Claude'a jest w środowisku Sandboxa i jest dla Agenta osiągalny (ADR-0014).
+- Ruch wychodzący nie jest filtrowany (ADR-0013): kod Projectu i token mogą zostać wyniesione po prompt injection. Granicą jest to, co wraca na host: wynik przechodzi przez Quarantine repo i walidację (ADR-0002), a `.afk.toml`, compose i Dockerfile'e Stacku pochodzą z gałęzi bazowej.
+- Host nie uruchamia gita w klonie Agenta; zmiany w chronionych ścieżkach są odrzucane ([README](../README.md#protect)).
+- Każdy push brancha Agenta uruchamia CI repo na kodzie Agenta; sekrety CI tylko dla workflowów na gałęzi bazowej (ADR-0014).
 
 ## Ścieżki
 
+Stan: `~/.local/state/afk/` (`DefaultStateDir`).
+
 | Ścieżka | Zawartość |
 |---|---|
-| `/var/lib/afk/base/<project>/<maszyna>/<wersja>/` | Base image maszyny z `[machine.<maszyna>]` (`*.qcow2`, dla UEFI `efivars.fd`, hash konfiguracji obrazu), grupa `kvm`; wersja = znacznik czasu UTC `20261024T153000Z`, nowsza budowa = nowy katalog (stare znikają po kolejnej budowie, gdy nie używa ich żaden overlay) |
-| `/var/lib/afk/runs/<run>/` | Overlay i NVRAM jednego Run, katalog `2775` |
-| `/var/lib/afk/chats/<chat>/` | Overlay i NVRAM jednego Chat, jak wyżej |
-| `~/.local/state/afk/<project>/chats/<nazwa>/` | Stan Chat: `lock` (`flock` procesu `attach`), `issues` (numery utworzone przez Chat), ostatnio eksportowany sha |
-| `~/.local/state/afk/claims/<project>/<n>` | Rezerwacje ticketów (`flock`) |
-| `~/.local/state/afk/<project>/logs/` | Logi Run (stream-json, `-setup.txt`, `-egress.txt`, `-gate-N.txt`) i budów obrazu (`image-<maszyna>-<wersja>.log`); poza repo — logi to niezaufana treść, nie dla narzędzi człowieka w drzewie roboczym |
-| `~/.local/state/afk/gitea-token` | Token Gitei, `0600`, gdy brak `GITEA_TOKEN` |
-| `~/.local/state/afk/<project>/quarantine.git` | Quarantine repo Project (bare): `refs/afk/base/ticket-<n>` baza Run, `refs/afk/incoming/ticket-<n>` surowy wynik z VM, `refs/heads/ticket-<n>` wynik po walidacji |
-| `~/.local/state/afk/claude-oauth-token` | Token Claude'a (`claude setup-token`), tryb `0600`, gdy brak `CLAUDE_CODE_OAUTH_TOKEN` |
-| `~/.cache/afk/bin/packer-<ver>` | Packer pobrany przez `afk` |
-| `~/.cache/afk/plugins` | `PACKER_PLUGIN_PATH` |
-| `~/.cache/afk/packer-config` | `PACKER_CONFIG_DIR` |
+| `<project>/chats/<nazwa>/`, `<project>/runs/<nazwa>/` | Stan Stacku (`Dir`): `repo/` (klon, drzewo Sandboxa), `home/` (home Agenta), `export/` (pliki compose z gałęzi bazowej), `override.yml`, `agent.env` (chwilowy), `setup.done`; w Chacie też `issues` (numery utworzone przez Chat), a obok katalogu plik blokady `<nazwa>.lock`. Nazwa Runu: `ticket-<n>` albo `preflight-<id>`. To jedyna ewidencja Chatów i Runów |
+| `<project>/quarantine.git` | Quarantine repo (bare): `refs/afk/base/ticket-<n>` baza Run, `refs/afk/incoming/ticket-<n>` surowy wynik z Sandboxa, `refs/heads/ticket-<n>` wynik po walidacji; analogicznie `chat-<nazwa>` |
+| `<project>/logs/` | Logi Run (stream-json, `-gate-N.txt`) i kanału Chatu (`-channel.txt`); poza repo: logi to niezaufana treść |
+| `<project>/vm-ssh/` | Klucz ssh VM testowych (`id_ed25519`, `.pub`) |
+| `claims/<project>/<n>` | Rezerwacje ticketów (`flock`) |
+| `expose-locks/`, `vm-locks/` | Blokady portów `[expose]` i VM testowych (host, nie Project) |
+| `claude-oauth-token`, `gitea-token` | Tokeny, `0600`, gdy brak `CLAUDE_CODE_OAUTH_TOKEN` / `GITEA_TOKEN` |
+| `$XDG_RUNTIME_DIR/afk/<hash>/afk.sock` | Socket kanału Chatu, `0600` |
 
-Quarantine repo w katalogu stanu użytkownika, nie w repo użytkownika ani w `/var/lib/afk`: obiekty z VM nie trafiają do object store repo człowieka (jego hooki i config ich nie dotykają), `libvirt-qemu` nie potrzebuje do niego dostępu (`/var/lib/afk` jest współdzielone z grupą `kvm`), a wynik przeżywa restart (`/tmp` to tmpfs) do pushu. Bez hooków (`core.hooksPath=/dev/null`), `transfer.fsckObjects`, nigdy checkout.
+`<project>` to `owner-name` z `[forge].repo`. Volume'y compose (maski, cache) leżą w podmanie: projekt compose `afk_<project>_<chat|run>_<nazwa>`, cache Runów wspólny (`afk_<project>_factory`).
 
-`/var/lib/afk`, nie `$HOME`: `libvirt-qemu` nie czyta katalogu domowego, AppArmor blokuje zapis poza ścieżkami dysków (ADR-0001). Cache obrazów per projekt. Uwaga: `/tmp` na hoście to tmpfs — nie na obrazy.
-
-## Kamienie milowe
-
-1. Debian + izolacja + proxy + git + Factory bez TUI (`afk factory '*'`) → zastępuje `ralph.sh` dla dfmx.
-2. `.afk.toml` (maszyny, Toole w Sandbox VM), Expiry i przebudowa Base image, Gitea.
-3. Chat + TUI (tmux + sidebar w bubbletea), `afk-forge`.
-4. Windows, Tool VM (`[machine.<nazwa>]`, Tool z `on`), sterowanie ekranem.
+Quarantine repo leży w stanie użytkownika, nie w repo użytkownika: obiekty z Sandboxa nie trafiają do object store repo człowieka (jego hooki i config ich nie dotykają), a wynik przeżywa restart. Bez hooków (`core.hooksPath=/dev/null`), `transfer.fsckObjects`, nigdy checkout.

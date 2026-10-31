@@ -1,3 +1,7 @@
+---
+status: accepted (transport zmieniony przez ADR-0013, patrz Update)
+---
+
 # Kanał gość → `afk`: odwrotny unix socket na ssh, `afk` jako `afk-forge`
 
 Agent w Chat tworzy i czyta tickety, a w M4 podnosi Tool VM, więc potrzebuje drogi do `afk` na hoście. `afk` otwiera na swoim połączeniu ssh odwrotne przekierowanie na unix socket w gościu (`/run/afk/afk.sock`) i obsługuje go w procesie jako HTTP+JSON, tak jak Egress proxy (ADR-0001). Host nie otwiera żadnego portu, kanał inicjuje host i żyje tylko razem z procesem, który trzyma ssh (attach Chat); autoryzacja to sam socket: ten Chat, ten Project, Forge tego Project. Klientem w gościu jest binarka `afk` kopiowana przy attach do `/usr/local/bin/afk-forge`, która rozpoznaje tryb po `argv[0]` — wersja zawsze zgodna z hostem, bez przebudowy Base image.
@@ -16,4 +20,4 @@ Socket istnieje tylko przy attach: shell w VM Chat nie ma kanału. Binarka `afk`
 
 ## Update (ADR-0013)
 
-Transport w modelu kontenerowym: zamiast odwrotnego tunelu ssh `afk` słucha na unix sockecie w runtime dir hosta (`$XDG_RUNTIME_DIR/afk/<hash>.sock`, tryb `0600`), który montuje jako plik `/run/afk/afk.sock` tylko do Sandboxa danego Chatu (nie do innych serwisów Stacku, nie do Runów). Klientem jest binarka `afk` hosta, montowana tylko do odczytu jako `$HOME/bin/afk-forge`; adres socketu bierze ze zmiennej `AFK_SOCKET`. Socket żyje z procesem `afk chat` (jeden proces na Chat, lock). Trasy to grupy (`chat.routeGroup`): dziś tickety i PR, dalej Stack i VM testowe.
+Transport w modelu kontenerowym: zamiast odwrotnego tunelu ssh `afk` słucha na unix sockecie w runtime dir hosta (`$XDG_RUNTIME_DIR/afk/<hash>/afk.sock`, tryb `0600`) i montuje jego katalog jako `/run/afk` (socket: `/run/afk/afk.sock`) tylko do Sandboxa danego Chatu (nie do innych serwisów Stacku, nie do Runów). Host nadal nie otwiera portu dla Sandboxa, a autoryzacją jest sam socket: ten Chat, ten Project, Forge tego Project. Klientem jest binarka `afk` hosta, montowana tylko do odczytu jako `$HOME/bin/afk-forge` (rozpoznaje tryb po `argv[0]`); adres socketu bierze ze zmiennej `AFK_SOCKET`. Socket żyje z procesem `afk chat` (jeden proces na Chat, lock). Trasy to grupy (`chat.routeGroup`): tickety, PR (ADR-0014), Stack (logi, restart, reseed) i VM testowe. Sandbox Chatu ma kanał także w `afk chat shell`, bo to ten sam kontener; Run kanału nie ma.

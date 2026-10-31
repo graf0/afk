@@ -1,3 +1,7 @@
+---
+status: accepted (instalacja zmieniona przez ADR-0013, patrz Update)
+---
+
 # Pluginy Claude'a tylko z Project config, instalowane w Base image
 
 Agent dostaje pluginy wyłącznie wymienione wprost: `enabledPlugins` i `extraKnownMarketplaces` z `.claude/settings.json` Projectu oraz `[agent].plugins` i `[agent].marketplaces` z `.afk.toml`. `afk image build` instaluje je w Base image (`claude plugin marketplace add` + `claude plugin install --scope user`); budowa ma pełny internet przez Egress proxy, Run dostaje tylko `[network].allow`. Z `~/.claude` hosta nic nie trafia do VM — ani w Factory, ani w Chat. Run jest przez to powtarzalny niezależnie od tego, co kto ma zainstalowane, a `afk` w ogóle nie czyta prywatnego katalogu użytkownika.
@@ -10,3 +14,7 @@ Agent dostaje pluginy wyłącznie wymienione wprost: `enabledPlugins` i `extraKn
 ## Consequences
 
 Zmiana listy pluginów wymaga przebudowy Base image. Skille pluginu mają namespace (`/mattpocock-skills:implement`).
+
+## Update (ADR-0013)
+
+Reguła (pluginy tylko z Project config) obowiązuje, ale Base image nie jest już budowany Packerem przez Egress proxy, a `afk` niczego nie instaluje. Wybrane pluginy muszą być zainstalowane na hoście, a do Sandboxa trafiają tylko wskazane (read-only) wraz z przepisanymi metadanymi (`sandbox/plugins.go`).
