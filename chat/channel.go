@@ -14,13 +14,9 @@ import (
 )
 
 const (
-	// SocketEnv names the variable that tells afk-forge in the Sandbox where
-	// the channel socket is; ForgeSocket is the default.
-	SocketEnv = "AFK_SOCKET"
-
-	// ForgeSocket is where the channel to afk appears inside the Sandbox: the
+	// CLISocket is where the channel to afk appears inside the Sandbox: the
 	// host's directory of the Chat's socket, mounted at /run/afk (ADR-0012).
-	ForgeSocket = "/run/afk/afk.sock"
+	CLISocket = "/run/afk/afk.sock"
 
 	// maxSocketPath is what a sun_path holds, with its terminating zero.
 	maxSocketPath = 107

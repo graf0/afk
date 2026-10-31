@@ -27,9 +27,9 @@ import (
 )
 
 const (
-	// ForgeBinary is the name `afk` runs as in the Sandbox, and in $PATH there:
+	// CLIBinary is the name `afk` runs as in the Sandbox, and in $PATH there:
 	// the host's binary, mounted read-only (ADR-0012).
-	ForgeBinary = "afk-forge"
+	CLIBinary = "afk-cli"
 
 	// issuesName is the file of the Chat's state with the numbers of the issues it created, a line each.
 	issuesName = "issues"
@@ -78,7 +78,7 @@ func issueNumber(s string) (n int, err error) {
 
 const maxForgeBody = 1 << 20
 
-// forgeChannel is what a Chat's afk-forge works on: the Project's Forge and
+// forgeChannel is what a Chat's afk-cli works on: the Project's Forge and
 // labels, the Chat's name (the footer of what it writes) and the file in its
 // state where the issues it creates are noted.
 type forgeChannel struct {
@@ -88,7 +88,7 @@ type forgeChannel struct {
 	IssuesPath    string
 }
 
-// forgeServer answers the Sandbox's afk-forge calls with the Project's Forge,
+// forgeServer answers the Sandbox's afk-cli calls with the Project's Forge,
 // one forgeReply per call. Every call goes to log.
 type forgeServer struct {
 	forgeChannel
@@ -420,36 +420,36 @@ func cleanLabels(labels []string) (out []string) {
 	return
 }
 
-// --- Sandbox: afk-forge ---
+// --- Sandbox: afk-cli ---
 
 const forgeUsage = `usage:
-  afk-forge issue view <n>
-  afk-forge issue list [--label <label>] [--state open|closed|all]
-  afk-forge issue create --title <title> [--body <text> | --body-file -] [--label <a,b>]...
-  afk-forge issue comment <n> (--body <text> | --body-file -)
-  afk-forge issue edit <n> [--add-label <a,b>]... [--remove-label <a,b>]... [--title <title>] [--body <text> | --body-file -]
-  afk-forge pr create --title <title> [--body <text> | --body-file -]
-  afk-forge stack logs <service> [--tail <n>]
-  afk-forge stack restart <service>
-  afk-forge stack reseed
-  afk-forge vm list
-  afk-forge vm (start|shutdown|release) <vm>
-  afk-forge vm screenshot <vm> [--file <path>]
-  afk-forge vm key <vm> <key>[+<key>]...
-  afk-forge vm type <vm> (<text> | -)
-  afk-forge vm click <vm> [--button left|right|middle] <x> <y>
-  afk-forge vm move <vm> <x> <y>
-  afk-forge vm (snapshot|revert) <vm> <name>
+  afk-cli issue view <n>
+  afk-cli issue list [--label <label>] [--state open|closed|all]
+  afk-cli issue create --title <title> [--body <text> | --body-file -] [--label <a,b>]...
+  afk-cli issue comment <n> (--body <text> | --body-file -)
+  afk-cli issue edit <n> [--add-label <a,b>]... [--remove-label <a,b>]... [--title <title>] [--body <text> | --body-file -]
+  afk-cli pr create --title <title> [--body <text> | --body-file -]
+  afk-cli stack logs <service> [--tail <n>]
+  afk-cli stack restart <service>
+  afk-cli stack reseed
+  afk-cli vm list
+  afk-cli vm (start|shutdown|release) <vm>
+  afk-cli vm screenshot <vm> [--file <path>]
+  afk-cli vm key <vm> <key>[+<key>]...
+  afk-cli vm type <vm> (<text> | -)
+  afk-cli vm click <vm> [--button left|right|middle] <x> <y>
+  afk-cli vm move <vm> <x> <y>
+  afk-cli vm (snapshot|revert) <vm> <name>
 --body-file - reads the text from stdin; --label, --add-label and --remove-label may repeat or list labels with commas;
 --title and --body only on issues created by this Chat that are not ready-for-agent;
 pr create pushes the commits of this clone (uncommitted changes stay out) to the branch of this Chat and opens a pull request, or, when one is open, only pushes and prints its URL;
 stack logs prints the last n lines (default 100, at most 1000) of a service of the Stack; stack restart works on any service but afk and afk-setup; stack reseed runs afk-setup again and prints its output;
 vm works only on the test VMs of [[vm]]: list shows state, os, owner and address; start, shutdown (ACPI), key, type, click, move, snapshot and revert claim the VM for this Chat until release or the end of afk chat (another Chat gets 409); screenshot saves a PNG (by default in the temporary directory) and prints its path and size, click and move take pixels of the last screenshot; key is a combination such as ctrl+alt+delete; type takes US-ASCII, at most 500 characters, "-" reads stdin`
 
-// errForgeUsage answers arguments afk-forge does not take.
+// errForgeUsage answers arguments afk-cli does not take.
 var errForgeUsage = errors.New(forgeUsage)
 
-// forgeCall is a request to the channel: what a subcommand of afk-forge asks for.
+// forgeCall is a request to the channel: what a subcommand of afk-cli asks for.
 type forgeCall struct {
 	method, path string
 	body         any
@@ -481,7 +481,7 @@ var forgeCommands = map[string]func(args []string, stdin io.Reader) (call forgeC
 	"vm revert":     parseVMSnapshot("revert"),
 }
 
-// RunForge executes `afk-forge args` against the channel at socket and writes
+// RunForge executes `afk-cli args` against the channel at socket and writes
 // the result to stdout and the channel's warning to stderr; stdin is the text
 // of --body-file -.
 func RunForge(ctx context.Context, socket string, args []string, stdin io.Reader, stdout, stderr io.Writer) (err error) {

@@ -63,7 +63,7 @@ type vmChannel struct {
 	Locks  *claims
 }
 
-// vmServer answers the Sandbox's `afk-forge vm` calls. A VM is claimed for
+// vmServer answers the Sandbox's `afk-cli vm` calls. A VM is claimed for
 // the Chat by the first call that changes it, and stays so until release or
 // the end of the process.
 type vmServer struct {
@@ -380,7 +380,7 @@ func (s *vmServer) qmp(ctx context.Context, domain, command string) (err error) 
 	return
 }
 
-// --- Sandbox: afk-forge vm ---
+// --- Sandbox: afk-cli vm ---
 
 // vmArg splits args into the VM name in front, as the path of the VM, and the rest.
 func vmArg(args []string) (path string, rest []string, err error) {

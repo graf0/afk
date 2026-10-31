@@ -28,7 +28,7 @@ import (
 // The fixture needs a local base image with bash, git and getent (default
 // docker.io/library/golang:1.27; AFK_TEST_IMAGE overrides it). The Agent is a
 // fake script put in the place of the host's claude: no Claude token and no
-// network are needed. afk-forge is the real afk, built from cmd/afk.
+// network are needed. afk-cli is the real afk, built from cmd/afk.
 
 const (
 	defaultTestImage = "docker.io/library/golang:1.27"
@@ -91,16 +91,16 @@ git rev-parse -q --verify origin/main >/dev/null || fail "no origin/main"
 [ -f setup-saw-clone ] || fail "afk-setup did not see the clone"
 [ "$GIT_AUTHOR_NAME" = "afk agent" ] || fail "no git identity"
 if grep -rqsF "$CLAUDE_CODE_OAUTH_TOKEN" "$PWD" "$HOME" /tmp; then fail "token on disk"; fi
-[ "$(command -v afk-forge)" = "$HOME/bin/afk-forge" ] || fail "afk-forge is not on the PATH: $(command -v afk-forge)"
-[ ! -w "$HOME/bin/afk-forge" ] || fail "afk-forge is writable"
+[ "$(command -v afk-cli)" = "$HOME/bin/afk-cli" ] || fail "afk-cli is not on the PATH: $(command -v afk-cli)"
+[ ! -w "$HOME/bin/afk-cli" ] || fail "afk-cli is writable"
 [ ! -w "$HOME/bin/claude" ] || fail "claude is writable"
 [ ! -w "$HOME/.claude/settings.json" ] || fail "settings.json is writable"
-[ "$AFK_SOCKET" = /run/afk/afk.sock ] && [ -S "$AFK_SOCKET" ] || fail "no channel socket"
+[ -S /run/afk/afk.sock ] || fail "no channel socket"
 socks=$(find / \( -path /proc -o -path /sys \) -prune -o -name '*.sock' -print 2>/dev/null || true)
 [ "$socks" = /run/afk/afk.sock ] || fail "sockets in the Sandbox: $socks"
 [ -z "${DOCKER_HOST:-}${CONTAINER_HOST:-}" ] || fail "podman socket in the environment"
 getent hosts svc >/dev/null || fail "service svc of the Stack not reachable"
-[ "$(afk-forge issue list --label bug)" = "#1  [bug]  Itest ticket" ] || fail "afk-forge issue list"
+[ "$(afk-cli issue list --label bug)" = "#1  [bug]  Itest ticket" ] || fail "afk-cli issue list"
 [ -d "$projects/memory" ] || fail "no memory directory under $projects"
 touch "$HOME/probe" && rm "$HOME/probe" || fail "home is not writable"
 case "$mode" in
@@ -117,7 +117,7 @@ case "$mode" in
 	*)
 		echo "remembered-by-$name" > "$projects/memory/note-$name.md"
 		touch "$projects/session.jsonl" # a conversation to continue
-		afk-forge issue create --title "Idea" --label ready-for-agent
+		afk-cli issue create --title "Idea" --label ready-for-agent
 		echo first > session-marker
 		echo work > work.txt && git add work.txt && git commit -q --allow-empty -m "work in the chat"
 		;;
@@ -164,7 +164,7 @@ func TestIntegrationChat(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	// The real afk, for afk-forge: the test binary is no afk.
+	// The real afk, for afk-cli: the test binary is no afk.
 	afk := filepath.Join(t.TempDir(), "afk")
 	build := exec.Command("go", "build", "-o", afk, "../cmd/afk")
 	build.Env = append(os.Environ(), "CGO_ENABLED=0")
@@ -403,7 +403,7 @@ git push -q origin main`)
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, _ = shellInWrite.WriteString(`echo "in:$PWD"; afk-forge issue view 1 | head -1; exit 0` + "\n")
+		_, _ = shellInWrite.WriteString(`echo "in:$PWD"; afk-cli issue view 1 | head -1; exit 0` + "\n")
 		_ = shellInWrite.Close()
 		shellOpts := options("live", &syncBuffer{})
 		shellOpts.In = shellIn

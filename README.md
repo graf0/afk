@@ -8,7 +8,7 @@ Fabryka AI: bierze tickety z Forge (GitHub, Gitea) i bez nadzoru implementuje je
 CGO_ENABLED=0 go install github.com/graf0/afk/cmd/afk@latest
 ```
 
-Aktualizacja to ta sama komenda. `CGO_ENABLED=0` daje statyczną binarkę: `afk` jest montowany do Sandboxa jako `afk-forge`, a obraz Sandboxa może mieć inne glibc niż host.
+Aktualizacja to ta sama komenda. `CGO_ENABLED=0` daje statyczną binarkę: `afk` jest montowany do Sandboxa jako `afk-cli`, a obraz Sandboxa może mieć inne glibc niż host.
 
 ## Wymagania hosta
 

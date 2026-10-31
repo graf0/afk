@@ -1,6 +1,6 @@
 # VM testowe (libvirt)
 
-libvirt służy już tylko do jednego: Agent w Chat steruje istniejącymi VM testowymi z `[[vm]]` (ADR-0013). `afk` ich nie tworzy, nie buduje i nie niszczy. Factory ich nie dostaje. Składnia `afk-forge vm`: [agents/issue-tracker.md](agents/issue-tracker.md).
+libvirt służy już tylko do jednego: Agent w Chat steruje istniejącymi VM testowymi z `[[vm]]` (ADR-0013). `afk` ich nie tworzy, nie buduje i nie niszczy. Factory ich nie dostaje. Składnia `afk-cli vm`: [agents/issue-tracker.md](agents/issue-tracker.md).
 
 ## Host
 

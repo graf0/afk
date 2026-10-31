@@ -121,7 +121,7 @@ func (fx *vmFixture) mustCall(args ...string) (out string) {
 	fx.t.Helper()
 	out, err := fx.call(args...)
 	if err != nil {
-		fx.t.Fatalf("afk-forge %v: %v", args, err)
+		fx.t.Fatalf("afk-cli %v: %v", args, err)
 	}
 	return
 }

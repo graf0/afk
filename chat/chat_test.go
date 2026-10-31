@@ -41,7 +41,7 @@ func TestClaudeProjectKey(t *testing.T) {
 
 func TestSystemPrompt(t *testing.T) {
 	got := systemPrompt("plan", "main", "/s/repo")
-	for _, want := range []string{`"plan"`, "origin/main", "chat-plan", "afk-forge", "pr create", "stack logs", "stack reseed", "afk-forge vm", "vm release", "ready-for-agent", "/s/repo"} {
+	for _, want := range []string{`"plan"`, "origin/main", "chat-plan", "afk-cli", "pr create", "stack logs", "stack reseed", "afk-cli vm", "vm release", "ready-for-agent", "/s/repo"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("prompt lacks %q:\n%s", want, got)
 		}
@@ -96,8 +96,8 @@ func TestSandboxMounts(t *testing.T) {
 	for _, m := range view.Mounts {
 		got[m.Target] = m
 	}
-	if m := got[filepath.Join(home, "bin", "afk-forge")]; m.Source != "/usr/bin/afk-host" || !m.ReadOnly {
-		t.Errorf("afk-forge = %+v, want the host's afk, read-only", m)
+	if m := got[filepath.Join(home, "bin", "afk-cli")]; m.Source != "/usr/bin/afk-host" || !m.ReadOnly {
+		t.Errorf("afk-cli = %+v, want the host's afk, read-only", m)
 	}
 	if m := got["/run/afk"]; m.Source != "/run/user/1/afk/ab" || m.ReadOnly || !m.Dir {
 		t.Errorf("channel = %+v, want the directory of the Chat's socket (a file would pin an old inode)", m)
@@ -111,10 +111,6 @@ func TestSandboxMounts(t *testing.T) {
 	}
 	if _, ok := got[filepath.Join(home, "bin", "claude")]; ok {
 		t.Error("the host's claude is mounted though AgentBinary is set")
-	}
-	env := c.env()
-	if env[SocketEnv] != ForgeSocket || env["CLAUDE_CODE_OAUTH_TOKEN"] != "t" {
-		t.Errorf("env = %v", env)
 	}
 }
 
