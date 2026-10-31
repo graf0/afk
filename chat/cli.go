@@ -19,26 +19,26 @@ import (
 const (
 	// CLIBinary is the name `afk` runs as in the Sandbox, and in $PATH there:
 	// the host's binary, mounted read-only (ADR-0012).
-	CLIBinary = "afk-cli"
+	CLIBinary = "afk-ai"
 
 	cliUsage = `usage:
-  afk-cli issue view <n>
-  afk-cli issue list [--label <label>] [--state open|closed|all]
-  afk-cli issue create --title <title> [--body <text> | --body-file -] [--label <a,b>]...
-  afk-cli issue comment <n> (--body <text> | --body-file -)
-  afk-cli issue edit <n> [--add-label <a,b>]... [--remove-label <a,b>]... [--title <title>] [--body <text> | --body-file -]
-  afk-cli pr create --title <title> [--body <text> | --body-file -]
-  afk-cli stack logs <service> [--tail <n>]
-  afk-cli stack restart <service>
-  afk-cli stack reseed
-  afk-cli vm list
-  afk-cli vm (start|shutdown|release) <vm>
-  afk-cli vm screenshot <vm> [--file <path>]
-  afk-cli vm key <vm> <key>[+<key>]...
-  afk-cli vm type <vm> (<text> | -)
-  afk-cli vm click <vm> [--button left|right|middle] <x> <y>
-  afk-cli vm move <vm> <x> <y>
-  afk-cli vm (snapshot|revert) <vm> <name>
+  afk-ai issue view <n>
+  afk-ai issue list [--label <label>] [--state open|closed|all]
+  afk-ai issue create --title <title> [--body <text> | --body-file -] [--label <a,b>]...
+  afk-ai issue comment <n> (--body <text> | --body-file -)
+  afk-ai issue edit <n> [--add-label <a,b>]... [--remove-label <a,b>]... [--title <title>] [--body <text> | --body-file -]
+  afk-ai pr create --title <title> [--body <text> | --body-file -]
+  afk-ai stack logs <service> [--tail <n>]
+  afk-ai stack restart <service>
+  afk-ai stack reseed
+  afk-ai vm list
+  afk-ai vm (start|shutdown|release) <vm>
+  afk-ai vm screenshot <vm> [--file <path>]
+  afk-ai vm key <vm> <key>[+<key>]...
+  afk-ai vm type <vm> (<text> | -)
+  afk-ai vm click <vm> [--button left|right|middle] <x> <y>
+  afk-ai vm move <vm> <x> <y>
+  afk-ai vm (snapshot|revert) <vm> <name>
 --body-file - reads the text from stdin; --label, --add-label and --remove-label may repeat or list labels with commas;
 --title and --body only on issues created by this Chat that are not ready-for-agent;
 pr create pushes the commits of this clone (uncommitted changes stay out) to the branch of this Chat and opens a pull request, or, when one is open, only pushes and prints its URL;
@@ -46,7 +46,7 @@ stack logs prints the last n lines (default 100, at most 1000) of a service of t
 vm works only on the test VMs of [[vm]]: list shows state, os, owner and address; start, shutdown (ACPI), key, type, click, move, snapshot and revert claim the VM for this Chat until release or the end of afk chat (another Chat gets 409); screenshot saves a PNG (by default in the temporary directory) and prints its path and size, click and move take pixels of the last screenshot; key is a combination such as ctrl+alt+delete; type takes US-ASCII, at most 500 characters, "-" reads stdin`
 )
 
-// errCLIUsage answers arguments afk-cli does not take.
+// errCLIUsage answers arguments afk-ai does not take.
 var errCLIUsage = errors.New(cliUsage)
 
 // cliCommands parse the arguments after `<group> <subcommand>` into the call.
@@ -73,7 +73,7 @@ var cliCommands = map[string]func(args []string, stdin io.Reader) (call cliCall,
 	"vm revert":     parseVMSnapshot("revert"),
 }
 
-// cliCall is a request to the channel: what a subcommand of afk-cli asks for.
+// cliCall is a request to the channel: what a subcommand of afk-ai asks for.
 type cliCall struct {
 	method, path string
 	body         any
@@ -81,7 +81,7 @@ type cliCall struct {
 	saveTo string
 }
 
-// RunCLI executes `afk-cli args` against the channel at socket and writes
+// RunCLI executes `afk-ai args` against the channel at socket and writes
 // the result to stdout and the channel's warning to stderr; stdin is the text
 // of --body-file -.
 func RunCLI(ctx context.Context, socket string, args []string, stdin io.Reader, stdout, stderr io.Writer) (err error) {

@@ -39,7 +39,7 @@ type pullChannel struct {
 	Protected func() (paths []string)
 }
 
-// pullServer answers the Sandbox's `afk-cli pr` calls. Calls go one at a
+// pullServer answers the Sandbox's `afk-ai pr` calls. Calls go one at a
 // time: they move the same branch.
 type pullServer struct {
 	responder
@@ -155,7 +155,7 @@ func (s *pullServer) push(ctx context.Context, prev, head string) (err error) {
 	return
 }
 
-// --- Sandbox: afk-cli pr ---
+// --- Sandbox: afk-ai pr ---
 
 // parsePullCreate parses `pr create`.
 func parsePullCreate(args []string, stdin io.Reader) (call cliCall, err error) {

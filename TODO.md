@@ -34,7 +34,7 @@ Forge:
 - [x] Preflight: wszystkie labele z `[labels]` istnieją w repo.
 - [x] Gitea (REST) za interfejsem `Forge`: dzieci Spec z listy zadań `- [ ] #M`, blokery = natywne zależności + `Blocked by:`, token `GITEA_TOKEN` / `~/.local/state/afk/gitea-token`, push i PR.
 
-## M3 — Chat, TUI, `afk-cli`
+## M3 — Chat, TUI, `afk-ai`
 
 Cel: interaktywna praca z Agentem w VM i Factory z jednego okna. Decyzje: ADR-0008, ADR-0012, `docs/workflow.md` (Chat, TUI). Trzy Specy po kolei: A → B → C, potem dokumentacja.
 
@@ -47,11 +47,11 @@ Spec A — Chat bez TUI:
 - [ ] `rm`: odmowa bez `--force` przy niezacommitowanej albo nieeksportowanej pracy.
 - [ ] Limit pamięci przy każdej nowej VM: `MemAvailable` ≥ `memory` + 2 GiB.
 
-Spec B — `afk-cli`:
+Spec B — `afk-ai`:
 
-- [ ] Kanał gość → `afk`: odwrotny unix socket na ssh, HTTP+JSON, tylko przy `attach`; binarka `afk` kopiowana jako `afk-cli` (ADR-0012).
+- [ ] Kanał gość → `afk`: odwrotny unix socket na ssh, HTTP+JSON, tylko przy `attach`; binarka `afk` kopiowana jako `afk-ai` (ADR-0012).
 - [ ] `issue view|list|create|comment|edit`: format `TICKET.md`, stopka `— z Chat <nazwa>`, `ready-for-agent` → `needs-triage`, treść tylko issue tego Chat, log `chat-<nazwa>-forge.txt`.
-- [ ] `docs/agents/*` i skille Projectu: `afk-cli` zamiast `gh`.
+- [ ] `docs/agents/*` i skille Projectu: `afk-ai` zamiast `gh`.
 
 Spec C — TUI:
 
@@ -70,6 +70,6 @@ Cel: Projekty wymagające Windowsa i GUI (spike'i w `docs/windows-images.md`, AD
 
 - [ ] Template Windows (ws2025, win11) przez Packer CLI: ISO i SHA256 z `.afk.toml`, OpenSSH (Win11 z MSI), sysprep jako ostatni krok, UEFI + vTPM.
 - [ ] Sandbox VM Windows: NVRAM per maszyna, `undefine --nvram --tpm`, klucz hosta sshd per VM (odpowiednik credentiala SMBIOS dla Windows), test izolacji z sondą PowerShell.
-- [ ] Tool VM: `[machine.<nazwa>]` poza `sandbox`, Tool z `on = "<nazwa>"`, w sieci tego samego Run (filtr dopuszcza ruch w /24 — dziś jedna VM na sieć), podnoszona na żądanie Agenta przez kanał gość → `afk` (wspólny z `afk-cli`, ADR-0011), sprzątanie razem z Run.
+- [ ] Tool VM: `[machine.<nazwa>]` poza `sandbox`, Tool z `on = "<nazwa>"`, w sieci tego samego Run (filtr dopuszcza ruch w /24 — dziś jedna VM na sieć), podnoszona na żądanie Agenta przez kanał gość → `afk` (wspólny z `afk-ai`, ADR-0011), sprzątanie razem z Run.
 - [ ] Sterowanie ekranem: `afk-screen` w VM przez tunel ssh, zrzuty PNG przez `DomainScreenshot` (obejście błędu XDR), wejście przez QMP `input-send-event`/`send-key`; autologon w klonie.
 - [ ] Pozostałe punkty „Obrazy Windows” z open-questions.

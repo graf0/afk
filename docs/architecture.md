@@ -13,7 +13,7 @@ Bez `internal/`:
 | `sandbox/` | Widok hosta w Sandboxie: tożsamość i token Agenta, `claude`, ustawienia i pluginy |
 | `agent/` | Claude Code: prompt, sesja, raport |
 | `run/` | Orkiestracja Run, Quarantine repo, rezerwacje, Factory (selektor, kolejne Run, wznowienia) |
-| `chat/` | Chat: interaktywny Agent, serwer kanału `afk-cli` (ADR-0012), `[expose]`, VM testowe |
+| `chat/` | Chat: interaktywny Agent, serwer kanału `afk-ai` (ADR-0012), `[expose]`, VM testowe |
 
 Interfejs tylko tam, gdzie są co najmniej dwie implementacje: `Forge` (GitHub, Gitea).
 
@@ -30,7 +30,7 @@ Narzędzia hosta wołane jako procesy: `git`, `claude`, `podman`, `docker-compos
 
 Stack to projekt compose z `compose.yml` i `compose.afk.yml` z gałęzi bazowej (ADR-0013, ADR-0010) plus override generowany przez `afk`. Pliki są eksportowane z commita gałęzi bazowej (`git archive`), nigdy z drzewa Agenta. `afk` woła `docker-compose` v2 z `DOCKER_HOST` na sockecie rootless podmana (`$XDG_RUNTIME_DIR/podman/podman.sock`). Format plików i zmienne `${AFK_TREE}`, `${AFK_CACHE}`: [README](../README.md#project).
 
-Serwis `afk` to Sandbox. Override nadaje mu: `command: sleep infinity`, `init: true`, `userns_mode: keep-id` (pliki w drzewie należą do użytkownika hosta), drzewo Chatu albo Runu pod tą samą ścieżką co na hoście, `$HOME` Agenta, plik środowiska `0600` (token Claude'a, tożsamość gita), `claude` hosta tylko do odczytu oraz, w Chacie, socket `afk-cli`. Porty z `compose.yml` są usuwane, publikuje je tylko `[expose]`.
+Serwis `afk` to Sandbox. Override nadaje mu: `command: sleep infinity`, `init: true`, `userns_mode: keep-id` (pliki w drzewie należą do użytkownika hosta), drzewo Chatu albo Runu pod tą samą ścieżką co na hoście, `$HOME` Agenta, plik środowiska `0600` (token Claude'a, tożsamość gita), `claude` hosta tylko do odczytu oraz, w Chacie, socket `afk-ai`. Porty z `compose.yml` są usuwane, publikuje je tylko `[expose]`.
 
 Obrazy z `build:` są budowane z gałęzi bazowej, gdy ich brak. Tag to hash drzewa gita kontekstu builda, więc zmiana definicji daje nowy obraz, a niezmieniona nic nie przebudowuje.
 
@@ -38,7 +38,7 @@ Stack żyje z procesem `afk` (ADR-0015): `afk chat` i `afk factory` robią `comp
 
 ### Izolacja
 
-- Sandbox nie widzi sekretów hosta; poświadczeń hosta (Forge, libvirt) używa wyłącznie przez socket `afk` ([workflow.md](workflow.md#afk-cli)), który dostaje sam Sandbox Chatu. Run nie ma kanału.
+- Sandbox nie widzi sekretów hosta; poświadczeń hosta (Forge, libvirt) używa wyłącznie przez socket `afk` ([workflow.md](workflow.md#afk-ai)), który dostaje sam Sandbox Chatu. Run nie ma kanału.
 - Token Claude'a jest w środowisku Sandboxa i jest dla Agenta osiągalny (ADR-0014).
 - Ruch wychodzący nie jest filtrowany (ADR-0013): kod Projectu i token mogą zostać wyniesione po prompt injection. Granicą jest to, co wraca na host: wynik przechodzi przez Quarantine repo i walidację (ADR-0002), a `.afk.toml`, compose i Dockerfile'e Stacku pochodzą z gałęzi bazowej.
 - Host nie uruchamia gita w klonie Agenta; zmiany w chronionych ścieżkach są odrzucane ([README](../README.md#protect)).

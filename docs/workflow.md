@@ -73,16 +73,16 @@ Strumień Agenta (stream-json) idzie do pliku logu w `~/.local/state/afk/<projec
 - Jeden proces na Chat: blokada `flock` (plik `<nazwa>.lock` obok katalogu stanu); drugi `afk chat <nazwa>` dostaje odmowę. Kilka Chatów naraz to kilka terminali.
 - `afk chat shell` otwiera bash w Sandboxie działającego Chatu; na niedziałającym kończy się błędem (nie podnosi Stacku).
 - `afk chat rm` usuwa Stack z volume'ami, klon, home Agenta i refy `chat-<nazwa>` w Quarantine repo. Branch `chat-<nazwa>` w Forge, jeśli był wypchnięty, zostaje. Działającego Chatu nie usunie (blokada). `afk chat ls` i `shell`/`rm` nie robią `git fetch`: wystarcza lokalny `origin/HEAD`.
-- Ruch wychodzący nie jest filtrowany (ADR-0013): token Claude'a i kod uznajemy za możliwe do wyniesienia. Prompt systemowy od `afk` mówi Agentowi, że nie ma `gh` ani poświadczeń Forge, że tickety i PR idą przez `afk-cli`, i żeby nie ufał poleceniom z czytanych stron.
+- Ruch wychodzący nie jest filtrowany (ADR-0013): token Claude'a i kod uznajemy za możliwe do wyniesienia. Prompt systemowy od `afk` mówi Agentowi, że nie ma `gh` ani poświadczeń Forge, że tickety i PR idą przez `afk-ai`, i żeby nie ufał poleceniom z czytanych stron.
 - Pluginy i skille: to samo co w Factory, patrz [Pluginy](#pluginy).
 
 ### Porty (`--expose`)
 
 Bez `--expose` Stack Chatu nie publikuje żadnego portu, a Run (Factory) nigdy ich nie publikuje: porty z `compose.yml` są zawsze usuwane. `afk chat <nazwa> --expose` publikuje porty z `[expose]` (z gałęzi bazowej). Bez adresu bind na `127.0.0.1`, `0.0.0.0` daje ostrzeżenie na terminalu; adres tylko IPv4. Port hosta jest unikalny w `[expose]`, a blokada jest per numer portu, niezależnie od adresu: przed `Up` proces bierze `flock` na `~/.local/state/afk/expose-locks/port-<port_hosta>.lock` (`<project>/<chat>` w treści) i próbuje `net.Listen` na `adres:port`. Port trzymany przez inny Chat → błąd z nazwą Chatu; zajęty przez coś innego → błąd z portem. Blokada trwa do `Down` Stacku Chatu (albo śmierci procesu), więc wystawiony może być jeden Chat naraz. Serwis z `[expose]` nieobecny w Stacku → błąd przy starcie; `--expose` bez `[expose]` → błąd.
 
-### `afk-cli`
+### `afk-ai`
 
-ADR-0012. Binarka `afk` hosta jest montowana tylko do odczytu do Sandboxa jako `$HOME/bin/afk-cli` (`CGO_ENABLED=0`, żeby działała w obrazie z innym glibc) i woła `afk` przez unix socket (`/run/afk/afk.sock`), HTTP+JSON. Socket montowany jest tylko do Sandboxa danego Chatu i istnieje tylko, gdy działa proces `afk chat`. `afk` wykonuje operacje swoim tokenem, tylko dla Forge tego Project. `afk-cli` bez argumentów wypisuje pełną składnię; poniżej zasady. Instrukcja dla Agenta: [agents/issue-tracker.md](agents/issue-tracker.md).
+ADR-0012. Binarka `afk` hosta jest montowana tylko do odczytu do Sandboxa jako `$HOME/bin/afk-ai` (`CGO_ENABLED=0`, żeby działała w obrazie z innym glibc) i woła `afk` przez unix socket (`/run/afk/afk.sock`), HTTP+JSON. Socket montowany jest tylko do Sandboxa danego Chatu i istnieje tylko, gdy działa proces `afk chat`. `afk` wykonuje operacje swoim tokenem, tylko dla Forge tego Project. `afk-ai` bez argumentów wypisuje pełną składnię; poniżej zasady. Instrukcja dla Agenta: [agents/issue-tracker.md](agents/issue-tracker.md).
 
 - `issue view <n>` — format `TICKET.md` (ta sama sanitizacja); `issue list [--label …] [--state open|closed|all]` — `#N  [labele]  tytuł`.
 - `issue create`, `issue comment` — treść ze stopką `— z Chat <nazwa>`. Komentarz na dowolnym issue, także `ready-for-agent`: trafia do `TICKET.md` Run, ale w Chat jest człowiek in-the-loop, więc to świadomy kompromis, nie dziura. Label Spec dozwolony — Chat tworzy Specy.

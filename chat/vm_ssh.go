@@ -68,7 +68,7 @@ func readPublicKey(dir string) (public string, err error) {
 // per VM with its user and the one key, mounted at keyPath. The address of a
 // VM is a DHCP lease and changes, so host keys are not remembered; that holds
 // for the aliases only, never for other hosts the Agent reaches. The address
-// comes from `afk-cli vm list`: ssh -o HostName=<address> <vm>.
+// comes from `afk-ai vm list`: ssh -o HostName=<address> <vm>.
 func sshConfig(vms []config.VM, keyPath string) (text []byte) {
 	var b strings.Builder
 	for _, vm := range vms {

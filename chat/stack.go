@@ -42,7 +42,7 @@ type stackControl interface {
 	Reseed(ctx context.Context, out io.Writer) (err error)
 }
 
-// stackServer answers the Sandbox's `afk-cli stack` calls. Restarts and
+// stackServer answers the Sandbox's `afk-ai stack` calls. Restarts and
 // reseeds go one at a time: they change the same services.
 type stackServer struct {
 	responder
@@ -178,7 +178,7 @@ func (t *outputTail) String() (text string) {
 	return
 }
 
-// --- Sandbox: afk-cli stack ---
+// --- Sandbox: afk-ai stack ---
 
 // parseStackLogs parses `stack logs <service> [--tail <n>]`. The number is
 // checked by afk, not here: the channel does not trust its caller.

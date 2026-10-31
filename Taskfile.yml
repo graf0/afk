@@ -5,7 +5,7 @@ tasks:
     desc: build afk into bin/
     deps: [build]
   build:
-    desc: "build afk into bin/ (static, CGO_ENABLED=0: mounted into the Sandbox as afk-cli)"
+    desc: "build afk into bin/ (static, CGO_ENABLED=0: mounted into the Sandbox as afk-ai)"
     env:
       CGO_ENABLED: "0"
     cmds:

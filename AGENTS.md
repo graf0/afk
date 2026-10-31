@@ -18,7 +18,7 @@
 
 ### Issue tracker
 
-Issues live in GitHub Issues (`graf0/afk`): via `gh` on the host, via `afk-cli` in a Chat. See `docs/agents/issue-tracker.md`.
+Issues live in GitHub Issues (`graf0/afk`): via `gh` on the host, via `afk-ai` in a Chat. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 

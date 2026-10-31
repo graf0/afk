@@ -57,7 +57,7 @@ func issueNumber(s string) (n int, err error) {
 
 // --- host: the ticket routes of the channel ---
 
-// issueChannel is what a Chat's afk-cli works on: the Project's Forge and
+// issueChannel is what a Chat's afk-ai works on: the Project's Forge and
 // labels, the Chat's name (the footer of what it writes) and the file in its
 // state where the issues it creates are noted.
 type issueChannel struct {
@@ -67,7 +67,7 @@ type issueChannel struct {
 	IssuesPath    string
 }
 
-// issueServer answers the Sandbox's `afk-cli issue` calls with the Project's Forge.
+// issueServer answers the Sandbox's `afk-ai issue` calls with the Project's Forge.
 type issueServer struct {
 	issueChannel
 	responder
@@ -376,7 +376,7 @@ func cleanLabels(labels []string) (out []string) {
 	return
 }
 
-// --- Sandbox: afk-cli issue ---
+// --- Sandbox: afk-ai issue ---
 
 // issueArg splits args into the issue number in front, as the path of the
 // issue, and the rest.

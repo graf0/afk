@@ -41,7 +41,7 @@ func TestClaudeProjectKey(t *testing.T) {
 
 func TestSystemPrompt(t *testing.T) {
 	got := systemPrompt("plan", "main", "/s/repo")
-	for _, want := range []string{`"plan"`, "origin/main", "chat-plan", "afk-cli", "pr create", "stack logs", "stack reseed", "afk-cli vm", "vm release", "ready-for-agent", "/s/repo"} {
+	for _, want := range []string{`"plan"`, "origin/main", "chat-plan", "afk-ai", "pr create", "stack logs", "stack reseed", "afk-ai vm", "vm release", "ready-for-agent", "/s/repo"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("prompt lacks %q:\n%s", want, got)
 		}
@@ -96,8 +96,8 @@ func TestSandboxMounts(t *testing.T) {
 	for _, m := range view.Mounts {
 		got[m.Target] = m
 	}
-	if m := got[filepath.Join(home, "bin", "afk-cli")]; m.Source != "/usr/bin/afk-host" || !m.ReadOnly {
-		t.Errorf("afk-cli = %+v, want the host's afk, read-only", m)
+	if m := got[filepath.Join(home, "bin", "afk-ai")]; m.Source != "/usr/bin/afk-host" || !m.ReadOnly {
+		t.Errorf("afk-ai = %+v, want the host's afk, read-only", m)
 	}
 	if m := got["/run/afk"]; m.Source != "/run/user/1/afk/ab" || m.ReadOnly || !m.Dir {
 		t.Errorf("channel = %+v, want the directory of the Chat's socket (a file would pin an old inode)", m)
