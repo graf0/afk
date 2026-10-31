@@ -14,6 +14,7 @@ import (
 
 	"github.com/graf0/afk/chat"
 	"github.com/graf0/afk/config"
+	"github.com/graf0/afk/stack"
 )
 
 func main() {
@@ -75,11 +76,36 @@ func runCommand(ctx context.Context, args []string, dir string, stdout io.Writer
 		if data, err = cfg.Marshal(); err != nil {
 			return
 		}
-		_, err = stdout.Write(data)
+		if _, err = stdout.Write(data); err == nil {
+			err = printVMKey(cfg, stdout)
+		}
 	case args[0] == "chat":
 		err = runChat(ctx, args[1:], dir, stdout)
 	default:
 		err = fmt.Errorf("unknown command %q", args[0])
 	}
+	return
+}
+
+// printVMKey prints the public ssh key of the Project's test VMs, as comment
+// lines after the config, when [[vm]] declares any. The key is made here if no
+// Chat did yet: it has to be on the VMs before the first Chat uses them.
+func printVMKey(cfg config.Config, stdout io.Writer) (err error) {
+	if len(cfg.VM) == 0 {
+		return
+	}
+	stateDir, err := stack.DefaultStateDir()
+	if err != nil {
+		return
+	}
+	project, err := stack.ProjectName(cfg.Forge.Repo)
+	if err != nil {
+		return
+	}
+	public, err := chat.EnsureVMKey(filepath.Join(stateDir, project))
+	if err != nil {
+		return
+	}
+	_, err = fmt.Fprintf(stdout, "\n# ssh public key of the test VMs (add it to authorized_keys of each VM user):\n# %s\n", public)
 	return
 }

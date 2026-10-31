@@ -39,7 +39,7 @@ func TestClaudeProjectKey(t *testing.T) {
 
 func TestSystemPrompt(t *testing.T) {
 	got := systemPrompt("plan", "main", "/s/repo")
-	for _, want := range []string{`"plan"`, "origin/main", "chat-plan", "afk-forge", "pr create", "stack logs", "stack reseed", "ready-for-agent", "/s/repo"} {
+	for _, want := range []string{`"plan"`, "origin/main", "chat-plan", "afk-forge", "pr create", "stack logs", "stack reseed", "afk-forge vm", "vm release", "ready-for-agent", "/s/repo"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("prompt lacks %q:\n%s", want, got)
 		}
@@ -449,4 +449,48 @@ func newLifecycleFrom(l *lifecycle) (second *lifecycle) {
 	opts := l.opts
 	opts.Out = &bytes.Buffer{}
 	return &lifecycle{opts: opts, stack: &fakeStack{}, out: &bytes.Buffer{}}
+}
+
+func TestSandboxVMAccess(t *testing.T) {
+	if _, err := exec.LookPath("ssh-keygen"); err != nil {
+		t.Skip("no ssh-keygen")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	state := t.TempDir()
+	newChat := func(vms []config.VM) *chat {
+		var base run.Base
+		base.Config.VM = vms
+		return &chat{
+			Options:  Options{Name: "plan", AgentBinary: "/bin/fake", AfkBinary: "/usr/bin/afk-host", Base: base},
+			stateDir: state, dir: filepath.Join(state, "chats", "plan"),
+		}
+	}
+	mounts := func(c *chat) (targets map[string]stack.Mount, files map[string][]byte) {
+		view, err := c.sandbox()
+		if err != nil {
+			t.Fatal(err)
+		}
+		targets = map[string]stack.Mount{}
+		for _, m := range view.Mounts {
+			targets[m.Target] = m
+		}
+		return targets, view.Files
+	}
+	key := filepath.Join(home, ".ssh", sshKeyTarget)
+
+	got, files := mounts(newChat(nil))
+	if _, ok := got[key]; ok || files[sshConfigName] != nil {
+		t.Error("a Project without [[vm]] gets the ssh key or config")
+	}
+	got, files = mounts(newChat([]config.VM{{Name: "win11", User: "admin", OS: "windows"}}))
+	if m := got[key]; m.Source != VMKeyPath(state) || !m.ReadOnly {
+		t.Errorf("key mount = %+v, want the Project's key, read-only", m)
+	}
+	if m := got[filepath.Join(home, ".ssh", "config")]; !m.ReadOnly || !strings.HasSuffix(m.Source, "/context/ssh_config") {
+		t.Errorf("config mount = %+v", m)
+	}
+	if !strings.Contains(string(files[sshConfigName]), "Host win11") {
+		t.Errorf("ssh config = %q", files[sshConfigName])
+	}
 }

@@ -60,6 +60,7 @@ type editRequest struct {
 // forgeReply is the one JSON document the host answers each call with.
 type forgeReply struct {
 	Output  string `json:"output,omitempty"`
+	Data    []byte `json:"data,omitempty"` // binary output (a screenshot), base64 in the JSON
 	Warning string `json:"warning,omitempty"`
 	Error   string `json:"error,omitempty"`
 }
@@ -431,10 +432,19 @@ const forgeUsage = `usage:
   afk-forge stack logs <service> [--tail <n>]
   afk-forge stack restart <service>
   afk-forge stack reseed
+  afk-forge vm list
+  afk-forge vm (start|shutdown|release) <vm>
+  afk-forge vm screenshot <vm> [--file <path>]
+  afk-forge vm key <vm> <key>[+<key>]...
+  afk-forge vm type <vm> (<text> | -)
+  afk-forge vm click <vm> [--button left|right|middle] <x> <y>
+  afk-forge vm move <vm> <x> <y>
+  afk-forge vm (snapshot|revert) <vm> <name>
 --body-file - reads the text from stdin; --label, --add-label and --remove-label may repeat or list labels with commas;
 --title and --body only on issues created by this Chat that are not ready-for-agent;
 pr create pushes the commits of this clone (uncommitted changes stay out) to the branch of this Chat and opens a pull request, or, when one is open, only pushes and prints its URL;
-stack logs prints the last n lines (default 100, at most 1000) of a service of the Stack; stack restart works on any service but afk and afk-setup; stack reseed runs afk-setup again and prints its output`
+stack logs prints the last n lines (default 100, at most 1000) of a service of the Stack; stack restart works on any service but afk and afk-setup; stack reseed runs afk-setup again and prints its output;
+vm works only on the test VMs of [[vm]]: list shows state, os, owner and address; start, shutdown (ACPI), key, type, click, move, snapshot and revert claim the VM for this Chat until release or the end of afk chat (another Chat gets 409); screenshot saves a PNG (by default in the temporary directory) and prints its path and size, click and move take pixels of the last screenshot; key is a combination such as ctrl+alt+delete; type takes US-ASCII, at most 500 characters, "-" reads stdin`
 
 // errForgeUsage answers arguments afk-forge does not take.
 var errForgeUsage = errors.New(forgeUsage)
@@ -443,6 +453,8 @@ var errForgeUsage = errors.New(forgeUsage)
 type forgeCall struct {
 	method, path string
 	body         any
+	// saveTo is the file the reply's Data is written to (a screenshot), when set.
+	saveTo string
 }
 
 // forgeCommands parse the arguments after `<group> <subcommand>` into the call.
@@ -456,6 +468,17 @@ var forgeCommands = map[string]func(args []string, stdin io.Reader) (call forgeC
 	"stack logs":    parseStackLogs,
 	"stack restart": parseStackRestart,
 	"stack reseed":  parseStackReseed,
+	"vm list":       parseVMList,
+	"vm start":      vmAction("start"),
+	"vm shutdown":   vmAction("shutdown"),
+	"vm release":    vmAction("release"),
+	"vm screenshot": parseVMScreenshot,
+	"vm key":        parseVMKey,
+	"vm type":       parseVMType,
+	"vm click":      parseVMPoint("click"),
+	"vm move":       parseVMPoint("move"),
+	"vm snapshot":   parseVMSnapshot("snapshot"),
+	"vm revert":     parseVMSnapshot("revert"),
 }
 
 // RunForge executes `afk-forge args` against the channel at socket and writes
@@ -639,6 +662,10 @@ func sendForge(ctx context.Context, socket string, call forgeCall, stdout, stder
 	}
 	if reply.Warning != "" {
 		_, _ = fmt.Fprintln(stderr, reply.Warning)
+	}
+	if call.saveTo != "" {
+		err = saveScreenshot(call.saveTo, reply, stdout)
+		return
 	}
 	_, err = io.WriteString(stdout, reply.Output)
 	return

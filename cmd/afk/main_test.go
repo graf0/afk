@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -44,6 +45,31 @@ func TestRun(t *testing.T) {
 			if !strings.Contains(out.String(), want) {
 				t.Errorf("output lacks %q:\n%s", want, out.String())
 			}
+		}
+	})
+
+	t.Run("config prints the public ssh key of the test VMs", func(t *testing.T) {
+		if _, err := exec.LookPath("ssh-keygen"); err != nil {
+			t.Skip("no ssh-keygen")
+		}
+		t.Setenv("HOME", t.TempDir())
+		withVM := t.TempDir()
+		_ = os.Mkdir(filepath.Join(withVM, ".git"), 0o755)
+		toml := "[forge]\nkind = \"github\"\nrepo = \"o/r\"\n[gate]\ncmd = \"true\"\n[[vm]]\nname = \"win11\"\nuser = \"admin\"\nos = \"windows\"\n"
+		if err := os.WriteFile(filepath.Join(withVM, ".afk.toml"), []byte(toml), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		var first, second, none bytes.Buffer
+		for _, out := range []*bytes.Buffer{&first, &second} {
+			if err := runCommand(t.Context(), []string{"config"}, withVM, out); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if !strings.Contains(first.String(), "# ssh-ed25519 ") || first.String() != second.String() {
+			t.Errorf("config twice = %q, %q: want the same public key", first.String(), second.String())
+		}
+		if err := runCommand(t.Context(), []string{"config"}, root, &none); err != nil || strings.Contains(none.String(), "ssh-ed25519") {
+			t.Errorf("a Project without [[vm]]: %q, %v", none.String(), err)
 		}
 	})
 

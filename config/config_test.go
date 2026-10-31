@@ -193,6 +193,8 @@ func TestParseExposeAndVM(t *testing.T) {
 		{"vm ok", "[[vm]]\nname = \"win11\"\nuser = \"admin\"\nos = \"windows\"\n", ""},
 		{"vm no user", "[[vm]]\nname = \"win11\"\nos = \"linux\"\n", "vm[0].user"},
 		{"vm bad os", "[[vm]]\nname = \"win11\"\nuser = \"a\"\nos = \"mac\"\n", "vm[0].os"},
+		{"vm name with space", "[[vm]]\nname = \"win 11\"\nuser = \"a\"\nos = \"linux\"\n", "vm[0].name"},
+		{"vm user injecting ssh config", "[[vm]]\nname = \"a\"\nuser = \"u\\nHost *\"\nos = \"linux\"\n", "vm[0].user"},
 		{"vm duplicate", "[[vm]]\nname = \"a\"\nuser = \"u\"\nos = \"linux\"\n[[vm]]\nname = \"a\"\nuser = \"u\"\nos = \"linux\"\n", "vm[1].name"},
 	}
 	for _, tt := range tests {

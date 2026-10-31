@@ -27,6 +27,9 @@ var (
 
 	vmOSes = []string{"windows", "linux"}
 
+	// vmWordPattern is a VM name and ssh user: they go into argv and into an ssh config.
+	vmWordPattern = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]*$`)
+
 	repoPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
 )
 
@@ -254,9 +257,15 @@ func (c Config) validateVMs(v *validator) {
 		case seen[vm.Name]:
 			v.report(path+".name", "duplicate %q", vm.Name)
 		}
+		if vm.Name != "" && !vmWordPattern.MatchString(vm.Name) {
+			v.report(path+".name", "%q: want %s", vm.Name, vmWordPattern)
+		}
 		seen[vm.Name] = true
-		if vm.User == "" {
+		switch {
+		case vm.User == "":
 			v.report(path+".user", "required")
+		case !vmWordPattern.MatchString(vm.User):
+			v.report(path+".user", "%q: want %s", vm.User, vmWordPattern)
 		}
 		if !slices.Contains(vmOSes, vm.OS) {
 			v.reportChoice(path+".os", vmOSes, vm.OS)
