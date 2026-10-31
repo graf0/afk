@@ -49,6 +49,7 @@ Wszystko działa na pierwszym planie. Zamknięcie `afk` kończy Stack (`compose 
 
 | Komenda | Opis |
 |---|---|
+| `afk init` | Pyta o forge i gate (podpowiada z `origin`) i tworzy `.afk.toml` oraz szablon Stacku (`compose.afk.yml`, `.afk/Dockerfile`). Istniejących plików nie nadpisuje, niczego nie commituje |
 | `afk config` | Sprawdza `.afk.toml` z drzewa roboczego i wypisuje efektywną konfigurację oraz publiczny klucz ssh dla VM testowych |
 | `afk factory ['*' \| '#N' ...]` | Realizuje gotowe tickety (domyślnie wszystkie) albo wymienione, po kolei. Najpierw wznawia porzucone Runy |
 | `afk chat <nazwa> [--expose] [--rm] [-- args claude]` | Tworzy Chat albo wraca do niego (`claude --continue`). `--expose` publikuje porty z `[expose]`, `--rm` usuwa Chat po wyjściu z claude (po przerwaniu sygnałem Chat zostaje) |
@@ -69,7 +70,7 @@ Run Factory ma ten sam Stack, ale bez tych operacji.
 
 ## `.afk.toml`
 
-Nieznany klucz to błąd. `afk config` wypisuje wszystkie błędy z `linia:kolumna`.
+Utworzysz go przez `afk init`. Nieznany klucz to błąd. `afk config` wypisuje wszystkie błędy z `linia:kolumna`.
 
 ```toml
 [forge]

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -103,11 +104,14 @@ func (l Labels) Names() (names []string) {
 func Load(dir string) (cfg Config, err error) {
 	root, err := FindRoot(dir)
 	if err != nil {
-		err = fmt.Errorf("finding project root: %w", err)
 		return
 	}
 	path := filepath.Join(root, FileName)
 	data, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		err = fmt.Errorf("no %s in %s (the project root): run `afk init`", FileName, root)
+		return
+	}
 	if err != nil {
 		err = fmt.Errorf("reading %s: %w", path, err)
 		return
@@ -192,7 +196,7 @@ func FindRoot(dir string) (root string, err error) {
 			return
 		}
 		if filepath.Dir(cur) == cur {
-			err = fmt.Errorf("no .git found in %s or any parent directory", start)
+			err = fmt.Errorf("no git repository at or above %s: run afk inside a clone of the Project", start)
 			return
 		}
 	}

@@ -101,7 +101,8 @@ func TestLoad(t *testing.T) {
 		dir := t.TempDir()
 		mustMkdir(t, filepath.Join(dir, ".git"))
 		_, err := Load(dir)
-		if err == nil || !strings.Contains(err.Error(), filepath.Join(dir, FileName)) {
+		if err == nil || !strings.Contains(err.Error(), dir) || !strings.Contains(err.Error(), "afk init") ||
+			strings.Contains(err.Error(), "no such file") {
 			t.Errorf("err = %v", err)
 		}
 	})
@@ -123,7 +124,7 @@ func TestLoad(t *testing.T) {
 	})
 	t.Run("no git root", func(t *testing.T) {
 		_, err := Load(t.TempDir())
-		if err == nil || !strings.Contains(err.Error(), ".git") {
+		if err == nil || !strings.Contains(err.Error(), "git repository") {
 			t.Errorf("err = %v", err)
 		}
 	})
@@ -133,7 +134,7 @@ func TestLoad(t *testing.T) {
 			t.Fatal(err)
 		}
 		_, err := Load(root)
-		if err == nil || !strings.Contains(err.Error(), filepath.Join(root, FileName)) {
+		if err == nil || !strings.Contains(err.Error(), "no "+FileName+" in "+root) {
 			t.Errorf("err = %v", err)
 		}
 	})

@@ -27,7 +27,7 @@ func TestRun(t *testing.T) {
 	t.Run("config without .afk.toml fails with path", func(t *testing.T) {
 		var out bytes.Buffer
 		err := runCommand(t.Context(), []string{"config"}, root, &out)
-		if err == nil || !strings.Contains(err.Error(), filepath.Join(root, ".afk.toml")) {
+		if err == nil || !strings.Contains(err.Error(), "no .afk.toml in "+root) {
 			t.Errorf("err = %v", err)
 		}
 	})

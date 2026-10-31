@@ -78,6 +78,8 @@ func runCommand(ctx context.Context, args []string, dir string, stdout io.Writer
 		if _, err = stdout.Write(data); err == nil {
 			err = printVMKey(cfg, stdout)
 		}
+	case args[0] == "init":
+		err = runInit(ctx, dir, stdout)
 	case args[0] == "chat":
 		err = runChat(ctx, args[1:], dir, stdout)
 	default:
