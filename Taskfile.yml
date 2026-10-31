@@ -1,6 +1,15 @@
 # https://taskfile.dev
 version: "3"
 tasks:
+  default:
+    desc: build afk into bin/
+    deps: [build]
+  build:
+    desc: "build afk into bin/ (static, CGO_ENABLED=0: mounted into the Sandbox as afk-cli)"
+    env:
+      CGO_ENABLED: "0"
+    cmds:
+      - go build -o bin/afk ./cmd/afk
   lint:
     desc: golangci-lint
     cmds:
