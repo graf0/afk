@@ -1,24 +1,19 @@
 package chat
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"io/fs"
 	"log"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"slices"
 	"strconv"
 	"strings"
-	"syscall"
-	"time"
 
 	"github.com/graf0/afk/agent"
 	"github.com/graf0/afk/config"
@@ -26,14 +21,8 @@ import (
 	"github.com/graf0/afk/run"
 )
 
-const (
-	// CLIBinary is the name `afk` runs as in the Sandbox, and in $PATH there:
-	// the host's binary, mounted read-only (ADR-0012).
-	CLIBinary = "afk-cli"
-
-	// issuesName is the file of the Chat's state with the numbers of the issues it created, a line each.
-	issuesName = "issues"
-)
+// issuesName is the file of the Chat's state with the numbers of the issues it created, a line each.
+const issuesName = "issues"
 
 // --- protocol: what the Sandbox sends and the host answers ---
 
@@ -57,14 +46,6 @@ type editRequest struct {
 	Body         *string  `json:"body,omitempty"`
 }
 
-// forgeReply is the one JSON document the host answers each call with.
-type forgeReply struct {
-	Output  string `json:"output,omitempty"`
-	Data    []byte `json:"data,omitempty"` // binary output (a screenshot), base64 in the JSON
-	Warning string `json:"warning,omitempty"`
-	Error   string `json:"error,omitempty"`
-}
-
 // issueNumber parses the number of an issue.
 func issueNumber(s string) (n int, err error) {
 	n, err = strconv.Atoi(s)
@@ -76,29 +57,26 @@ func issueNumber(s string) (n int, err error) {
 
 // --- host: the ticket routes of the channel ---
 
-const maxForgeBody = 1 << 20
-
-// forgeChannel is what a Chat's afk-cli works on: the Project's Forge and
+// issueChannel is what a Chat's afk-cli works on: the Project's Forge and
 // labels, the Chat's name (the footer of what it writes) and the file in its
 // state where the issues it creates are noted.
-type forgeChannel struct {
+type issueChannel struct {
 	Forge         forge.Forge
 	ProjectLabels config.Labels
 	Chat          string
 	IssuesPath    string
 }
 
-// forgeServer answers the Sandbox's afk-cli calls with the Project's Forge,
-// one forgeReply per call. Every call goes to log.
-type forgeServer struct {
-	forgeChannel
-	log *log.Logger
+// issueServer answers the Sandbox's `afk-cli issue` calls with the Project's Forge.
+type issueServer struct {
+	issueChannel
+	responder
 }
 
-// forgeRoutes is the ticket part of the channel.
-func forgeRoutes(ch forgeChannel) (group routeGroup) {
+// issueRoutes is the ticket part of the channel.
+func issueRoutes(ch issueChannel) (group routeGroup) {
 	return func(mux *http.ServeMux, logger *log.Logger) {
-		s := &forgeServer{forgeChannel: ch, log: logger}
+		s := &issueServer{issueChannel: ch, responder: responder{log: logger}}
 		mux.HandleFunc("GET /issues/{n}", s.view)
 		mux.HandleFunc("GET /issues", s.list)
 		mux.HandleFunc("POST /issues", s.create)
@@ -110,7 +88,7 @@ func forgeRoutes(ch forgeChannel) (group routeGroup) {
 // request reads the issue number of r's path (when the route has one) and
 // decodes its body into in (when not nil); on failure it answers 400 and
 // ok is false. op names the call for the log.
-func (s *forgeServer) request(w http.ResponseWriter, r *http.Request, name string, in any) (n int, op string, ok bool) {
+func (s *issueServer) request(w http.ResponseWriter, r *http.Request, name string, in any) (n int, op string, ok bool) {
 	op = name
 	var err error
 	if r.PathValue("n") != "" {
@@ -119,21 +97,16 @@ func (s *forgeServer) request(w http.ResponseWriter, r *http.Request, name strin
 			op = fmt.Sprintf("%s #%d", name, n)
 		}
 	}
-	if err == nil && in != nil {
-		if err = json.NewDecoder(http.MaxBytesReader(w, r.Body, maxForgeBody)).Decode(in); err != nil {
-			err = fmt.Errorf("decoding the request: %w", err)
-		}
-	}
 	if err != nil {
 		s.reply(w, op, "", "", http.StatusBadRequest, err)
 		return
 	}
-	ok = true
+	ok = in == nil || s.decode(w, r, op, in)
 	return
 }
 
 // view serves `issue view <n>`: the ticket as the TICKET.md of a Run.
-func (s *forgeServer) view(w http.ResponseWriter, r *http.Request) {
+func (s *issueServer) view(w http.ResponseWriter, r *http.Request) {
 	n, op, ok := s.request(w, r, "view", nil)
 	if !ok {
 		return
@@ -147,7 +120,7 @@ func (s *forgeServer) view(w http.ResponseWriter, r *http.Request) {
 }
 
 // list serves `issue list`: a line `#N  [labels]  title` per issue.
-func (s *forgeServer) list(w http.ResponseWriter, r *http.Request) {
+func (s *issueServer) list(w http.ResponseWriter, r *http.Request) {
 	label := r.URL.Query().Get("label")
 	state, err := forge.ParseState(r.URL.Query().Get("state"))
 	op := fmt.Sprintf("list label=%q state=%s", label, state)
@@ -166,7 +139,7 @@ func (s *forgeServer) list(w http.ResponseWriter, r *http.Request) {
 // create serves `issue create`: the issue gets the footer, and the Chat notes
 // its number. ready-for-agent becomes needs-triage: readiness for the Factory
 // is for a human to give.
-func (s *forgeServer) create(w http.ResponseWriter, r *http.Request) {
+func (s *issueServer) create(w http.ResponseWriter, r *http.Request) {
 	var in createRequest
 	if _, _, ok := s.request(w, r, "create", &in); !ok {
 		return
@@ -180,7 +153,7 @@ func (s *forgeServer) create(w http.ResponseWriter, r *http.Request) {
 	err := s.checkLabels(r.Context(), labels)
 	var n int
 	if err == nil {
-		n, err = s.Forge.CreateIssue(r.Context(), title, s.withFooter(in.Body), labels)
+		n, err = s.Forge.CreateIssue(r.Context(), title, withFooter(s.Chat, in.Body), labels)
 	}
 	op := "create"
 	if err == nil {
@@ -195,7 +168,7 @@ func (s *forgeServer) create(w http.ResponseWriter, r *http.Request) {
 
 // comment serves `issue comment <n>`: the comment gets the footer, and a pull
 // request is refused.
-func (s *forgeServer) comment(w http.ResponseWriter, r *http.Request) {
+func (s *issueServer) comment(w http.ResponseWriter, r *http.Request) {
 	var in commentRequest
 	n, op, ok := s.request(w, r, "comment", &in)
 	if !ok {
@@ -208,7 +181,7 @@ func (s *forgeServer) comment(w http.ResponseWriter, r *http.Request) {
 	// Peek refuses a pull request.
 	_, _, err := s.Forge.Peek(r.Context(), n)
 	if err == nil {
-		err = s.Forge.Comment(r.Context(), n, s.withFooter(in.Body))
+		err = s.Forge.Comment(r.Context(), n, withFooter(s.Chat, in.Body))
 	}
 	s.reply(w, op, "", "", http.StatusBadGateway, err)
 }
@@ -218,7 +191,7 @@ func (s *forgeServer) comment(w http.ResponseWriter, r *http.Request) {
 // footer). Everything is checked before the first write, but a Forge failure
 // midway leaves the earlier writes. No state changes, and a pull request is
 // refused.
-func (s *forgeServer) edit(w http.ResponseWriter, r *http.Request) {
+func (s *issueServer) edit(w http.ResponseWriter, r *http.Request) {
 	var in editRequest
 	n, op, ok := s.request(w, r, "edit", &in)
 	if !ok {
@@ -260,7 +233,7 @@ func (s *forgeServer) edit(w http.ResponseWriter, r *http.Request) {
 
 // applyEdit checks what edit may do, then does it. edit has the labels
 // cleaned and triaged, and the title on one line.
-func (s *forgeServer) applyEdit(ctx context.Context, n int, edit editRequest) (err error) {
+func (s *issueServer) applyEdit(ctx context.Context, n int, edit editRequest) (err error) {
 	add, remove, title, body := edit.AddLabels, edit.RemoveLabels, edit.Title, edit.Body
 	// Peek refuses a pull request.
 	ticket, _, err := s.Forge.Peek(ctx, n)
@@ -288,7 +261,7 @@ func (s *forgeServer) applyEdit(ctx context.Context, n int, edit editRequest) (e
 	}
 	if title != nil || body != nil {
 		if body != nil {
-			signed := s.withFooter(*body)
+			signed := withFooter(s.Chat, *body)
 			body = &signed
 		}
 		if err = s.Forge.EditIssue(ctx, n, title, body); err != nil {
@@ -309,7 +282,7 @@ func (s *forgeServer) applyEdit(ctx context.Context, n int, edit editRequest) (e
 }
 
 // checkLabels fails on a label the repository doesn't have.
-func (s *forgeServer) checkLabels(ctx context.Context, labels []string) (err error) {
+func (s *issueServer) checkLabels(ctx context.Context, labels []string) (err error) {
 	known, err := s.Forge.Labels(ctx)
 	if err != nil {
 		err = fmt.Errorf("listing the labels of the repository: %w", err)
@@ -326,7 +299,7 @@ func (s *forgeServer) checkLabels(ctx context.Context, labels []string) (err err
 
 // triageLabels cleans labels and replaces ready-for-agent with needs-triage
 // (the names of the Project's [labels]); replaced says it did.
-func (s *forgeServer) triageLabels(labels []string) (out []string, replaced bool) {
+func (s *issueServer) triageLabels(labels []string) (out []string, replaced bool) {
 	labels = cleanLabels(labels)
 	for i, label := range labels {
 		if strings.EqualFold(label, s.ProjectLabels.ReadyForAgent) {
@@ -339,7 +312,7 @@ func (s *forgeServer) triageLabels(labels []string) (out []string, replaced bool
 
 // replacedNote marks op as having its ready-for-agent replaced, when it was,
 // and words the warning for the Sandbox's stderr.
-func (s *forgeServer) replacedNote(op string, replaced bool) (noted, warning string) {
+func (s *issueServer) replacedNote(op string, replaced bool) (noted, warning string) {
 	noted = op
 	if replaced {
 		noted += " (" + s.ProjectLabels.ReadyForAgent + " replaced)"
@@ -348,21 +321,8 @@ func (s *forgeServer) replacedNote(op string, replaced bool) (noted, warning str
 	return
 }
 
-// withFooter sanitizes text like the Agent's text of a Run and signs it with
-// the Chat, after any truncation so the footer always stays. A footer of the
-// Chat already ending the text (an edit of a signed body) is not doubled.
-func (s *forgeServer) withFooter(text string) (signed string) {
-	footer := "— z Chat " + s.Chat
-	text, found := strings.CutSuffix(strings.TrimRight(text, " \t\r\n"), footer)
-	if found {
-		text = strings.TrimRight(text, " \t\r\n")
-	}
-	signed = run.AgentText(text) + "\n\n" + footer
-	return
-}
-
 // created reports whether the Chat created issue n.
-func (s *forgeServer) created(n int) (own bool, err error) {
+func (s *issueServer) created(n int) (own bool, err error) {
 	data, err := os.ReadFile(s.IssuesPath)
 	if errors.Is(err, fs.ErrNotExist) {
 		err = nil
@@ -372,7 +332,7 @@ func (s *forgeServer) created(n int) (own bool, err error) {
 }
 
 // noteIssue appends n to the issues of the Chat.
-func (s *forgeServer) noteIssue(n int) (err error) {
+func (s *issueServer) noteIssue(n int) (err error) {
 	file, err := os.OpenFile(s.IssuesPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		err = fmt.Errorf("opening %s: %w", s.IssuesPath, err)
@@ -386,22 +346,18 @@ func (s *forgeServer) noteIssue(n int) (err error) {
 	return
 }
 
-// reply logs the call and answers with output and a warning for the Sandbox's
-// stderr, or with failure (status) when err is set.
-func (s *forgeServer) reply(w http.ResponseWriter, op, output, warning string, failure int, err error) {
-	body := forgeReply{Output: output, Warning: warning}
-	if err != nil {
-		s.log.Printf("%s: error: %v", op, err)
-		w.WriteHeader(failure)
-		body = forgeReply{Error: agent.Sanitize(err.Error())}
-	} else {
-		s.log.Printf("%s: ok", op)
+// withFooter sanitizes text like the Agent's text of a Run and signs it with
+// chat, after any truncation so the footer always stays. A footer of the
+// Chat already ending the text (an edit of a signed body) is not doubled.
+func withFooter(chat, text string) (signed string) {
+	footer := "— z Chat " + chat
+	text, found := strings.CutSuffix(strings.TrimRight(text, " \t\r\n"), footer)
+	if found {
+		text = strings.TrimRight(text, " \t\r\n")
 	}
-	_ = jsonEncode(w, body)
+	signed = run.AgentText(text) + "\n\n" + footer
+	return
 }
-
-// jsonEncode writes v as the one JSON document of a reply.
-func jsonEncode(w io.Writer, v any) (err error) { return json.NewEncoder(w).Encode(v) }
 
 // titleLine is title sanitized like the Agent's text of a Run, on one line:
 // AgentText may add a truncation note on a line of its own.
@@ -420,114 +376,35 @@ func cleanLabels(labels []string) (out []string) {
 	return
 }
 
-// --- Sandbox: afk-cli ---
-
-const forgeUsage = `usage:
-  afk-cli issue view <n>
-  afk-cli issue list [--label <label>] [--state open|closed|all]
-  afk-cli issue create --title <title> [--body <text> | --body-file -] [--label <a,b>]...
-  afk-cli issue comment <n> (--body <text> | --body-file -)
-  afk-cli issue edit <n> [--add-label <a,b>]... [--remove-label <a,b>]... [--title <title>] [--body <text> | --body-file -]
-  afk-cli pr create --title <title> [--body <text> | --body-file -]
-  afk-cli stack logs <service> [--tail <n>]
-  afk-cli stack restart <service>
-  afk-cli stack reseed
-  afk-cli vm list
-  afk-cli vm (start|shutdown|release) <vm>
-  afk-cli vm screenshot <vm> [--file <path>]
-  afk-cli vm key <vm> <key>[+<key>]...
-  afk-cli vm type <vm> (<text> | -)
-  afk-cli vm click <vm> [--button left|right|middle] <x> <y>
-  afk-cli vm move <vm> <x> <y>
-  afk-cli vm (snapshot|revert) <vm> <name>
---body-file - reads the text from stdin; --label, --add-label and --remove-label may repeat or list labels with commas;
---title and --body only on issues created by this Chat that are not ready-for-agent;
-pr create pushes the commits of this clone (uncommitted changes stay out) to the branch of this Chat and opens a pull request, or, when one is open, only pushes and prints its URL;
-stack logs prints the last n lines (default 100, at most 1000) of a service of the Stack; stack restart works on any service but afk and afk-setup; stack reseed runs afk-setup again and prints its output;
-vm works only on the test VMs of [[vm]]: list shows state, os, owner and address; start, shutdown (ACPI), key, type, click, move, snapshot and revert claim the VM for this Chat until release or the end of afk chat (another Chat gets 409); screenshot saves a PNG (by default in the temporary directory) and prints its path and size, click and move take pixels of the last screenshot; key is a combination such as ctrl+alt+delete; type takes US-ASCII, at most 500 characters, "-" reads stdin`
-
-// errForgeUsage answers arguments afk-cli does not take.
-var errForgeUsage = errors.New(forgeUsage)
-
-// forgeCall is a request to the channel: what a subcommand of afk-cli asks for.
-type forgeCall struct {
-	method, path string
-	body         any
-	// saveTo is the file the reply's Data is written to (a screenshot), when set.
-	saveTo string
-}
-
-// forgeCommands parse the arguments after `<group> <subcommand>` into the call.
-var forgeCommands = map[string]func(args []string, stdin io.Reader) (call forgeCall, err error){
-	"issue view":    parseView,
-	"issue list":    parseList,
-	"issue create":  parseCreate,
-	"issue comment": parseComment,
-	"issue edit":    parseEdit,
-	"pr create":     parsePullCreate,
-	"stack logs":    parseStackLogs,
-	"stack restart": parseStackRestart,
-	"stack reseed":  parseStackReseed,
-	"vm list":       parseVMList,
-	"vm start":      vmAction("start"),
-	"vm shutdown":   vmAction("shutdown"),
-	"vm release":    vmAction("release"),
-	"vm screenshot": parseVMScreenshot,
-	"vm key":        parseVMKey,
-	"vm type":       parseVMType,
-	"vm click":      parseVMPoint("click"),
-	"vm move":       parseVMPoint("move"),
-	"vm snapshot":   parseVMSnapshot("snapshot"),
-	"vm revert":     parseVMSnapshot("revert"),
-}
-
-// RunForge executes `afk-cli args` against the channel at socket and writes
-// the result to stdout and the channel's warning to stderr; stdin is the text
-// of --body-file -.
-func RunForge(ctx context.Context, socket string, args []string, stdin io.Reader, stdout, stderr io.Writer) (err error) {
-	var parse func(args []string, stdin io.Reader) (call forgeCall, err error)
-	if len(args) >= 2 {
-		parse = forgeCommands[args[0]+" "+args[1]]
-	}
-	if parse == nil {
-		err = errForgeUsage
-		return
-	}
-	call, err := parse(args[2:], stdin)
-	if err != nil {
-		return
-	}
-	err = sendForge(ctx, socket, call, stdout, stderr)
-	return
-}
+// --- Sandbox: afk-cli issue ---
 
 // issueArg splits args into the issue number in front, as the path of the
 // issue, and the rest.
 func issueArg(args []string) (path string, rest []string, err error) {
 	if len(args) == 0 {
-		err = errForgeUsage
+		err = errCLIUsage
 		return
 	}
 	if _, err = issueNumber(args[0]); err != nil {
-		err = errForgeUsage
+		err = errCLIUsage
 		return
 	}
 	path, rest = "/issues/"+args[0], args[1:]
 	return
 }
 
-// parseView parses `issue view <n>`.
-func parseView(args []string, _ io.Reader) (call forgeCall, err error) {
+// parseIssueView parses `issue view <n>`.
+func parseIssueView(args []string, _ io.Reader) (call cliCall, err error) {
 	path, rest, err := issueArg(args)
 	if err == nil && len(rest) != 0 {
-		err = errForgeUsage
+		err = errCLIUsage
 	}
-	call = forgeCall{method: http.MethodGet, path: path}
+	call = cliCall{method: http.MethodGet, path: path}
 	return
 }
 
-// parseList parses `issue list [--label <label>] [--state <state>]`.
-func parseList(args []string, _ io.Reader) (call forgeCall, err error) {
+// parseIssueList parses `issue list [--label <label>] [--state <state>]`.
+func parseIssueList(args []string, _ io.Reader) (call cliCall, err error) {
 	flags := flag.NewFlagSet("issue list", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	label := flags.String("label", "", "")
@@ -536,33 +413,33 @@ func parseList(args []string, _ io.Reader) (call forgeCall, err error) {
 		_, err = forge.ParseState(*state)
 	}
 	if err != nil || flags.NArg() != 0 {
-		err = errForgeUsage
+		err = errCLIUsage
 		return
 	}
-	call = forgeCall{method: http.MethodGet, path: "/issues?label=" + url.QueryEscape(*label) + "&state=" + url.QueryEscape(*state)}
+	call = cliCall{method: http.MethodGet, path: "/issues?label=" + url.QueryEscape(*label) + "&state=" + url.QueryEscape(*state)}
 	return
 }
 
-// parseCreate parses `issue create`.
-func parseCreate(args []string, stdin io.Reader) (call forgeCall, err error) {
+// parseIssueCreate parses `issue create`.
+func parseIssueCreate(args []string, stdin io.Reader) (call cliCall, err error) {
 	var body string
 	req := createRequest{}
 	flags, text := textFlags("issue create", &body, stdin)
 	flags.StringVar(&req.Title, "title", "", "")
 	labelsFlag(flags, "label", &req.Labels)
 	if err = flags.Parse(args); err != nil || flags.NArg() != 0 || strings.TrimSpace(req.Title) == "" {
-		err = errForgeUsage
+		err = errCLIUsage
 		return
 	}
 	if req.Body, err = text(); err != nil {
 		return
 	}
-	call = forgeCall{method: http.MethodPost, path: "/issues", body: req}
+	call = cliCall{method: http.MethodPost, path: "/issues", body: req}
 	return
 }
 
-// parseComment parses `issue comment <n>`.
-func parseComment(args []string, stdin io.Reader) (call forgeCall, err error) {
+// parseIssueComment parses `issue comment <n>`.
+func parseIssueComment(args []string, stdin io.Reader) (call cliCall, err error) {
 	path, rest, err := issueArg(args)
 	if err != nil {
 		return
@@ -570,23 +447,23 @@ func parseComment(args []string, stdin io.Reader) (call forgeCall, err error) {
 	var body string
 	flags, text := textFlags("issue comment", &body, stdin)
 	if flags.Parse(rest) != nil || flags.NArg() != 0 {
-		err = errForgeUsage
+		err = errCLIUsage
 		return
 	}
 	if body, err = text(); err != nil {
 		return
 	}
 	if strings.TrimSpace(body) == "" {
-		err = errForgeUsage
+		err = errCLIUsage
 		return
 	}
-	call = forgeCall{method: http.MethodPost, path: path + "/comments", body: commentRequest{Body: body}}
+	call = cliCall{method: http.MethodPost, path: path + "/comments", body: commentRequest{Body: body}}
 	return
 }
 
-// parseEdit parses `issue edit <n>`: only the title and body given go in
+// parseIssueEdit parses `issue edit <n>`: only the title and body given go in
 // the request, an absent one stays as it is.
-func parseEdit(args []string, stdin io.Reader) (call forgeCall, err error) {
+func parseIssueEdit(args []string, stdin io.Reader) (call cliCall, err error) {
 	path, rest, err := issueArg(args)
 	if err != nil {
 		return
@@ -601,7 +478,7 @@ func parseEdit(args []string, stdin io.Reader) (call forgeCall, err error) {
 	labelsFlag(flags, "add-label", &req.AddLabels)
 	labelsFlag(flags, "remove-label", &req.RemoveLabels)
 	if flags.Parse(rest) != nil || flags.NArg() != 0 {
-		err = errForgeUsage
+		err = errCLIUsage
 		return
 	}
 	var hasBody bool
@@ -612,92 +489,6 @@ func parseEdit(args []string, stdin io.Reader) (call forgeCall, err error) {
 		}
 		req.Body = &body
 	}
-	call = forgeCall{method: http.MethodPatch, path: path, body: req}
+	call = cliCall{method: http.MethodPatch, path: path, body: req}
 	return
-}
-
-// sendForge sends call over the channel at socket and writes the reply: the
-// output to stdout, the warning to stderr.
-func sendForge(ctx context.Context, socket string, call forgeCall, stdout, stderr io.Writer) (err error) {
-	// pr create bundles, validates and pushes the clone and asks the Forge
-	// twice: minutes on a big repository; a ticket call answers in seconds.
-	client := &http.Client{Timeout: 5 * time.Minute, Transport: &http.Transport{
-		DialContext: func(ctx context.Context, _, _ string) (conn net.Conn, err error) {
-			conn, err = (&net.Dialer{}).DialContext(ctx, "unix", socket)
-			return
-		},
-	}}
-	var payload io.Reader
-	if call.body != nil {
-		var data []byte
-		if data, err = json.Marshal(call.body); err != nil {
-			err = fmt.Errorf("encoding the request: %w", err)
-			return
-		}
-		payload = bytes.NewReader(data)
-	}
-	req, err := http.NewRequestWithContext(ctx, call.method, "http://afk"+call.path, payload)
-	if err != nil {
-		err = fmt.Errorf("building the request: %w", err)
-		return
-	}
-	resp, err := client.Do(req)
-	if errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ECONNREFUSED) {
-		err = errors.New("no channel to afk (works only in a Sandbox of `afk chat`)")
-		return
-	}
-	if err != nil {
-		err = fmt.Errorf("calling afk: %w", err)
-		return
-	}
-	defer func() { _ = resp.Body.Close() }()
-	var reply forgeReply
-	if err = json.NewDecoder(resp.Body).Decode(&reply); err != nil {
-		err = fmt.Errorf("reading the reply of afk: %w", err)
-		return
-	}
-	if reply.Error != "" {
-		err = errors.New(reply.Error)
-		return
-	}
-	if reply.Warning != "" {
-		_, _ = fmt.Fprintln(stderr, reply.Warning)
-	}
-	if call.saveTo != "" {
-		err = saveScreenshot(call.saveTo, reply, stdout)
-		return
-	}
-	_, err = io.WriteString(stdout, reply.Output)
-	return
-}
-
-// textFlags is the flag set of a command that takes a text: --body, or
-// --body-file - for stdin. text returns it once the set is parsed.
-func textFlags(name string, body *string, stdin io.Reader) (flags *flag.FlagSet, text func() (text string, err error)) {
-	flags = flag.NewFlagSet(name, flag.ContinueOnError)
-	flags.SetOutput(io.Discard)
-	flags.StringVar(body, "body", "", "")
-	file := flags.String("body-file", "", "")
-	text = func() (text string, err error) {
-		switch {
-		case *file == "":
-			text = *body
-		case *file != "-" || *body != "":
-			err = errForgeUsage
-		default:
-			var data []byte
-			data, err = io.ReadAll(stdin)
-			text = string(data)
-		}
-		return
-	}
-	return
-}
-
-// labelsFlag defines flag name, which may repeat and list labels with commas.
-func labelsFlag(flags *flag.FlagSet, name string, labels *[]string) {
-	flags.Func(name, "", func(value string) (err error) {
-		*labels = append(*labels, strings.Split(value, ",")...)
-		return
-	})
 }

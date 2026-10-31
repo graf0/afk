@@ -11,7 +11,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/graf0/afk/config"
 	"github.com/graf0/afk/forge"
 	"github.com/graf0/afk/run"
 )
@@ -95,8 +94,7 @@ func (fx *pullFixture) serve(t *testing.T, quarantine run.Quarantine, stateDir s
 		return cmd.Run()
 	}
 	stop, err := serveChannel(t.Context(), fx.socket, io.Discard, pullRoutes(pullChannel{
-		forgeChannel: forgeChannel{Forge: &fx.forge, ProjectLabels: config.Labels{}, Chat: "plan"},
-		Quarantine:   quarantine, Branch: "chat-plan", BaseBranch: "main", TempDir: stateDir,
+		Forge: &fx.forge, Chat: "plan", Quarantine: quarantine, Branch: "chat-plan", BaseBranch: "main", TempDir: stateDir,
 		Exec: execInClone, Protected: func() (paths []string) { return fx.protected },
 	}))
 	if err != nil {
@@ -121,7 +119,7 @@ func (fx *pullFixture) commit(t *testing.T, path, message string) {
 func (fx *pullFixture) call(t *testing.T, stdin string, args ...string) (out, warning string, err error) {
 	t.Helper()
 	var stdout, stderr bytes.Buffer
-	err = RunForge(t.Context(), fx.socket, args, strings.NewReader(stdin), &stdout, &stderr)
+	err = RunCLI(t.Context(), fx.socket, args, strings.NewReader(stdin), &stdout, &stderr)
 	return stdout.String(), stderr.String(), err
 }
 

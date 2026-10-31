@@ -2,6 +2,7 @@ package chat
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -11,6 +12,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/graf0/afk/agent"
 )
 
 const (
@@ -20,11 +23,27 @@ const (
 
 	// maxSocketPath is what a sun_path holds, with its terminating zero.
 	maxSocketPath = 107
+
+	// maxRequestBody caps the JSON body of a call.
+	maxRequestBody = 1 << 20
 )
 
-// routeGroup registers the routes of one part of the channel (tickets and pull
-// requests today; the Stack and the test VMs are added the same way) on mux.
-// Every call of a route goes to logger.
+// channelReply is the one JSON document the host answers each call with.
+type channelReply struct {
+	Output  string `json:"output,omitempty"`
+	Data    []byte `json:"data,omitempty"` // binary output (a screenshot), base64 in the JSON
+	Warning string `json:"warning,omitempty"`
+	Error   string `json:"error,omitempty"`
+}
+
+// responder answers the calls of a route group, one channelReply per call,
+// and logs each.
+type responder struct {
+	log *log.Logger
+}
+
+// routeGroup registers the routes of one part of the channel (tickets, pull
+// requests, the Stack, the test VMs) on mux. Every call of a route goes to logger.
 type routeGroup func(mux *http.ServeMux, logger *log.Logger)
 
 // channelHandler is the channel's HTTP handler: the routes of groups, and 404
@@ -40,7 +59,7 @@ func channelHandler(logTo io.Writer, groups ...routeGroup) (handler http.Handler
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		logger.Printf("%s %s: error: no such route", r.Method, r.URL.Path)
 		w.WriteHeader(http.StatusNotFound)
-		_ = jsonEncode(w, forgeReply{Error: "no such route"})
+		_ = jsonEncode(w, channelReply{Error: "no such route"})
 	})
 	return mux
 }
@@ -89,3 +108,31 @@ func serveChannel(ctx context.Context, socket string, logTo io.Writer, groups ..
 	}
 	return
 }
+
+// decode reads the JSON body of r into in; on failure it answers 400 and ok
+// is false.
+func (s responder) decode(w http.ResponseWriter, r *http.Request, op string, in any) (ok bool) {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRequestBody)).Decode(in); err != nil {
+		s.reply(w, op, "", "", http.StatusBadRequest, fmt.Errorf("decoding the request: %w", err))
+		return
+	}
+	ok = true
+	return
+}
+
+// reply logs the call and answers with output and a warning for the Sandbox's
+// stderr, or with failure (status) when err is set.
+func (s responder) reply(w http.ResponseWriter, op, output, warning string, failure int, err error) {
+	body := channelReply{Output: output, Warning: warning}
+	if err != nil {
+		s.log.Printf("%s: error: %v", op, err)
+		w.WriteHeader(failure)
+		body = channelReply{Error: agent.Sanitize(err.Error())}
+	} else {
+		s.log.Printf("%s: ok", op)
+	}
+	_ = jsonEncode(w, body)
+}
+
+// jsonEncode writes v as the one JSON document of a reply.
+func jsonEncode(w io.Writer, v any) (err error) { return json.NewEncoder(w).Encode(v) }

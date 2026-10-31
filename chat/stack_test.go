@@ -72,7 +72,7 @@ func serveStack(t *testing.T, st *controlStack) (socket string) {
 func callStack(t *testing.T, socket string, args ...string) (out, warning string, err error) {
 	t.Helper()
 	var stdout, stderr bytes.Buffer
-	err = RunForge(t.Context(), socket, args, strings.NewReader(""), &stdout, &stderr)
+	err = RunCLI(t.Context(), socket, args, strings.NewReader(""), &stdout, &stderr)
 	return stdout.String(), stderr.String(), err
 }
 

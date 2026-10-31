@@ -22,7 +22,7 @@ func main() {
 	var err error
 	if filepath.Base(os.Args[0]) == chat.CLIBinary { // afk mounted in a Chat's Sandbox (ADR-0012)
 		name = chat.CLIBinary
-		err = chat.RunForge(ctx, chat.CLISocket, os.Args[1:], os.Stdin, os.Stdout, os.Stderr)
+		err = chat.RunCLI(ctx, chat.CLISocket, os.Args[1:], os.Stdin, os.Stdout, os.Stderr)
 	} else {
 		var dir string
 		if dir, err = os.Getwd(); err == nil {

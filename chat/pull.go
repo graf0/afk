@@ -22,11 +22,13 @@ type pullCreateRequest struct {
 	Body  string `json:"body"`
 }
 
-// pullChannel is what the pull request route works on, besides the Forge and
-// the name of the Chat: the Chat's branch in the Quarantine repo, the base
-// branch of the pull request and the Sandbox's clone, which Exec runs commands in.
+// pullChannel is what the pull request route works on: the Project's Forge,
+// the name of the Chat (the footer of the description), the Chat's branch in
+// the Quarantine repo, the base branch of the pull request and the Sandbox's
+// clone, which Exec runs commands in.
 type pullChannel struct {
-	forgeChannel
+	Forge      forge.Forge
+	Chat       string
 	Quarantine run.Quarantine
 	Branch     string // chat-<name>: in the clone, the Quarantine repo and on the Forge
 	BaseBranch string
@@ -40,7 +42,7 @@ type pullChannel struct {
 // pullServer answers the Sandbox's `afk-cli pr` calls. Calls go one at a
 // time: they move the same branch.
 type pullServer struct {
-	*forgeServer
+	responder
 	ch pullChannel
 	mu sync.Mutex
 }
@@ -48,7 +50,7 @@ type pullServer struct {
 // pullRoutes is the pull request part of the channel.
 func pullRoutes(ch pullChannel) (group routeGroup) {
 	return func(mux *http.ServeMux, logger *log.Logger) {
-		s := &pullServer{forgeServer: &forgeServer{forgeChannel: ch.forgeChannel, log: logger}, ch: ch}
+		s := &pullServer{responder: responder{log: logger}, ch: ch}
 		mux.HandleFunc("POST /pulls", s.create)
 	}
 }
@@ -60,7 +62,7 @@ func pullRoutes(ch pullChannel) (group routeGroup) {
 // validation passes.
 func (s *pullServer) create(w http.ResponseWriter, r *http.Request) {
 	var in pullCreateRequest
-	if _, _, ok := s.request(w, r, "pr create", &in); !ok {
+	if !s.decode(w, r, "pr create", &in) {
 		return
 	}
 	title := titleLine(in.Title)
@@ -108,7 +110,7 @@ func (s *pullServer) open(ctx context.Context, title, body string) (pull forge.P
 	if err = s.push(ctx, prev, head); err != nil {
 		return
 	}
-	pull, found, err := s.Forge.FindPull(ctx, branch)
+	pull, found, err := s.ch.Forge.FindPull(ctx, branch)
 	if err != nil {
 		return
 	}
@@ -121,7 +123,7 @@ func (s *pullServer) open(ctx context.Context, title, body string) (pull forge.P
 		warning = strings.TrimSpace(warning + "\n" + note)
 		return
 	}
-	pull, err = s.Forge.CreatePull(ctx, branch, s.ch.BaseBranch, title, s.withFooter(body), false)
+	pull, err = s.ch.Forge.CreatePull(ctx, branch, s.ch.BaseBranch, title, withFooter(s.ch.Chat, body), false)
 	return
 }
 
@@ -133,7 +135,7 @@ func (s *pullServer) open(ctx context.Context, title, body string) (pull forge.P
 // rollback, as an absent branch on the Forge passes that check.
 func (s *pullServer) push(ctx context.Context, prev, head string) (err error) {
 	q, branch := s.ch.Quarantine, s.ch.Branch
-	remote := s.Forge.Remote()
+	remote := s.ch.Forge.Remote()
 	tip, err := q.RemoteTip(ctx, remote, branch)
 	if err != nil {
 		return
@@ -156,18 +158,18 @@ func (s *pullServer) push(ctx context.Context, prev, head string) (err error) {
 // --- Sandbox: afk-cli pr ---
 
 // parsePullCreate parses `pr create`.
-func parsePullCreate(args []string, stdin io.Reader) (call forgeCall, err error) {
+func parsePullCreate(args []string, stdin io.Reader) (call cliCall, err error) {
 	var body string
 	req := pullCreateRequest{}
 	flags, text := textFlags("pr create", &body, stdin)
 	flags.StringVar(&req.Title, "title", "", "")
 	if err = flags.Parse(args); err != nil || flags.NArg() != 0 || strings.TrimSpace(req.Title) == "" {
-		err = errForgeUsage
+		err = errCLIUsage
 		return
 	}
 	if req.Body, err = text(); err != nil {
 		return
 	}
-	call = forgeCall{method: http.MethodPost, path: "/pulls", body: req}
+	call = cliCall{method: http.MethodPost, path: "/pulls", body: req}
 	return
 }

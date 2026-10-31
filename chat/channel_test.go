@@ -36,7 +36,7 @@ func get(t *testing.T, client *http.Client, method, path string) (status int, bo
 	return resp.StatusCode, string(data)
 }
 
-func TestForgeUnknownRoute(t *testing.T) {
+func TestChannelUnknownRoute(t *testing.T) {
 	socket, logPath, _ := serveFake(t, fakeForge{})
 	client := socketClient(socket)
 	// A known path with another method falls to "/" as well: 404, not 405.
@@ -61,10 +61,10 @@ func TestServeChannelGroups(t *testing.T) {
 	extra := func(mux *http.ServeMux, logger *log.Logger) {
 		mux.HandleFunc("POST /pr", func(w http.ResponseWriter, r *http.Request) {
 			logger.Print("pr: ok")
-			_ = jsonEncode(w, forgeReply{Output: "opened"})
+			_ = jsonEncode(w, channelReply{Output: "opened"})
 		})
 	}
-	stop, err := serveChannel(t.Context(), socket, &logged, forgeRoutes(forgeChannel{Forge: fakeForge{}}), extra)
+	stop, err := serveChannel(t.Context(), socket, &logged, issueRoutes(issueChannel{Forge: fakeForge{}}), extra)
 	if err != nil {
 		t.Fatal(err)
 	}

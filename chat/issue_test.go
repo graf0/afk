@@ -124,7 +124,7 @@ func serveFake(t *testing.T, f forge.Forge) (socket, logPath, issuesPath string)
 	if err != nil {
 		t.Fatal(err)
 	}
-	stop, err := serveChannel(t.Context(), socket, logFile, forgeRoutes(forgeChannel{
+	stop, err := serveChannel(t.Context(), socket, logFile, issueRoutes(issueChannel{
 		Forge: f, ProjectLabels: config.Labels{NeedsTriage: "needs-triage", ReadyForAgent: "ready-for-agent"}, Chat: "chat-1", IssuesPath: issuesPath,
 	}))
 	if err != nil {
@@ -134,14 +134,14 @@ func serveFake(t *testing.T, f forge.Forge) (socket, logPath, issuesPath string)
 	return
 }
 
-func TestRunForge(t *testing.T) {
+func TestIssueRead(t *testing.T) {
 	socket, logPath, _ := serveFake(t, fakeForge{tickets: []forge.Ticket{
 		{Number: 3, Title: "First\x1b[31m", Body: "B", Comments: []string{"c1"}, Labels: []string{"bug", "needs-triage"}},
 		{Number: 5, Title: "Second"},
 	}, closed: 5})
 	call := func(args ...string) (out string, err error) {
 		var stdout bytes.Buffer
-		err = RunForge(t.Context(), socket, args, nil, &stdout, io.Discard)
+		err = RunCLI(t.Context(), socket, args, nil, &stdout, io.Discard)
 		return stdout.String(), err
 	}
 
@@ -174,20 +174,13 @@ func TestRunForge(t *testing.T) {
 	}
 }
 
-func TestRunForgeNoChannel(t *testing.T) {
-	err := RunForge(t.Context(), filepath.Join(t.TempDir(), "none.sock"), []string{"issue", "list"}, nil, &bytes.Buffer{}, io.Discard)
-	if err == nil || !strings.Contains(err.Error(), "no channel to afk") {
-		t.Errorf("err = %v", err)
-	}
-}
-
-func TestRunForgeWrite(t *testing.T) {
+func TestIssueWrite(t *testing.T) {
 	var created []forge.Ticket
 	var comments []string
 	socket, logPath, issuesPath := serveFake(t, fakeForge{created: &created, comments: &comments, pull: 11, tickets: []forge.Ticket{{Number: 7}, {Number: 8}, {Number: 9}}})
 	call := func(stdin string, args ...string) (out, warning string, err error) {
 		var stdout, stderr bytes.Buffer
-		err = RunForge(t.Context(), socket, args, strings.NewReader(stdin), &stdout, &stderr)
+		err = RunCLI(t.Context(), socket, args, strings.NewReader(stdin), &stdout, &stderr)
 		return stdout.String(), stderr.String(), err
 	}
 
@@ -248,7 +241,7 @@ func TestRunForgeWrite(t *testing.T) {
 	}
 }
 
-func TestRunForgeEdit(t *testing.T) {
+func TestIssueEdit(t *testing.T) {
 	var edits []string
 	socket, logPath, issuesPath := serveFake(t, fakeForge{edits: &edits, pull: 9, closed: 3, tickets: []forge.Ticket{{Number: 3}, {Number: 4}, {Number: 6, Labels: []string{"Ready-For-Agent"}}}})
 	if err := os.WriteFile(issuesPath, []byte("4\n6\n"), 0o600); err != nil {
@@ -256,7 +249,7 @@ func TestRunForgeEdit(t *testing.T) {
 	}
 	call := func(stdin string, args ...string) (warning string, err error) {
 		var stderr bytes.Buffer
-		err = RunForge(t.Context(), socket, append([]string{"issue", "edit"}, args...), strings.NewReader(stdin), io.Discard, &stderr)
+		err = RunCLI(t.Context(), socket, append([]string{"issue", "edit"}, args...), strings.NewReader(stdin), io.Discard, &stderr)
 		return stderr.String(), err
 	}
 

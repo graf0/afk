@@ -361,11 +361,11 @@ func (c *chat) live(ctx context.Context, st sandboxStack, checkout string) (err 
 		return
 	}
 	defer func() { _ = logFile.Close() }()
-	tickets := forgeChannel{
+	tickets := issueChannel{
 		Forge: c.Forge, ProjectLabels: c.Base.Config.Labels, Chat: c.Name, IssuesPath: filepath.Join(c.dir, issuesName),
 	}
 	pulls := pullChannel{
-		forgeChannel: tickets, Quarantine: c.quarantine, Branch: c.branch, BaseBranch: c.Base.Branch, TempDir: c.stateDir,
+		Forge: c.Forge, Chat: c.Name, Quarantine: c.quarantine, Branch: c.branch, BaseBranch: c.Base.Branch, TempDir: c.stateDir,
 		Exec:      st.Exec,
 		Protected: func() (paths []string) { return slices.Concat(c.Base.Config.Protect.Paths, st.Protected()) },
 	}
@@ -373,7 +373,7 @@ func (c *chat) live(ctx context.Context, st sandboxStack, checkout string) (err 
 	locks := newClaims(filepath.Join(c.StateDir, vmLocksName), claimVM, c.project+"/"+c.Name)
 	defer locks.close()
 	vms := vmChannel{VMs: c.Base.Config.VM, Driver: virsh{}, Locks: locks}
-	stop, err := serveChannel(ctx, c.socket, logFile, forgeRoutes(tickets), pullRoutes(pulls), stackRoutes(st), vmRoutes(vms))
+	stop, err := serveChannel(ctx, c.socket, logFile, issueRoutes(tickets), pullRoutes(pulls), stackRoutes(st), vmRoutes(vms))
 	if err != nil {
 		return
 	}

@@ -45,7 +45,7 @@ type stackControl interface {
 // stackServer answers the Sandbox's `afk-cli stack` calls. Restarts and
 // reseeds go one at a time: they change the same services.
 type stackServer struct {
-	*forgeServer
+	responder
 	st stackControl
 	mu sync.Mutex
 }
@@ -60,7 +60,7 @@ type outputTail struct {
 // stackRoutes is the Stack part of the channel.
 func stackRoutes(st stackControl) (group routeGroup) {
 	return func(mux *http.ServeMux, logger *log.Logger) {
-		s := &stackServer{forgeServer: &forgeServer{log: logger}, st: st}
+		s := &stackServer{responder: responder{log: logger}, st: st}
 		mux.HandleFunc("GET /stack/services/{service}/logs", s.logs)
 		mux.HandleFunc("POST /stack/services/{service}/restart", s.restart)
 		mux.HandleFunc("POST /stack/reseed", s.reseed)
@@ -182,42 +182,42 @@ func (t *outputTail) String() (text string) {
 
 // parseStackLogs parses `stack logs <service> [--tail <n>]`. The number is
 // checked by afk, not here: the channel does not trust its caller.
-func parseStackLogs(args []string, _ io.Reader) (call forgeCall, err error) {
+func parseStackLogs(args []string, _ io.Reader) (call cliCall, err error) {
 	if len(args) == 0 {
-		err = errForgeUsage
+		err = errCLIUsage
 		return
 	}
 	flags := flag.NewFlagSet("stack logs", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	tail := flags.String("tail", "", "")
 	if flags.Parse(args[1:]) != nil || flags.NArg() != 0 {
-		err = errForgeUsage
+		err = errCLIUsage
 		return
 	}
 	path := "/stack/services/" + url.PathEscape(args[0]) + "/logs"
 	if *tail != "" {
 		path += "?tail=" + url.QueryEscape(*tail)
 	}
-	call = forgeCall{method: http.MethodGet, path: path}
+	call = cliCall{method: http.MethodGet, path: path}
 	return
 }
 
 // parseStackRestart parses `stack restart <service>`.
-func parseStackRestart(args []string, _ io.Reader) (call forgeCall, err error) {
+func parseStackRestart(args []string, _ io.Reader) (call cliCall, err error) {
 	if len(args) != 1 {
-		err = errForgeUsage
+		err = errCLIUsage
 		return
 	}
-	call = forgeCall{method: http.MethodPost, path: "/stack/services/" + url.PathEscape(args[0]) + "/restart"}
+	call = cliCall{method: http.MethodPost, path: "/stack/services/" + url.PathEscape(args[0]) + "/restart"}
 	return
 }
 
 // parseStackReseed parses `stack reseed`.
-func parseStackReseed(args []string, _ io.Reader) (call forgeCall, err error) {
+func parseStackReseed(args []string, _ io.Reader) (call cliCall, err error) {
 	if len(args) != 0 {
-		err = errForgeUsage
+		err = errCLIUsage
 		return
 	}
-	call = forgeCall{method: http.MethodPost, path: "/stack/reseed"}
+	call = cliCall{method: http.MethodPost, path: "/stack/reseed"}
 	return
 }

@@ -113,7 +113,7 @@ func newVMFixture(t *testing.T, dir, chat string) (fx *vmFixture) {
 func (fx *vmFixture) call(args ...string) (out string, err error) {
 	fx.t.Helper()
 	var stdout bytes.Buffer
-	err = RunForge(fx.t.Context(), fx.socket, args, strings.NewReader(""), &stdout, io.Discard)
+	err = RunCLI(fx.t.Context(), fx.socket, args, strings.NewReader(""), &stdout, io.Discard)
 	return stdout.String(), err
 }
 
@@ -169,7 +169,7 @@ func TestVMListEmpty(t *testing.T) {
 	}
 	t.Cleanup(stop)
 	var out bytes.Buffer
-	if err = RunForge(t.Context(), socket, []string{"vm", "list"}, strings.NewReader(""), &out, io.Discard); err != nil || !strings.Contains(out.String(), "no test VMs") {
+	if err = RunCLI(t.Context(), socket, []string{"vm", "list"}, strings.NewReader(""), &out, io.Discard); err != nil || !strings.Contains(out.String(), "no test VMs") {
 		t.Errorf("list = %q, %v", out.String(), err)
 	}
 }
@@ -321,7 +321,7 @@ func TestVMType(t *testing.T) {
 func TestVMTypeStdin(t *testing.T) {
 	fx := newVMFixture(t, t.TempDir(), "plan")
 	var out bytes.Buffer
-	if err := RunForge(t.Context(), fx.socket, []string{"vm", "type", "win11", "-"}, strings.NewReader("ab"), &out, io.Discard); err != nil {
+	if err := RunCLI(t.Context(), fx.socket, []string{"vm", "type", "win11", "-"}, strings.NewReader("ab"), &out, io.Discard); err != nil {
 		t.Fatal(err)
 	}
 	if got := decodeEvents(t, fx.qmps()[0]); len(got) != 4 {
@@ -417,7 +417,7 @@ func TestVMUsage(t *testing.T) {
 		{"vm"}, {"vm", "list", "x"}, {"vm", "start"}, {"vm", "start", "a", "b"}, {"vm", "screenshot", "win11", "--x"},
 		{"vm", "click", "win11", "1"}, {"vm", "snapshot", "win11"}, {"vm", "nope"},
 	} {
-		if _, err := fx.call(args...); !errors.Is(err, errForgeUsage) {
+		if _, err := fx.call(args...); !errors.Is(err, errCLIUsage) {
 			t.Errorf("%v: err = %v, want usage", args, err)
 		}
 	}

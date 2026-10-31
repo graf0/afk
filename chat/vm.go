@@ -67,7 +67,7 @@ type vmChannel struct {
 // the Chat by the first call that changes it, and stays so until release or
 // the end of the process.
 type vmServer struct {
-	*forgeServer
+	responder
 	ch vmChannel
 
 	mu    sync.Mutex
@@ -77,7 +77,7 @@ type vmServer struct {
 // vmRoutes is the test VM part of the channel.
 func vmRoutes(ch vmChannel) (group routeGroup) {
 	return func(mux *http.ServeMux, logger *log.Logger) {
-		s := &vmServer{forgeServer: &forgeServer{log: logger}, ch: ch, sizes: make(map[string]image.Point)}
+		s := &vmServer{responder: responder{log: logger}, ch: ch, sizes: make(map[string]image.Point)}
 		mux.HandleFunc("GET /vms", s.list)
 		mux.HandleFunc("GET /vms/{vm}/screenshot", s.screenshot)
 		mux.HandleFunc("POST /vms/{vm}/start", s.start)
@@ -138,15 +138,6 @@ func lockStatus(err error) (status int) {
 	return http.StatusInternalServerError
 }
 
-// decode reads the JSON body of r into in; on failure it answers 400.
-func (s *vmServer) decode(w http.ResponseWriter, r *http.Request, op string, in any) (ok bool) {
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxForgeBody)).Decode(in); err != nil {
-		s.reply(w, op, "", "", http.StatusBadRequest, fmt.Errorf("decoding the request: %w", err))
-		return false
-	}
-	return true
-}
-
 // list serves `vm list`: a line per VM with its state, os, owner and address.
 func (s *vmServer) list(w http.ResponseWriter, r *http.Request) {
 	var b strings.Builder
@@ -193,7 +184,7 @@ func (s *vmServer) screenshot(w http.ResponseWriter, r *http.Request) {
 	s.sizes[vm.Name] = image.Pt(size.Width, size.Height)
 	s.mu.Unlock()
 	s.log.Printf("%s: ok", op)
-	_ = jsonEncode(w, forgeReply{Output: fmt.Sprintf("%dx%d PNG", size.Width, size.Height), Data: png})
+	_ = jsonEncode(w, channelReply{Output: fmt.Sprintf("%dx%d PNG", size.Width, size.Height), Data: png})
 }
 
 // change claims vm and runs do: the shape of every operation that changes it.
@@ -385,7 +376,7 @@ func (s *vmServer) qmp(ctx context.Context, domain, command string) (err error) 
 // vmArg splits args into the VM name in front, as the path of the VM, and the rest.
 func vmArg(args []string) (path string, rest []string, err error) {
 	if len(args) == 0 || args[0] == "" {
-		err = errForgeUsage
+		err = errCLIUsage
 		return
 	}
 	path, rest = "/vms/"+url.PathEscape(args[0]), args[1:]
@@ -393,30 +384,30 @@ func vmArg(args []string) (path string, rest []string, err error) {
 }
 
 // parseVMList parses `vm list`.
-func parseVMList(args []string, _ io.Reader) (call forgeCall, err error) {
+func parseVMList(args []string, _ io.Reader) (call cliCall, err error) {
 	if len(args) != 0 {
-		err = errForgeUsage
+		err = errCLIUsage
 		return
 	}
-	call = forgeCall{method: http.MethodGet, path: "/vms"}
+	call = cliCall{method: http.MethodGet, path: "/vms"}
 	return
 }
 
 // vmAction parses a command that is `<vm>` alone: POST /vms/<vm>/<action>.
-func vmAction(action string) (parse func(args []string, _ io.Reader) (call forgeCall, err error)) {
-	return func(args []string, _ io.Reader) (call forgeCall, err error) {
+func vmAction(action string) (parse func(args []string, _ io.Reader) (call cliCall, err error)) {
+	return func(args []string, _ io.Reader) (call cliCall, err error) {
 		path, rest, err := vmArg(args)
 		if err == nil && len(rest) != 0 {
-			err = errForgeUsage
+			err = errCLIUsage
 		}
-		call = forgeCall{method: http.MethodPost, path: path + "/" + action}
+		call = cliCall{method: http.MethodPost, path: path + "/" + action}
 		return
 	}
 }
 
 // parseVMScreenshot parses `vm screenshot <vm> [--file <path>]`: the PNG is
 // saved in the Sandbox, by default in its temporary directory.
-func parseVMScreenshot(args []string, _ io.Reader) (call forgeCall, err error) {
+func parseVMScreenshot(args []string, _ io.Reader) (call cliCall, err error) {
 	path, rest, err := vmArg(args)
 	if err != nil {
 		return
@@ -425,29 +416,29 @@ func parseVMScreenshot(args []string, _ io.Reader) (call forgeCall, err error) {
 	flags.SetOutput(io.Discard)
 	file := flags.String("file", filepath.Join(os.TempDir(), "afk-screenshot-"+url.PathEscape(args[0])+".png"), "")
 	if flags.Parse(rest) != nil || flags.NArg() != 0 || *file == "" {
-		err = errForgeUsage
+		err = errCLIUsage
 		return
 	}
-	call = forgeCall{method: http.MethodGet, path: path + "/screenshot", saveTo: *file}
+	call = cliCall{method: http.MethodGet, path: path + "/screenshot", saveTo: *file}
 	return
 }
 
 // parseVMKey parses `vm key <vm> <combo>`: keys joined by +, such as ctrl+alt+delete.
-func parseVMKey(args []string, _ io.Reader) (call forgeCall, err error) {
+func parseVMKey(args []string, _ io.Reader) (call cliCall, err error) {
 	path, rest, err := vmArg(args)
 	if err != nil || len(rest) != 1 {
-		err = errForgeUsage
+		err = errCLIUsage
 		return
 	}
-	call = forgeCall{method: http.MethodPost, path: path + "/keys", body: keysRequest{Keys: strings.Split(rest[0], "+")}}
+	call = cliCall{method: http.MethodPost, path: path + "/keys", body: keysRequest{Keys: strings.Split(rest[0], "+")}}
 	return
 }
 
 // parseVMType parses `vm type <vm> <text>`; the text `-` is read from stdin.
-func parseVMType(args []string, stdin io.Reader) (call forgeCall, err error) {
+func parseVMType(args []string, stdin io.Reader) (call cliCall, err error) {
 	path, rest, err := vmArg(args)
 	if err != nil || len(rest) != 1 {
-		err = errForgeUsage
+		err = errCLIUsage
 		return
 	}
 	text := rest[0]
@@ -458,13 +449,13 @@ func parseVMType(args []string, stdin io.Reader) (call forgeCall, err error) {
 		}
 		text = string(data)
 	}
-	call = forgeCall{method: http.MethodPost, path: path + "/type", body: typeRequest{Text: text}}
+	call = cliCall{method: http.MethodPost, path: path + "/type", body: typeRequest{Text: text}}
 	return
 }
 
 // parseVMPoint parses `vm click <vm> [--button <b>] <x> <y>` and `vm move <vm> <x> <y>`.
-func parseVMPoint(action string) (parse func(args []string, _ io.Reader) (call forgeCall, err error)) {
-	return func(args []string, _ io.Reader) (call forgeCall, err error) {
+func parseVMPoint(action string) (parse func(args []string, _ io.Reader) (call cliCall, err error)) {
+	return func(args []string, _ io.Reader) (call cliCall, err error) {
 		path, rest, err := vmArg(args)
 		if err != nil {
 			return
@@ -476,36 +467,36 @@ func parseVMPoint(action string) (parse func(args []string, _ io.Reader) (call f
 			flags.StringVar(&req.Button, "button", "", "")
 		}
 		if flags.Parse(rest) != nil || flags.NArg() != 2 {
-			err = errForgeUsage
+			err = errCLIUsage
 			return
 		}
 		var xErr, yErr error
 		req.X, xErr = strconv.Atoi(flags.Arg(0))
 		req.Y, yErr = strconv.Atoi(flags.Arg(1))
 		if err = errors.Join(xErr, yErr); err != nil {
-			err = errForgeUsage
+			err = errCLIUsage
 			return
 		}
-		call = forgeCall{method: http.MethodPost, path: path + "/" + action, body: req}
+		call = cliCall{method: http.MethodPost, path: path + "/" + action, body: req}
 		return
 	}
 }
 
 // parseVMSnapshot parses `vm snapshot <vm> <name>` and `vm revert <vm> <name>`.
-func parseVMSnapshot(action string) (parse func(args []string, _ io.Reader) (call forgeCall, err error)) {
-	return func(args []string, _ io.Reader) (call forgeCall, err error) {
+func parseVMSnapshot(action string) (parse func(args []string, _ io.Reader) (call cliCall, err error)) {
+	return func(args []string, _ io.Reader) (call cliCall, err error) {
 		path, rest, err := vmArg(args)
 		if err != nil || len(rest) != 1 {
-			err = errForgeUsage
+			err = errCLIUsage
 			return
 		}
-		call = forgeCall{method: http.MethodPost, path: path + "/" + action, body: snapshotRequest{Name: rest[0]}}
+		call = cliCall{method: http.MethodPost, path: path + "/" + action, body: snapshotRequest{Name: rest[0]}}
 		return
 	}
 }
 
 // saveScreenshot writes the PNG of a reply to file, a line of the result to stdout.
-func saveScreenshot(file string, reply forgeReply, stdout io.Writer) (err error) {
+func saveScreenshot(file string, reply channelReply, stdout io.Writer) (err error) {
 	if len(reply.Data) == 0 {
 		err = errors.New("the reply has no screenshot")
 		return
