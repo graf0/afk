@@ -71,6 +71,7 @@ type Options struct {
 	// which a Chat that exists gets without them.
 	Args   []string
 	Remove bool // --rm: remove the Chat when claude ends
+	Expose bool // --expose: publish the ports of [expose]
 	// AgentBinary is the Agent's command in the Sandbox, a path there: the
 	// host's claude (mounted read-only) unless set (tests).
 	AgentBinary string
@@ -187,9 +188,15 @@ func Run(ctx context.Context, opts Options) (err error) {
 	if err != nil {
 		return
 	}
+	var expose map[string][]string
+	if opts.Expose {
+		if expose, err = exposeSpecs(opts.Base.Config.Expose); err != nil {
+			return
+		}
+	}
 	st, err := stack.New(stack.Options{
 		Repo: opts.Base.Repo, Commit: opts.Base.Commit, Project: c.project, Kind: stack.Chat, Name: opts.Name,
-		StateDir: opts.StateDir, Env: c.env(), Mounts: view.Mounts, Out: opts.Out,
+		StateDir: opts.StateDir, Env: c.env(), Mounts: view.Mounts, Expose: expose, Out: opts.Out,
 	})
 	if err != nil {
 		return
@@ -229,8 +236,13 @@ func (c *chat) begin() (unlock func(), err error) {
 // Chat (or the check of an old one), then the Stack and the session, and the
 // end the way the Chat went.
 func (c *chat) enter(ctx context.Context, st sandboxStack, view sandbox.View) (err error) {
+	// The ports of --expose stay claimed until the Stack that publishes them is down.
+	ports := newClaims(filepath.Join(c.StateDir, exposeLocksName), claimPort, c.project+"/"+c.Name)
 	// Whatever happens, the Stack ends with this process (ADR-0015).
-	defer func() { err = errors.Join(err, c.settle(context.WithoutCancel(ctx), st, ctx.Err() != nil)) }()
+	defer func() {
+		err = errors.Join(err, c.settle(context.WithoutCancel(ctx), st, ctx.Err() != nil))
+		ports.close()
+	}()
 	checkout, err := c.clone(ctx)
 	if err != nil {
 		return
@@ -248,6 +260,12 @@ func (c *chat) enter(ctx context.Context, st sandboxStack, view sandbox.View) (e
 	if err = os.MkdirAll(c.memoryDir(), 0o755); err != nil {
 		err = fmt.Errorf("creating %s: %w", c.memoryDir(), err)
 		return
+	}
+	if c.Expose {
+		// After the old Stack went down, before this one comes up: its ports are free.
+		if err = claimPorts(ports, c.Base.Config.Expose); err != nil {
+			return
+		}
 	}
 	err = c.live(ctx, st, checkout)
 	return
@@ -352,7 +370,7 @@ func (c *chat) live(ctx context.Context, st sandboxStack, checkout string) (err 
 		Protected: func() (paths []string) { return slices.Concat(c.Base.Config.Protect.Paths, st.Protected()) },
 	}
 	// The claims on test VMs are of this process: they end with it, or here.
-	locks := newVMLocks(filepath.Join(c.StateDir, vmLocksName), c.project+"/"+c.Name)
+	locks := newClaims(filepath.Join(c.StateDir, vmLocksName), claimVM, c.project+"/"+c.Name)
 	defer locks.close()
 	vms := vmChannel{VMs: c.Base.Config.VM, Driver: virsh{}, Locks: locks}
 	stop, err := serveChannel(ctx, c.socket, logFile, forgeRoutes(tickets), pullRoutes(pulls), stackRoutes(st), vmRoutes(vms))

@@ -60,7 +60,7 @@ type snapshotRequest struct {
 type vmChannel struct {
 	VMs    []config.VM
 	Driver vmDriver
-	Locks  *vmLocks
+	Locks  *claims
 }
 
 // vmServer answers the Sandbox's `afk-forge vm` calls. A VM is claimed for
@@ -132,7 +132,7 @@ func (s *vmServer) claim(w http.ResponseWriter, op string, vm config.VM) (ok boo
 // lockStatus is the status of a failed claim or release: 409 for a VM another
 // Chat holds, 500 for anything else.
 func lockStatus(err error) (status int) {
-	if errors.As(err, new(vmBusyError)) {
+	if errors.As(err, new(busyError)) {
 		return http.StatusConflict
 	}
 	return http.StatusInternalServerError

@@ -7,16 +7,16 @@ import (
 	"testing"
 )
 
-func TestVMLocks(t *testing.T) {
+func TestClaims(t *testing.T) {
 	dir := t.TempDir()
-	a, b := newVMLocks(dir, "alpha"), newVMLocks(dir, "beta")
+	a, b := newClaims(dir, claimVM, "alpha"), newClaims(dir, claimVM, "beta")
 	if err := a.claim("win11"); err != nil {
 		t.Fatal(err)
 	}
 	if err := a.claim("win11"); err != nil {
 		t.Errorf("claiming again: %v", err)
 	}
-	var busy vmBusyError
+	var busy busyError
 	if err := b.claim("win11"); !errors.As(err, &busy) || busy.owner != "alpha" {
 		t.Errorf("other Chat claim = %v, want busy by alpha", err)
 	}
@@ -44,9 +44,9 @@ func TestVMLocks(t *testing.T) {
 	}
 }
 
-func TestVMLocksStaleOwner(t *testing.T) {
+func TestClaimsStaleOwner(t *testing.T) {
 	dir := t.TempDir()
-	l := newVMLocks(dir, "alpha")
+	l := newClaims(dir, claimVM, "alpha")
 	// A file a process left when it died (SIGKILL): no flock held. Its name
 	// alone, even next to a live PID, owns nothing.
 	if err := os.WriteFile(l.path("win11"), []byte(fmt.Sprintf("p/ghost %d\n", os.Getpid())), 0o600); err != nil {

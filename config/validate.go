@@ -239,11 +239,22 @@ func (c Config) validateProtect(v *validator) {
 	}
 }
 
+// validateExpose checks every spec, and that no two services take one host
+// port: a Chat claims its ports by number, whatever the address.
 func (c Config) validateExpose(v *validator) {
+	owners := make(map[string]string) // host port -> service
 	for _, service := range slices.Sorted(maps.Keys(c.Expose)) {
-		if _, err := stack.ParseExpose(c.Expose[service]); err != nil {
+		port, err := stack.ParseExpose(c.Expose[service])
+		if err != nil {
 			v.report("expose."+service, "%v", err)
+			continue
 		}
+		hostPort := strings.Split(port, ":")[1] // address:host_port:container_port
+		if other, ok := owners[hostPort]; ok {
+			v.report("expose."+service, "host port %s same as expose.%s", hostPort, other)
+			continue
+		}
+		owners[hostPort] = service
 	}
 }
 

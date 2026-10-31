@@ -41,7 +41,8 @@ type overrideInput struct {
 }
 
 // ParseExpose turns [address:]host_port:container_port into a compose port
-// spec, with the loopback address by default.
+// spec, with the loopback address by default. Only IPv4: an IPv6 address
+// has colons of its own.
 func ParseExpose(spec string) (port string, err error) {
 	parts := strings.Split(spec, ":")
 	addr := loopback
@@ -54,14 +55,16 @@ func ParseExpose(spec string) (port string, err error) {
 			return
 		}
 	default:
-		err = fmt.Errorf("expose %q: want [address:]host_port:container_port", spec)
+		err = fmt.Errorf("expose %q: want [address:]host_port:container_port (an IPv4 address)", spec)
 		return
 	}
-	for _, p := range parts {
-		if n, convErr := strconv.Atoi(p); convErr != nil || n < 1 || n > 65535 {
+	for i, p := range parts {
+		n, convErr := strconv.Atoi(p)
+		if convErr != nil || n < 1 || n > 65535 {
 			err = fmt.Errorf("expose %q: port %q is not 1-65535", spec, p)
 			return
 		}
+		parts[i] = strconv.Itoa(n) // "+80" and "080" are 80: one name per port
 	}
 	port = addr + ":" + parts[0] + ":" + parts[1]
 	return

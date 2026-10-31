@@ -14,6 +14,8 @@ func TestParseExpose(t *testing.T) {
 		{spec: "8080:5173", want: "127.0.0.1:8080:5173"},
 		{spec: "192.168.122.1:8081:8080", want: "192.168.122.1:8081:8080"},
 		{spec: "0.0.0.0:2222:22", want: "0.0.0.0:2222:22"},
+		{spec: "08080:+80", want: "127.0.0.1:8080:80"},
+		{spec: "::1:8080:80", wantErr: "want [address:]host_port:container_port"}, // IPv6: not supported
 		{spec: "8080", wantErr: "want [address:]host_port:container_port"},
 		{spec: "x:5173", wantErr: "port"},
 		{spec: "0:5173", wantErr: "port"},

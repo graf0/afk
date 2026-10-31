@@ -5,10 +5,12 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -123,6 +125,7 @@ type fakeStack struct {
 	calls    []string
 	upErr    error
 	onAttach func(ctx context.Context, command string) (err error)
+	onDown   func()
 	cleanup  []error // ctx.Err() of the calls that end the Stack
 }
 
@@ -150,6 +153,9 @@ func (f *fakeStack) Attach(ctx context.Context, command string, _ *os.File, _, _
 func (f *fakeStack) Down(ctx context.Context) (err error) {
 	f.calls = append(f.calls, "Down")
 	f.cleanup = append(f.cleanup, ctx.Err())
+	if f.onDown != nil {
+		f.onDown()
+	}
 	return
 }
 func (f *fakeStack) Remove(ctx context.Context) (err error) {
@@ -360,6 +366,51 @@ func TestEnterUpFails(t *testing.T) {
 	}
 	if !slices.Equal(l.stack.calls, []string{"Down", "Up", "Down"}) {
 		t.Errorf("calls = %q, want Down, Up, Down", l.stack.calls)
+	}
+}
+
+func TestEnterExposePortBusy(t *testing.T) {
+	other, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = other.Close() }()
+	port := strconv.Itoa(other.Addr().(*net.TCPAddr).Port)
+
+	l := newLifecycle(t)
+	l.opts.Expose = true
+	l.opts.Base.Config.Expose = map[string]string{"web": port + ":80"}
+	if _, err = l.enter(t.Context()); err == nil || !strings.Contains(err.Error(), port) {
+		t.Fatalf("err = %v, want the busy port", err)
+	}
+	if slices.Contains(l.stack.calls, "Up") {
+		t.Errorf("calls = %q: the Stack must not come up", l.stack.calls)
+	}
+}
+
+func TestEnterExposeHoldsPortsUntilDown(t *testing.T) {
+	free, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := strconv.Itoa(free.Addr().(*net.TCPAddr).Port)
+	_ = free.Close()
+
+	l := newLifecycle(t)
+	l.opts.Expose = true
+	l.opts.Base.Config.Expose = map[string]string{"web": port + ":80"}
+	other := newClaims(filepath.Join(l.opts.StateDir, exposeLocksName), claimPort, "o-r/other")
+	var ownerAtDown string
+	l.stack.onDown = func() { ownerAtDown, _ = other.ownerOf(port) }
+	if _, err = l.enter(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	// The Stack publishes the ports until it is down: so long they are claimed.
+	if ownerAtDown != "o-r/plan" {
+		t.Errorf("owner of port %s at Down = %q, want o-r/plan", port, ownerAtDown)
+	}
+	if owner, held := other.ownerOf(port); held {
+		t.Errorf("port %s still held by %q after the Chat", port, owner)
 	}
 }
 

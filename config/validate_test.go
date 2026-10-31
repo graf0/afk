@@ -40,6 +40,10 @@ func TestParseErrors(t *testing.T) {
 		{"protect empty", minimalConfig + "[protect]\npaths = [\"\"]\n", []string{"7:10: protect.paths[0]: must not be empty"}},
 		{"protect dotdot", minimalConfig + "[protect]\npaths = [\"a/../b\"]\n", []string{`7:10: protect.paths[0]: must not contain "..", got "a/../b"`}},
 		{"protect absolute", minimalConfig + "[protect]\npaths = [\"/etc\"]\n", []string{`7:10: protect.paths[0]: must be relative, got "/etc"`}},
+		{"expose bad port", minimalConfig + "[expose]\nweb = \"8080:0\"\n", []string{`7:1: expose.web: expose "8080:0": port "0" is not 1-65535`}},
+		{"expose bad address", minimalConfig + "[expose]\nweb = \"localhost:8080:80\"\n", []string{`7:1: expose.web: expose "localhost:8080:80": address`}},
+		{"expose wrong type", minimalConfig + "[expose]\nweb = 8080\n", []string{"7:7: expose.web: "}},
+		{"expose same host port", minimalConfig + "[expose]\napi = \"8080:80\"\nweb = \"0.0.0.0:8080:81\"\n", []string{"8:1: expose.web: host port 8080 same as expose.api"}},
 		{"inline table position", "forge = { kind = \"gitlab\", repo = \"a/b\" }\n[gate]\ncmd = \"x\"\n", []string{`1:11: forge.kind: want one of`}},
 		{"all errors at once", "[forge]\nkind = \"github\"\nrepo = \"x\"\nbogus = 1\n[labels]\nwontfix = \"\"\n", []string{`4:1: unknown key "forge.bogus"`, `3:1: forge.repo`, "6:1: labels.wontfix", "gate.cmd: required"}},
 	}

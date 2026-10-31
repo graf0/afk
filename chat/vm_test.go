@@ -90,7 +90,7 @@ type vmFixture struct {
 	t      *testing.T
 	socket string
 	drv    *fakeVM
-	locks  *vmLocks
+	locks  *claims
 	dir    string
 }
 
@@ -99,7 +99,7 @@ var testVMs = []config.VM{{Name: "win11", User: "admin", OS: "windows"}, {Name: 
 func newVMFixture(t *testing.T, dir, chat string) (fx *vmFixture) {
 	t.Helper()
 	fx = &vmFixture{t: t, drv: &fakeVM{state: "running", width: 1000, height: 500}, dir: dir}
-	fx.locks = newVMLocks(dir, chat)
+	fx.locks = newClaims(dir, claimVM, chat)
 	t.Cleanup(fx.locks.close)
 	fx.socket = filepath.Join(t.TempDir(), "afk.sock")
 	stop, err := serveChannel(t.Context(), fx.socket, io.Discard, vmRoutes(vmChannel{VMs: testVMs, Driver: fx.drv, Locks: fx.locks}))
@@ -163,7 +163,7 @@ func TestVMList(t *testing.T) {
 
 func TestVMListEmpty(t *testing.T) {
 	socket := filepath.Join(t.TempDir(), "afk.sock")
-	stop, err := serveChannel(t.Context(), socket, io.Discard, vmRoutes(vmChannel{Driver: &fakeVM{}, Locks: newVMLocks(t.TempDir(), "plan")}))
+	stop, err := serveChannel(t.Context(), socket, io.Discard, vmRoutes(vmChannel{Driver: &fakeVM{}, Locks: newClaims(t.TempDir(), claimVM, "plan")}))
 	if err != nil {
 		t.Fatal(err)
 	}

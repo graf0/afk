@@ -1,6 +1,7 @@
 package stack
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -126,6 +127,32 @@ func TestWriteEnv(t *testing.T) {
 	}
 	if err = s.removeEnv(); err != nil {
 		t.Errorf("removing a missing env file: %v", err)
+	}
+}
+
+func TestWriteOverrideExpose(t *testing.T) {
+	opts := testOptions(t)
+	var out bytes.Buffer
+	opts.Out = &out
+	opts.Expose = map[string][]string{"web": {"0.0.0.0:8080:80"}}
+	s, err := New(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.MkdirAll(s.dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.writeOverride(nil, []string{SandboxService, "web"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "warning: 0.0.0.0:8080:80 is published on all addresses") {
+		t.Errorf("out = %q, want the 0.0.0.0 warning", out.String())
+	}
+
+	// A service of [expose] the Stack does not have fails the start.
+	err = s.writeOverride(nil, []string{SandboxService})
+	if err == nil || !strings.Contains(err.Error(), `no service "web"`) {
+		t.Errorf("missing service: err = %v", err)
 	}
 }
 

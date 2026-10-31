@@ -15,7 +15,7 @@ import (
 	"github.com/graf0/afk/stack"
 )
 
-const chatUsage = "usage: afk chat <name> [--rm] [-- claude args...] | afk chat ls | afk chat shell <name> | afk chat rm <name>"
+const chatUsage = "usage: afk chat <name> [--expose] [--rm] [-- claude args...] | afk chat ls | afk chat shell <name> | afk chat rm <name>"
 
 // What `afk chat` does.
 const (
@@ -30,6 +30,7 @@ type chatCommand struct {
 	kind       string
 	name       string   // not for ls
 	remove     bool     // enter: --rm
+	expose     bool     // enter: --expose
 	claudeArgs []string // enter: after "--"
 }
 
@@ -68,6 +69,7 @@ func parseChat(args []string) (cmd chatCommand, err error) {
 	flags := flag.NewFlagSet("chat", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	flags.BoolVar(&cmd.remove, "rm", false, "")
+	flags.BoolVar(&cmd.expose, "expose", false, "")
 	if err = flags.Parse(head); err != nil || flags.NArg() == 0 {
 		err = errors.New(chatUsage)
 		return
@@ -131,7 +133,7 @@ func chatEnterCommand(ctx context.Context, cmd chatCommand, opts chat.Options, d
 	if opts.Forge, err = forge.New(ctx, opts.Base.Config, opts.StateDir); err != nil {
 		return
 	}
-	opts.Args, opts.Remove = cmd.claudeArgs, cmd.remove
+	opts.Args, opts.Remove, opts.Expose = cmd.claudeArgs, cmd.remove, cmd.expose
 	err = chat.Run(ctx, opts)
 	err = offerTemplateOnFailure(ctx, err, dir, os.Stdin, opts.Out, isTerminal(os.Stdin))
 	return
