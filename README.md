@@ -35,6 +35,8 @@ Repozytorium Projectu musi mieć w korzeniu trzy pliki:
   - `${AFK_TREE}`: ścieżka drzewa Chatu albo Runu (ta sama na hoście i w Sandboxie). Maska to anonimowy volume pod nią, np. `volumes: ["${AFK_TREE}/node_modules"]` w serwisie `afk`.
   - `${AFK_CACHE}`: prefiks nazw volume'ów cache, osobny dla każdego Chatu i wspólny dla Runów Projectu. Cache to named volume o nazwie z prefiksem, np. `name: ${AFK_CACHE}-gomod`.
 
+  Interpolację zmiennych compose zasila też `.env` z drzewa roboczego (sekrety Stacku dev trzymane poza gitem, np. dla `${VAR:?}` w `compose.yml`): `afk` kopiuje go do eksportu gałęzi bazowej, o ile ta nie ma własnego `.env`, bez linii `COMPOSE_*`, `DOCKER_*` i `CONTAINER_*`. Zmiana `.env` działa od następnego startu Stacku.
+
   `afk` nadpisuje w serwisie `afk` `command` na `sleep infinity` i włącza `init: true`, więc `ENTRYPOINT` obrazu musi przyjmować argumenty. Porty z `compose.yml` nie są publikowane: robi to tylko `[expose]`.
 
   Tag obrazu to hash drzewa gita kontekstu builda, więc szablon buduje z wąskiego kontekstu `.afk` (`build: {context: .afk}`, Dockerfile domyślny w kontekście): obraz przebudowuje się tylko przy zmianie `.afk/`. Wkładaj tam wyłącznie to, czego potrzebuje obraz; szerszy kontekst (np. `.`) oznacza przebudowę przy każdym commicie.

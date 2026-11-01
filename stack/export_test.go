@@ -101,3 +101,43 @@ func TestExportMissingComposeFile(t *testing.T) {
 		})
 	}
 }
+
+func TestExportCopiesHostEnvFile(t *testing.T) {
+	repo, commit := gitRepo(t, map[string]string{
+		composeFile:    "services: {}\n",
+		composeAfkFile: "services: {}\n",
+	})
+	env := "SECRET=s\n# comment\nCOMPOSE_PROFILES=evil\n export DOCKER_HOST=tcp://evil\nexport CONTAINER_HOST=x\nB=b"
+	if err := os.WriteFile(filepath.Join(repo, envFile), []byte(env), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(t.TempDir(), "export")
+
+	if err := export(t.Context(), repo, commit, dir); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, envFile))
+	if want := "SECRET=s\n# comment\nB=b"; err != nil || string(got) != want {
+		t.Errorf("exported %s = %q, %v, want %q", envFile, got, err, want)
+	}
+}
+
+func TestExportKeepsCommittedEnvFile(t *testing.T) {
+	repo, commit := gitRepo(t, map[string]string{
+		composeFile:    "services: {}\n",
+		composeAfkFile: "services: {}\n",
+		envFile:        "A=committed\n",
+	})
+	if err := os.WriteFile(filepath.Join(repo, envFile), []byte("A=host\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(t.TempDir(), "export")
+
+	if err := export(t.Context(), repo, commit, dir); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, envFile))
+	if err != nil || string(got) != "A=committed\n" {
+		t.Errorf("exported %s = %q, %v, want the committed one", envFile, got, err)
+	}
+}

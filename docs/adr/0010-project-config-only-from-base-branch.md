@@ -13,3 +13,7 @@ Zmiana `[machine.*]`, Tooli albo pluginów działa dopiero po merge'u do gałęz
 ## Update (ADR-0013)
 
 Reguła obejmuje dziś `.afk.toml`, `.claude/settings.json`, `compose.yml`, `compose.afk.yml` i Dockerfile'e Stacku, czytane przez `afk chat` i `afk factory`. Komend `afk image build` i `afk vm up` już nie ma; obrazy Stacku budują się z gałęzi bazowej same.
+
+## Update: `.env`
+
+Wyjątek: `.env` z drzewa roboczego trafia do eksportu Stacku, gdy gałąź bazowa nie ma własnego. To lokalna konfiguracja z sekretami, z definicji poza gitem; bez niej `compose.yml` z `${VAR:?}` nie wystartuje. Nie decyduje o tym, co i jak `afk` uruchamia: linie `COMPOSE_*`, `DOCKER_*` i `CONTAINER_*` są odrzucane, jak w środowisku hosta.
