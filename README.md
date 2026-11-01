@@ -52,7 +52,7 @@ Wszystko działa na pierwszym planie. Zamknięcie `afk` kończy Stack (`compose 
 | `afk init` | Pyta o forge i gate (podpowiada z `origin`) i tworzy `.afk.toml` oraz szablon Stacku (`compose.afk.yml`, `.afk/Dockerfile`). Istniejących plików nie nadpisuje, niczego nie commituje |
 | `afk config` | Sprawdza `.afk.toml` z drzewa roboczego i wypisuje efektywną konfigurację oraz publiczny klucz ssh dla VM testowych |
 | `afk factory ['*' \| '#N' ...]` | Realizuje gotowe tickety (domyślnie wszystkie) albo wymienione, po kolei. Najpierw wznawia porzucone Runy |
-| `afk chat <nazwa> [--expose] [--rm] [-- args claude]` | Tworzy Chat albo wraca do niego (`claude --continue`). `--expose` publikuje porty z `[expose]`, `--rm` usuwa Chat po wyjściu z claude (po przerwaniu sygnałem Chat zostaje) |
+| `afk chat [<nazwa>] [--expose] [--rm] [-- args claude]` | Tworzy Chat albo wraca do niego (`claude --continue`). Domyślna nazwa to `main`. `--expose` publikuje porty z `[expose]`, `--rm` usuwa Chat po wyjściu z claude (po przerwaniu sygnałem Chat zostaje) |
 | `afk chat ls` | Lista Chatów Projectu. `ls`, `shell` i `rm` nie robią `git fetch`: wystarcza lokalny `origin/HEAD` |
 | `afk chat shell <nazwa>` | Bash w Sandboxie działającego Chatu |
 | `afk chat rm <nazwa>` | Usuwa Chat: klon, home Agenta, volume'y |

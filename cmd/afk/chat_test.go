@@ -23,9 +23,9 @@ func TestParseChat(t *testing.T) {
 		"ls":                    {args: []string{"ls"}, want: chatCommand{kind: chatList}},
 		"shell":                 {args: []string{"shell", "plan"}, want: chatCommand{kind: chatShell, name: "plan"}},
 		"rm":                    {args: []string{"rm", "plan"}, want: chatCommand{kind: chatRm, name: "plan"}},
-		"no args":               {args: nil, wantErr: "usage"},
-		"only --":               {args: []string{"--", "x"}, wantErr: "usage"},
-		"only flag":             {args: []string{"--rm"}, wantErr: "usage"},
+		"no args":               {args: nil, want: chatCommand{kind: chatEnter, name: "main"}},
+		"only --":               {args: []string{"--", "x"}, want: chatCommand{kind: chatEnter, name: "main", claudeArgs: []string{"x"}}},
+		"only flag":             {args: []string{"--rm"}, want: chatCommand{kind: chatEnter, name: "main", remove: true}},
 		"two names":             {args: []string{"a", "b"}, wantErr: "usage"},
 		"unknown flag":          {args: []string{"a", "--x"}, wantErr: "usage"},
 		"--expose":              {args: []string{"a", "--expose"}, want: chatCommand{kind: chatEnter, name: "a", expose: true}},
@@ -61,9 +61,9 @@ func TestParseChat(t *testing.T) {
 }
 
 func TestRunChatUsage(t *testing.T) {
-	for _, args := range [][]string{nil, {"ls", "x"}, {"shell"}, {"rm"}, {"new", "x"}} {
+	for _, args := range [][]string{{"ls", "x"}, {"shell"}, {"rm"}, {"new", "x"}} {
 		err := runChat(t.Context(), args, ".", &bytes.Buffer{})
-		if err == nil || !strings.Contains(err.Error(), "afk chat <name>") {
+		if err == nil || !strings.Contains(err.Error(), "afk chat [<name>]") {
 			t.Errorf("runChat(%q): err = %v, want usage", args, err)
 		}
 	}

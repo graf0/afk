@@ -15,7 +15,10 @@ import (
 	"github.com/graf0/afk/stack"
 )
 
-const chatUsage = "usage: afk chat <name> [--expose] [--rm] [-- claude args...] | afk chat ls | afk chat shell <name> | afk chat rm <name>"
+const chatUsage = "usage: afk chat [<name>] [--expose] [--rm] [-- claude args...] | afk chat ls | afk chat shell <name> | afk chat rm <name>"
+
+// defaultChatName is the Chat of `afk chat` without a name.
+const defaultChatName = "main"
 
 // What `afk chat` does.
 const (
@@ -35,7 +38,7 @@ type chatCommand struct {
 }
 
 // parseChat reads the arguments of `afk chat`: a subcommand (ls, shell <name>,
-// rm <name>), or <name> with --rm before or after it and claude's arguments
+// rm <name>), or an optional <name> (default "main") with --rm before or after it and claude's arguments
 // after "--". Those never reach the flags of afk.
 func parseChat(args []string) (cmd chatCommand, err error) {
 	head, tail, hasTail := args, []string(nil), false
@@ -45,39 +48,40 @@ func parseChat(args []string) (cmd chatCommand, err error) {
 			break
 		}
 	}
-	if len(head) == 0 {
-		err = errors.New(chatUsage)
-		return
-	}
-	switch head[0] {
-	case chatList, chatShell, chatRm:
-		want := 2
-		if head[0] == chatList {
-			want = 1
-		}
-		if len(head) != want || hasTail {
-			err = errors.New(chatUsage)
+	if len(head) > 0 {
+		switch head[0] {
+		case chatList, chatShell, chatRm:
+			want := 2
+			if head[0] == chatList {
+				want = 1
+			}
+			if len(head) != want || hasTail {
+				err = errors.New(chatUsage)
+				return
+			}
+			cmd.kind = head[0]
+			if want == 2 {
+				cmd.name = head[1]
+				err = chat.ValidateName(cmd.name)
+			}
 			return
 		}
-		cmd.kind = head[0]
-		if want == 2 {
-			cmd.name = head[1]
-			err = chat.ValidateName(cmd.name)
-		}
-		return
 	}
 	flags := flag.NewFlagSet("chat", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	flags.BoolVar(&cmd.remove, "rm", false, "")
 	flags.BoolVar(&cmd.expose, "expose", false, "")
-	if err = flags.Parse(head); err != nil || flags.NArg() == 0 {
+	if err = flags.Parse(head); err != nil {
 		err = errors.New(chatUsage)
 		return
 	}
-	cmd.kind, cmd.name = chatEnter, flags.Arg(0)
-	if err = flags.Parse(flags.Args()[1:]); err != nil || flags.NArg() != 0 {
-		err = errors.New(chatUsage)
-		return
+	cmd.kind, cmd.name = chatEnter, defaultChatName
+	if flags.NArg() > 0 {
+		cmd.name = flags.Arg(0)
+		if err = flags.Parse(flags.Args()[1:]); err != nil || flags.NArg() != 0 {
+			err = errors.New(chatUsage)
+			return
+		}
 	}
 	cmd.claudeArgs = tail
 	if len(tail) == 0 {
