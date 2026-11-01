@@ -21,28 +21,9 @@ Infer the repo from `git remote -v`; `gh` does this automatically when run insid
 
 ## Chat: `afk-ai`
 
-Details and rationale: `docs/workflow.md` (`afk-ai`), ADR-0012. Flags: `afk-ai` without arguments prints usage. Output is plain text (no `--json`/`--jq`): `issue view` prints the ticket like `TICKET.md`, `issue list` prints `#N  [labels]  title`.
+Details and rationale: `docs/workflow.md` (`afk-ai`), ADR-0012. `afk-ai` without arguments prints the commands this Chat has, each with its rules (your system prompt carries the same text); wrong arguments print it too. A command missing there (no `vm` without test VMs, no `stack reseed` without `afk-setup`) does not exist in this Chat. Output is plain text (no `--json`/`--jq`): need body or comments of each listed issue? `issue view` per number.
 
-- **Create an issue**: `afk-ai issue create --title "..." --body "..." [--label a,b]`; multi-line body: `--body-file -` with a heredoc on stdin.
-- **Read an issue**: `afk-ai issue view <number>`.
-- **List issues**: `afk-ai issue list [--label <label>] [--state open|closed|all]` (default `open`). Need body or comments of each? `issue view` per number.
-- **Comment on an issue**: `afk-ai issue comment <number> (--body "..." | --body-file -)`. Any issue.
-- **Apply / remove labels**: `afk-ai issue edit <number> --add-label a,b --remove-label c`. Any issue.
-- **Edit title / body**: `afk-ai issue edit <number> --title "..." (--body "..." | --body-file -)`, only on issues this Chat created, and only while they are not `ready-for-agent` (a human approved that text). Labels of such an issue stay editable.
-- **Sub-issue of a parent**: _host only_. Put `Part of #<parent>` at the top of the child body. The `spec` label is allowed on create/edit.
-- **Close**: _host only_.
-- **Open a pull request**: commit your work first, then `afk-ai pr create --title "..." (--body "..." | --body-file -)`. afk validates the commits of this clone like a Run's result (changes to protected paths such as `.github/`, `compose.yml`, `compose.afk.yml`, the Stack's Dockerfiles, `.afk/`, `.claude/` are refused, with the commits and paths listed), pushes `chat-<name>`, opens a ready-for-review PR into the base branch and prints its URL. Call it again after more commits: it only pushes and prints the URL of the open PR (title and body stay). No commits against the base branch is an error; uncommitted changes are left out (a warning). Reading, commenting on or merging PRs stays _host only_.
-- **Stack logs**: `afk-ai stack logs <service> [--tail <n>]` prints the last `n` lines of a service of this Chat's Stack (default 100, at most 1000; more is an error). An unknown service is an error that lists the services there are. Includes `afk`, your own Sandbox.
-- **Restart a service**: `afk-ai stack restart <service>`, any service of the Stack except `afk` (your Sandbox) and the one-shot `afk-setup` (use reseed).
-- **Reseed**: `afk-ai stack reseed` runs the service `afk-setup` of the Stack again and prints its output; it resets only what that script resets (volumes stay). A Stack without `afk-setup` is an error.
-- **Test VMs**: only the libvirt domains of `[[vm]]` in `.afk.toml` (another name is an error listing them). `afk-ai vm list` shows each VM with state, `os`, `user`, owner (the Chat holding it) and address. `vm start|shutdown <vm>` (shutdown is ACPI), `vm key <vm> ctrl+alt+delete` (at most 6 allowed keys joined by `+`), `vm type <vm> <text>` (US-ASCII, at most 500 characters; `-` reads stdin), `vm click <vm> [--button left|right|middle] <x> <y>` and `vm move <vm> <x> <y>` (pixels of the last `vm screenshot` of that VM, which is required first), `vm snapshot|revert <vm> <name>` (`[A-Za-z0-9][A-Za-z0-9_.-]{0,63}`). `vm screenshot <vm> [--file <path>]` saves a PNG in the Sandbox (default `$TMPDIR/afk-screenshot-<vm>.png`) and prints path and size. The first changing operation (all but list and screenshot) holds the VM for this Chat until `vm release <vm>` or the end of `afk chat`; another Chat gets 409. ssh: the Project's key and an ssh config are in `~/.ssh` of the Sandbox: `ssh -o HostName=<address from vm list> <vm> <command>`. The human puts the public key (`afk config` prints it) on the VM.
-- **Blocking, assignees**: _host only_ (see below).
-
-Limits, short:
-
-- `ready-for-agent` is replaced with `needs-triage` (a warning on stderr): a human grants readiness for the Factory. Tell the human which tickets you think are ready.
-- The footer `— z Chat <name>` is appended automatically. Do not write it yourself.
-- A comment on a `ready-for-agent` issue goes into the `TICKET.md` of the Factory's next Run on it: the Agent there acts on it unsupervised.
+_Host only_ (say so and hand them to the human): closing an issue, sub-issues (put `Part of #<parent>` at the top of the child body; the `spec` label is allowed), blocking, assignees, and reading, commenting on or merging PRs. Readiness for the Factory is the human's: tell them which tickets you think are `ready-for-agent`.
 
 ## Pull requests as a triage surface
 

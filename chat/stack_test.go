@@ -210,7 +210,7 @@ func TestStackReseedWithoutSetup(t *testing.T) {
 func TestStackUsage(t *testing.T) {
 	socket := serveStack(t, newControlStack())
 	for _, args := range [][]string{{"stack"}, {"stack", "logs"}, {"stack", "restart"}, {"stack", "reseed", "x"}, {"stack", "logs", "web", "extra"}, {"stack", "logs", "web", "--tail"}, {"stack", "kill", "web"}} {
-		if _, _, err := callStack(t, socket, args...); err == nil || !strings.Contains(err.Error(), "usage:") {
+		if _, _, err := callStack(t, socket, args...); !errors.Is(err, errCLIUsage) {
 			t.Errorf("%q: err = %v, want usage", args, err)
 		}
 	}

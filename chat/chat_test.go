@@ -40,8 +40,21 @@ func TestClaudeProjectKey(t *testing.T) {
 }
 
 func TestSystemPrompt(t *testing.T) {
-	got := systemPrompt("plan", "main", "/s/repo")
-	for _, want := range []string{`"plan"`, "origin/main", "chat-plan", "afk-ai", "pr create", "stack logs", "stack reseed", "afk-ai vm", "vm release", "ready-for-agent", "/s/repo"} {
+	got := systemPrompt("plan", "main", "/s/repo", capabilities{VMs: true, Reseed: true})
+	for _, want := range []string{`"plan"`, "origin/main", "chat-plan", "/s/repo", "afk-ai issue create", "afk-ai pr create", "afk-ai stack logs", "afk-ai stack reseed", "afk-ai vm click", "afk-ai vm release", "ready-for-agent"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("prompt lacks %q:\n%s", want, got)
+		}
+	}
+
+	// A Chat without test VMs and without afk-setup is not told about them.
+	got = systemPrompt("plan", "main", "/s/repo", capabilities{})
+	for _, gone := range []string{"afk-ai vm", "vm list", "VM", "stack reseed", "afk-setup"} {
+		if strings.Contains(got, gone) {
+			t.Errorf("prompt without VMs and afk-setup has %q:\n%s", gone, got)
+		}
+	}
+	for _, want := range []string{"afk-ai issue view", "afk-ai stack restart"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("prompt lacks %q:\n%s", want, got)
 		}
@@ -53,7 +66,7 @@ func TestCommand(t *testing.T) {
 	oldOne := &chat{Options: Options{Name: "plan", Base: run.Base{Branch: "main", Config: config.Config{Agent: config.Agent{Model: "opus"}}}}, dir: "/s/chats/plan"}
 	withArgs := &chat{Options: Options{Name: "plan", Args: []string{"--resume", "a b"}, AgentBinary: "/bin/fake"}, dir: "/s/chats/plan"}
 
-	got := newOne.command()
+	got := newOne.command(capabilities{})
 	for _, want := range []string{`export PATH="$HOME/bin:$PATH"; exec "$HOME/bin/claude" '--dangerously-skip-permissions'`, "skipDangerousModePermissionPrompt", "--append-system-prompt"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("new chat: command lacks %q:\n%s", want, got)
@@ -64,7 +77,7 @@ func TestCommand(t *testing.T) {
 	}
 
 	// An old Chat continues, but only when Claude Code has a conversation for the clone.
-	got = oldOne.command()
+	got = oldOne.command(capabilities{})
 	for _, want := range []string{"'--model' 'opus'", "resume=--continue", "projects/-s-chats-plan-repo/*.jsonl", "$resume"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("old chat: command lacks %q:\n%s", want, got)
@@ -72,7 +85,7 @@ func TestCommand(t *testing.T) {
 	}
 
 	// Args after -- replace --continue.
-	got = withArgs.command()
+	got = withArgs.command(capabilities{})
 	if !strings.Contains(got, "'--resume' 'a b'") || strings.Contains(got, "continue") || !strings.Contains(got, "exec '/bin/fake'") {
 		t.Errorf("args: command =\n%s", got)
 	}

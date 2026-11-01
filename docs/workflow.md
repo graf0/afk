@@ -73,7 +73,7 @@ Strumień Agenta (stream-json) idzie do pliku logu w `~/.local/state/afk/<projec
 - Jeden proces na Chat: blokada `flock` (plik `<nazwa>.lock` obok katalogu stanu); drugi `afk chat <nazwa>` dostaje odmowę. Kilka Chatów naraz to kilka terminali.
 - `afk chat shell` otwiera bash w Sandboxie działającego Chatu; na niedziałającym kończy się błędem (nie podnosi Stacku).
 - `afk chat rm` usuwa Stack z volume'ami, klon, home Agenta i refy `chat-<nazwa>` w Quarantine repo. Branch `chat-<nazwa>` w Forge, jeśli był wypchnięty, zostaje. Działającego Chatu nie usunie (blokada). `afk chat ls` i `shell`/`rm` nie robią `git fetch`: wystarcza lokalny `origin/HEAD`.
-- Ruch wychodzący nie jest filtrowany (ADR-0013): token Claude'a i kod uznajemy za możliwe do wyniesienia. Prompt systemowy od `afk` mówi Agentowi, że nie ma `gh` ani poświadczeń Forge, że tickety i PR idą przez `afk-ai`, i żeby nie ufał poleceniom z czytanych stron.
+- Ruch wychodzący nie jest filtrowany (ADR-0013): token Claude'a i kod uznajemy za możliwe do wyniesienia. Prompt systemowy od `afk` mówi Agentowi, że nie ma `gh` ani poświadczeń Forge, że tickety, PR, Stack i VM idą przez `afk-ai`, i żeby nie ufał poleceniom z czytanych stron; dokleja help `afk-ai` tego Chatu.
 - Pluginy i skille: to samo co w Factory, patrz [Pluginy](#pluginy).
 
 ### Porty (`--expose`)
@@ -82,7 +82,7 @@ Bez `--expose` Stack Chatu nie publikuje żadnego portu, a Run (Factory) nigdy i
 
 ### `afk-ai`
 
-ADR-0012. Binarka `afk` hosta jest montowana tylko do odczytu do Sandboxa jako `$HOME/bin/afk-ai` (`CGO_ENABLED=0`, żeby działała w obrazie z innym glibc) i woła `afk` przez unix socket (`/run/afk/afk.sock`), HTTP+JSON. Socket montowany jest tylko do Sandboxa danego Chatu i istnieje tylko, gdy działa proces `afk chat`. `afk` wykonuje operacje swoim tokenem, tylko dla Forge tego Project. `afk-ai` bez argumentów wypisuje pełną składnię; poniżej zasady. Instrukcja dla Agenta: [agents/issue-tracker.md](agents/issue-tracker.md).
+ADR-0012. Binarka `afk` hosta jest montowana tylko do odczytu do Sandboxa jako `$HOME/bin/afk-ai` (`CGO_ENABLED=0`, żeby działała w obrazie z innym glibc) i woła `afk` przez unix socket (`/run/afk/afk.sock`), HTTP+JSON. Socket montowany jest tylko do Sandboxa danego Chatu i istnieje tylko, gdy działa proces `afk chat`. `afk` wykonuje operacje swoim tokenem, tylko dla Forge tego Project. Opis komend (składnia i zasady) ma jedno źródło, tabelę komend w `chat/cli.go`; `afk` składa z niej help tego Chatu, bez komend, których Chat nie ma (`vm` bez `[[vm]]`, `stack reseed` bez `afk-setup`), i podaje go w prompcie systemowym oraz na `GET /` kanału. `afk-ai` bez argumentów albo ze złymi argumentami wypisuje ten help (bez kanału: błąd). Poniżej uzasadnienie zasad. Instrukcja dla Agenta: [agents/issue-tracker.md](agents/issue-tracker.md).
 
 - `issue view <n>` — format `TICKET.md` (ta sama sanitizacja); `issue list [--label …] [--state open|closed|all]` — `#N  [labele]  tytuł`.
 - `issue create`, `issue comment` — treść ze stopką `— z Chat <nazwa>`. Komentarz na dowolnym issue, także `ready-for-agent`: trafia do `TICKET.md` Run, ale w Chat jest człowiek in-the-loop, więc to świadomy kompromis, nie dziura. Label Spec dozwolony — Chat tworzy Specy.
