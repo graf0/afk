@@ -173,7 +173,13 @@ func (f *fakeStack) Remove(ctx context.Context) (err error) {
 	return
 }
 
-func (f *fakeStack) Services(context.Context) (services []string, err error)  { return }
+// Services fails before Up, like a Stack without the export of the base branch.
+func (f *fakeStack) Services(context.Context) (services []string, err error) {
+	if !slices.Contains(f.calls, "Up") {
+		err = errors.New("the Stack has no export of the base branch: Up first")
+	}
+	return
+}
 func (f *fakeStack) Logs(context.Context, string, int, io.Writer) (err error) { return }
 func (f *fakeStack) Restart(context.Context, string, io.Writer) (err error)   { return }
 func (f *fakeStack) Reseed(context.Context, io.Writer) (err error)            { return }

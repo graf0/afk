@@ -373,6 +373,15 @@ func (c *chat) live(ctx context.Context, st sandboxStack, checkout string) (err 
 	locks := newClaims(filepath.Join(c.StateDir, vmLocksName), claimVM, c.project+"/"+c.Name)
 	defer locks.close()
 	vms := vmChannel{VMs: c.Base.Config.VM, Driver: virsh{}, Locks: locks}
+	// The Sandbox mounts the directory of the socket: it exists before Up.
+	if err = os.MkdirAll(filepath.Dir(c.socket), 0o700); err != nil {
+		err = fmt.Errorf("creating %s: %w", filepath.Dir(c.socket), err)
+		return
+	}
+	// Services reads the export of the base branch, which Up makes.
+	if err = st.Up(ctx); err != nil {
+		return
+	}
 	services, err := st.Services(ctx)
 	if err != nil {
 		err = fmt.Errorf("listing the services of the Stack: %w", err)
@@ -384,9 +393,6 @@ func (c *chat) live(ctx context.Context, st sandboxStack, checkout string) (err 
 		return
 	}
 	defer stop()
-	if err = st.Up(ctx); err != nil {
-		return
-	}
 	if container, containerErr := st.Container(ctx); containerErr == nil {
 		c.say("Chat %s: Sandbox container %s (podman exec -it %s bash)", c.Name, container, container)
 	} else {
