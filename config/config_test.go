@@ -44,6 +44,22 @@ func TestParseDefaults(t *testing.T) {
 	}
 }
 
+// A local forge gets its tickets directory: .scratch by default, cleaned when set.
+func TestParseLocalForgeDir(t *testing.T) {
+	for dir, want := range map[string]string{"": ".scratch", "dir = \"tickets/\"\n": "tickets", "dir = \"a/./b\"\n": "a/b"} {
+		cfg, err := Parse([]byte("[forge]\nkind = \"local\"\nrepo = \"o/r\"\n" + dir + "[gate]\ncmd = \"true\"\n"))
+		if err != nil {
+			t.Fatalf("%q: %v", dir, err)
+		}
+		if cfg.Forge.Dir != want {
+			t.Errorf("%q: forge.dir = %q, want %q", dir, cfg.Forge.Dir, want)
+		}
+	}
+	if cfg, err := Parse([]byte(minimalConfig)); err != nil || cfg.Forge.Dir != "" {
+		t.Errorf("github: forge.dir = %q, %v; want none", cfg.Forge.Dir, err)
+	}
+}
+
 func TestParseOverrides(t *testing.T) {
 	cfg, err := Parse([]byte(`
 [forge]

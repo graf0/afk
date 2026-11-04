@@ -134,7 +134,7 @@ func chatEnterCommand(ctx context.Context, cmd chatCommand, opts chat.Options, d
 	if opts.ClaudeToken, err = agent.OAuthToken(opts.StateDir); err != nil {
 		return
 	}
-	if opts.Forge, err = forge.New(ctx, opts.Base.Config, opts.StateDir); err != nil {
+	if opts.Forge, err = forge.New(ctx, opts.Base.Config, opts.StateDir, opts.Base.Repo); err != nil {
 		return
 	}
 	opts.Args, opts.Remove, opts.Expose = cmd.claudeArgs, cmd.remove, cmd.expose

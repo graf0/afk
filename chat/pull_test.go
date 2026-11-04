@@ -34,17 +34,25 @@ func (f pullForge) CreatePull(_ context.Context, head, base, title, body string,
 }
 
 // pullFixture is a Chat "plan" with a Sandbox clone and a remote, both local
-// repositories, and its channel with the pull routes.
+// repositories, and its channel with the pull routes; with ticketsDir set,
+// those of a local forge. The remote has the base branch main.
 type pullFixture struct {
-	socket    string
-	clone     string // the Sandbox's clone, where the Agent commits
-	remoteDir string // the bare repository of the Forge
-	pulls     []string
-	protected []string
-	forge     pullForge
+	socket     string
+	clone      string // the Sandbox's clone, where the Agent commits
+	user       string // the user's repository, which the Chat started from
+	remoteDir  string // the bare repository of the Forge
+	ticketsDir string
+	pulls      []string
+	protected  []string
+	forge      pullForge
 }
 
 func newPullFixture(t *testing.T) (fx *pullFixture) {
+	t.Helper()
+	return newChannelFixture(t, "")
+}
+
+func newChannelFixture(t *testing.T, ticketsDir string) (fx *pullFixture) {
 	t.Helper()
 	root := t.TempDir()
 	user, remoteDir, stateDir := filepath.Join(root, "user"), filepath.Join(root, "origin.git"), filepath.Join(root, "state")
@@ -56,6 +64,7 @@ func newPullFixture(t *testing.T) (fx *pullFixture) {
 	gitIn(t, remoteDir, "init", "-q", "--bare", "-b", "main")
 	gitIn(t, user, "init", "-q", "-b", "main")
 	gitIn(t, user, "commit", "-q", "--allow-empty", "-m", "base")
+	gitIn(t, user, "push", "-q", remoteDir, "main")
 	base, err := exec.Command("git", "-C", user, "rev-parse", "HEAD").Output()
 	if err != nil {
 		t.Fatal(err)
@@ -70,7 +79,7 @@ func newPullFixture(t *testing.T) (fx *pullFixture) {
 	if err = quarantine.FetchBase(ctx, user, strings.TrimSpace(string(base)), "chat-plan"); err != nil {
 		t.Fatal(err)
 	}
-	fx = &pullFixture{clone: filepath.Join(root, "clone"), remoteDir: remoteDir}
+	fx = &pullFixture{clone: filepath.Join(root, "clone"), user: user, remoteDir: remoteDir, ticketsDir: ticketsDir}
 	branch := run.GuestBranch{Quarantine: quarantine, Name: "chat-plan", TempDir: stateDir}
 	start, err := branch.CloneTo(ctx, fx.clone, "main", false)
 	if err != nil {
@@ -96,6 +105,7 @@ func (fx *pullFixture) serve(t *testing.T, quarantine run.Quarantine, stateDir s
 	stop, err := serveChannel(t.Context(), fx.socket, io.Discard, pullRoutes(pullChannel{
 		Forge: &fx.forge, Chat: "plan", Quarantine: quarantine, Branch: "chat-plan", BaseBranch: "main", TempDir: stateDir,
 		Exec: execInClone, Protected: func() (paths []string) { return fx.protected },
+		TicketsDir: fx.ticketsDir, ReadyLabel: "ready-for-agent", Ident: run.Ident{Name: "Host", Email: "host@example.com"},
 	}))
 	if err != nil {
 		t.Fatal(err)
@@ -126,7 +136,13 @@ func (fx *pullFixture) call(t *testing.T, stdin string, args ...string) (out, wa
 // remoteTip is the commit of chat-plan on the Forge, empty without the branch.
 func (fx *pullFixture) remoteTip(t *testing.T) (tip string) {
 	t.Helper()
-	out, _ := exec.Command("git", "-C", fx.remoteDir, "rev-parse", "--verify", "--quiet", "refs/heads/chat-plan").Output()
+	return fx.remoteRef(t, "chat-plan")
+}
+
+// remoteRef is the commit of branch on the Forge, empty without it.
+func (fx *pullFixture) remoteRef(t *testing.T, branch string) (tip string) {
+	t.Helper()
+	out, _ := exec.Command("git", "-C", fx.remoteDir, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch).Output()
 	return strings.TrimSpace(string(out))
 }
 

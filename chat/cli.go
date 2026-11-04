@@ -23,6 +23,9 @@ const (
 	// the host's binary, mounted read-only (ADR-0012).
 	CLIBinary = "afk-ai"
 
+	// protectedNote ends the notes of the commands that push the clone.
+	protectedNote = "a change to a protected path ([protect] of .afk.toml, .afk.toml, compose files, the Stack's Dockerfiles, .afk/, .github/, .gitea/, .claude/, .mcp.json) refuses the whole push, listing the commits and paths"
+
 	// cliFlagsNote ends the help: what the text and label flags take.
 	cliFlagsNote = "--body-file - reads the text from stdin; --label, --add-label and --remove-label may repeat or list labels with commas. Output is plain text.\n"
 )
@@ -37,17 +40,22 @@ var helpCall = cliCall{method: http.MethodGet, path: "/"}
 // that has what they need, and how their arguments become a call. The one
 // source of both, so a command never lacks its description.
 var cliCommands = []cliCommand{
-	{name: "issue view", args: "<n>", note: "the ticket with its comments, as the TICKET.md of a Run", parse: parseIssueView},
+	{name: "issue view", args: "<n>", note: "the ticket with its comments, as the TICKET.md of a Run", when: hasForgeAPI, parse: parseIssueView},
 	{name: "issue list", args: "[--label <label>] [--state open|closed|all]",
-		note: "default --state open; prints #N  [labels]  title", parse: parseIssueList},
+		note: "default --state open; prints #N  [labels]  title", when: hasForgeAPI, parse: parseIssueList},
 	{name: "issue create", args: "--title <title> [--body <text> | --body-file -] [--label <a,b>]...",
-		note: "ready-for-agent becomes needs-triage: a human makes a ticket ready for the Factory, so tell them which you think are; afk adds the footer naming this Chat, do not write it", parse: parseIssueCreate},
+		note: "ready-for-agent becomes needs-triage: a human makes a ticket ready for the Factory, so tell them which you think are; afk adds the footer naming this Chat, do not write it", when: hasForgeAPI, parse: parseIssueCreate},
 	{name: "issue comment", args: "<n> (--body <text> | --body-file -)",
-		note: "any issue; afk adds the footer; on a ready-for-agent one the comment goes to the Agent of the Factory's next Run on it", parse: parseIssueComment},
+		note: "any issue; afk adds the footer; on a ready-for-agent one the comment goes to the Agent of the Factory's next Run on it", when: hasForgeAPI, parse: parseIssueComment},
 	{name: "issue edit", args: "<n> [--add-label <a,b>]... [--remove-label <a,b>]... [--title <title>] [--body <text> | --body-file -]",
-		note: "labels on any issue (ready-for-agent becomes needs-triage); --title and --body only on issues created by this Chat that are not ready-for-agent", parse: parseIssueEdit},
+		note: "labels on any issue (ready-for-agent becomes needs-triage); --title and --body only on issues created by this Chat that are not ready-for-agent", when: hasForgeAPI, parse: parseIssueEdit},
 	{name: "pr create", args: "--title <title> [--body <text> | --body-file -]",
-		note: "commit first (uncommitted changes stay out; no commits against the base branch is an error): pushes the commits of this clone to the branch of this Chat and opens a pull request, or, when one is open, only pushes and prints its URL (title and body stay); a change to a protected path ([protect] of .afk.toml, .afk.toml, compose files, the Stack's Dockerfiles, .afk/, .github/, .gitea/, .claude/, .mcp.json) refuses the whole push, listing the commits and paths", parse: parsePullCreate},
+		note: "commit first (uncommitted changes stay out; no commits against the base branch is an error): pushes the commits of this clone to the branch of this Chat and opens a pull request, or, when one is open, only pushes and prints its URL (title and body stay); " + protectedNote, when: hasForgeAPI, parse: parsePullCreate},
+	{name: "push", note: "commit first (uncommitted changes stay out; no commits against the base branch is an error): pushes the commits of this clone to the branch of this Chat on origin, without a pull request: a human merges it; " + protectedNote,
+		when: hasLocalTickets, parse: parsePush},
+	{name: "tickets publish", args: "-m <message>",
+		note: "commit first: puts the changes this branch made under the tickets directory, and nothing else, as one commit with the message on top of the base branch as it is on origin now and pushes it there; the whole branch is validated as by push; a conflict, a ticket given the status only a human gives, or a base branch that moved meanwhile is an error and nothing is pushed (call again); prints the commit",
+		when: hasLocalTickets, parse: parseTicketsPublish},
 	{name: "stack logs", args: "<service> [--tail <n>]",
 		note: fmt.Sprintf("the last n lines (default %d, at most %d) of a service of the Stack, afk (this Sandbox) too", defaultLogTail, maxLogTail), parse: parseStackLogs},
 	{name: "stack restart", args: "<service>",
@@ -69,11 +77,14 @@ var cliCommands = []cliCommand{
 	{name: "vm revert", args: "<vm> <name>", when: hasVMs, parse: parseVMSnapshot("revert")},
 }
 
-// capabilities are what a Chat has beyond tickets, pull requests and its
-// Stack's logs and restarts: fixed for the life of `afk chat`.
+// capabilities are what a Chat has beyond its Stack's logs and restarts:
+// fixed for the life of `afk chat`.
 type capabilities struct {
 	VMs    bool // [[vm]] in the Project config
 	Reseed bool // the service afk-setup in the Stack
+	// TicketsDir is forge.dir of a local forge: tickets are files there, with
+	// no issue or pull request API. Empty: the Forge has that API.
+	TicketsDir string
 }
 
 // cliCommand is one command of afk-ai.
@@ -95,9 +106,13 @@ type cliCall struct {
 
 // --- the help of afk-ai ---
 
-// hasVMs and hasReseed are the conditions of the vm commands and of stack reseed.
-func hasVMs(caps capabilities) (ok bool)    { return caps.VMs }
-func hasReseed(caps capabilities) (ok bool) { return caps.Reseed }
+// hasVMs, hasReseed, hasForgeAPI and hasLocalTickets are the conditions of
+// the vm commands, of stack reseed, of the issue and pr commands and of the
+// commands of a local forge.
+func hasVMs(caps capabilities) (ok bool)          { return caps.VMs }
+func hasReseed(caps capabilities) (ok bool)       { return caps.Reseed }
+func hasForgeAPI(caps capabilities) (ok bool)     { return caps.TicketsDir == "" }
+func hasLocalTickets(caps capabilities) (ok bool) { return caps.TicketsDir != "" }
 
 // cliHelp is the help of afk-ai for a Chat with caps: its commands, each
 // with its note. The prompt of the Chat and `GET /` of its channel carry it.
@@ -146,9 +161,11 @@ func RunCLI(ctx context.Context, socket string, args []string, stdin io.Reader, 
 	}
 	err = errCLIUsage
 	var call cliCall
-	if len(args) >= 2 {
-		if i := slices.IndexFunc(cliCommands, func(c cliCommand) bool { return c.name == args[0]+" "+args[1] }); i >= 0 {
-			call, err = cliCommands[i].parse(args[2:], stdin)
+	for _, c := range cliCommands {
+		// A name is one word (push) or two (issue view).
+		if words := strings.Fields(c.name); len(args) >= len(words) && slices.Equal(args[:len(words)], words) {
+			call, err = c.parse(args[len(words):], stdin)
+			break
 		}
 	}
 	if errors.Is(err, errCLIUsage) {

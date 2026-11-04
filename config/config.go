@@ -3,10 +3,12 @@ package config
 
 import (
 	"bytes"
+	"cmp"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
 
@@ -17,9 +19,15 @@ import (
 const FileName = ".afk.toml"
 
 const (
-	// ForgeGitHub and ForgeGitea are the values of forge.kind.
+	// ForgeGitHub, ForgeGitea and ForgeLocal are the values of forge.kind.
+	// A local forge has no API: tickets are files in the repository, under
+	// forge.dir, and git pushes to the origin of the user's clone (ADR-0016).
 	ForgeGitHub = "github"
 	ForgeGitea  = "gitea"
+	ForgeLocal  = "local"
+
+	// defaultTicketsDir is forge.dir of a local forge by default.
+	defaultTicketsDir = ".scratch"
 
 	// defaultMaxFixes is the default number of fix attempts after a failed gate.
 	defaultMaxFixes = 3
@@ -48,9 +56,10 @@ type Config struct {
 
 // Forge describes the system hosting the repository and tickets.
 type Forge struct {
-	Kind string `toml:"kind"` // github | gitea
-	Repo string `toml:"repo"`
+	Kind string `toml:"kind"` // github | gitea | local
+	Repo string `toml:"repo"` // owner/name; for local only the name of the Project's state
 	URL  string `toml:"url"`
+	Dir  string `toml:"dir"` // local: the directory of the tickets in the repository
 }
 
 // Labels maps triage roles to label names in the tracker.
@@ -189,6 +198,9 @@ func parse(prefix string, data []byte) (cfg Config, err error) {
 		return
 	}
 	cfg.Protect.Paths = mergeProtectPaths(cfg.Protect.Paths)
+	if cfg.Forge.Kind == ForgeLocal {
+		cfg.Forge.Dir = path.Clean(cmp.Or(cfg.Forge.Dir, defaultTicketsDir))
+	}
 	return
 }
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"maps"
 	"net/url"
+	"path"
 	"regexp"
 	"slices"
 	"strings"
@@ -23,7 +24,7 @@ var removedSections = map[string]string{
 }
 
 var (
-	forgeKinds = []string{ForgeGitHub, ForgeGitea}
+	forgeKinds = []string{ForgeGitHub, ForgeGitea, ForgeLocal}
 
 	vmOSes = []string{"windows", "linux"}
 
@@ -158,13 +159,25 @@ func (c Config) validateForge(v *validator) {
 	switch {
 	case c.Forge.Kind == ForgeGitea && c.Forge.URL == "":
 		v.report("forge.url", "required for gitea")
-	case c.Forge.Kind == ForgeGitHub && c.Forge.URL != "":
-		v.report("forge.url", "not allowed for github")
+	case (c.Forge.Kind == ForgeGitHub || c.Forge.Kind == ForgeLocal) && c.Forge.URL != "":
+		v.report("forge.url", "not allowed for %s", c.Forge.Kind)
 	case c.Forge.URL != "":
 		// https only: the forge token is sent in a header.
 		if u, err := url.Parse(c.Forge.URL); err != nil || u.Scheme != "https" || u.Host == "" {
 			v.report("forge.url", "want an https URL, got %q", c.Forge.URL)
 		}
+	}
+	dir := c.Forge.Dir
+	switch {
+	case dir != "" && c.Forge.Kind != ForgeLocal:
+		v.report("forge.dir", "only for local")
+	case strings.HasPrefix(dir, "/"):
+		v.report("forge.dir", "must be relative, got %q", dir)
+	case slices.Contains(strings.Split(dir, "/"), ".."):
+		v.report("forge.dir", `must not contain "..", got %q`, dir)
+	case dir != "" && path.Clean(dir) == ".":
+		// The whole repository would go to the base branch by `afk-ai tickets publish`.
+		v.report("forge.dir", "must name a directory below the root, got %q", dir)
 	}
 }
 

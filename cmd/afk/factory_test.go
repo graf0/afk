@@ -3,6 +3,10 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -66,4 +70,37 @@ func TestFactoryOffersTemplateOnMissingStack(t *testing.T) {
 			t.Errorf("err = %v", err)
 		}
 	})
+}
+
+// A Project with a local forge has no Factory yet: refused before anything starts.
+func TestFactoryRefusesLocalForge(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "")
+	root := t.TempDir()
+	origin, dir := filepath.Join(root, "origin.git"), filepath.Join(root, "work")
+	cfg := "[forge]\nkind = \"local\"\nrepo = \"o/r\"\n[gate]\ncmd = \"true\"\n"
+	for _, args := range [][]string{
+		{"init", "-q", "--bare", "-b", "main", origin},
+		{"init", "-q", "-b", "main", dir},
+		{"-C", dir, "remote", "add", "origin", origin},
+	} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".afk.toml"), []byte(cfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"-C", dir, "add", ".afk.toml"},
+		{"-C", dir, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "config"},
+		{"-C", dir, "push", "-q", "origin", "main"},
+	} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	if err := runFactory(t.Context(), nil, dir, io.Discard); !errors.Is(err, errLocalFactory) {
+		t.Errorf("err = %v, want %v", err, errLocalFactory)
+	}
 }

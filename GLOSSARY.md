@@ -13,7 +13,7 @@ Interaktywna rozmowa człowieka z Agentem we własnym, długo żyjącym Sandboxi
 _Avoid_: sesja, interactive session
 
 **Export**:
-Przeniesienie commitów Chat na branch `chat-<nazwa>` w Forge, przez Quarantine repo i tę samą walidację co wynik Run; można je powtarzać. Zleca je Agent, gdy otwiera PR z Chat.
+Przeniesienie commitów Chat na branch `chat-<nazwa>` w Forge, przez Quarantine repo i tę samą walidację co wynik Run; można je powtarzać. Zleca je Agent, gdy otwiera PR z Chat, a przy Forge `local` przez `afk-ai push`.
 _Avoid_: sync, publish
 
 **Factory**:
@@ -21,7 +21,7 @@ Nienadzorowana pętla, która bierze Tickety pasujące do selektora (`*` — kol
 _Avoid_: sesja, worker, ralph
 
 **Ticket**:
-Zadanie w trackerze z oznaczeniem `ready-for-agent`, zawierające wszystko, czego agent potrzebuje do pracy. Jedyne źródło wiedzy agenta o zadaniu.
+Zadanie w trackerze z oznaczeniem `ready-for-agent`, zawierające wszystko, czego agent potrzebuje do pracy. Jedyne źródło wiedzy agenta o zadaniu. Przy Forge `local` to plik `<dir>/<cecha>/issues/NN-slug.md` z linią `Status:`.
 _Avoid_: issue, task, zadanie
 
 **Spec**:
@@ -29,7 +29,7 @@ Ticket oznaczony labelem Spec, z podrzędnymi ticketami (dziećmi); realizowany 
 _Avoid_: epic, parent
 
 **Forge**:
-System hostujący repozytorium, tickety i pull requesty (GitHub, Gitea). Tylko `afk` na hoście z nim rozmawia.
+System hostujący repozytorium, tickety i pull requesty (GitHub, Gitea). Tylko `afk` na hoście z nim rozmawia. Forge `local` nie ma API: tickety to pliki w repo, a remote to `origin` klona użytkownika (ADR-0016).
 _Avoid_: tracker (gdy chodzi także o repo i PR), remote
 
 **Run**:

@@ -380,7 +380,7 @@ func TestNew(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "t")
 	t.Setenv("GITEA_TOKEN", "")
 	stateDir := t.TempDir()
-	f, err := New(t.Context(), cfgOf(config.Forge{Kind: "github", Repo: "o/r"}), stateDir)
+	f, err := New(t.Context(), cfgOf(config.Forge{Kind: "github", Repo: "o/r"}), stateDir, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -397,13 +397,13 @@ func TestNew(t *testing.T) {
 		{Kind: "github", Repo: "o/r/x"},
 		{Kind: "gitea", Repo: "o/r", URL: "https://gitea.example"}, // no token
 	} {
-		if _, err = New(t.Context(), cfgOf(cfg), stateDir); err == nil {
+		if _, err = New(t.Context(), cfgOf(cfg), stateDir, ""); err == nil {
 			t.Errorf("New(%+v): want error", cfg)
 		}
 	}
 
 	t.Setenv("GITEA_TOKEN", "t")
-	f, err = New(t.Context(), cfgOf(config.Forge{Kind: "gitea", Repo: "o/r", URL: "https://gitea.example"}), stateDir)
+	f, err = New(t.Context(), cfgOf(config.Forge{Kind: "gitea", Repo: "o/r", URL: "https://gitea.example"}), stateDir, "")
 	if err != nil {
 		t.Fatal(err)
 	}

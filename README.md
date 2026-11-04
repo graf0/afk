@@ -14,7 +14,7 @@ Aktualizacja to ta sama komenda. `CGO_ENABLED=0` daje statyczną binarkę: `afk`
 
 - Linux, rootless podman z włączonym socketem: `systemctl --user enable --now podman.socket`.
 - `docker-compose` v2 (Debian: pakiet `docker-compose`). `afk` woła go z `DOCKER_HOST` ustawionym na socket podmana.
-- `git` i `claude` na hoście. Binarka `claude` jest montowana do Sandboxa tylko do odczytu, więc obraz Sandboxa musi mieć zgodne glibc.
+- `git` (dla forge `local` co najmniej 2.40) i `claude` na hoście. Binarka `claude` jest montowana do Sandboxa tylko do odczytu, więc obraz Sandboxa musi mieć zgodne glibc.
 - Tylko dla VM testowych: libvirt (`qemu:///system`) i istniejące domeny.
 
 ## Poświadczenia
@@ -22,6 +22,7 @@ Aktualizacja to ta sama komenda. `CGO_ENABLED=0` daje statyczną binarkę: `afk`
 - Claude: `claude setup-token`. Token podajesz w `CLAUDE_CODE_OAUTH_TOKEN` albo w pliku `~/.local/state/afk/claude-oauth-token` (tryb `0600`).
 - GitHub: `GITHUB_TOKEN` albo zalogowane `gh`.
 - Gitea: `GITEA_TOKEN` albo plik `~/.local/state/afk/gitea-token` (tryb `0600`).
+- Forge `local`: żadnych. `afk` pushuje na `origin` Twoim gitem (config, klucze ssh).
 
 ## Project
 
@@ -63,6 +64,7 @@ Chat pracuje na branchu `chat-<nazwa>`. Agent w Chat ma przez `afk` dostęp do:
 
 - ticketów: czytanie, komentarze, labele, tworzenie; nigdy nie nadaje `ready-for-agent`;
 - PR z brancha Chatu;
+- przy forge `local`, zamiast dwóch powyższych: `afk-ai push` (branch Chatu na origin, bez PR) i `afk-ai tickets publish -m <opis>` (zmiany brancha w `[forge].dir` jako jeden commit prosto na gałąź bazową; ADR-0016);
 - logów, restartu i reseedu Stacku;
 - VM testowych: ekran, klawiatura, mysz, snapshoty.
 
@@ -103,15 +105,18 @@ paths = ["scripts/deploy/"]
 
 | Klucz | Domyślnie | Opis |
 |---|---|---|
-| `kind` | wymagany | `github` albo `gitea` |
-| `repo` | wymagany | `owner/name` |
-| `url` | brak | Adres `https://` instancji: wymagany dla `gitea`, zakazany dla `github`. Musi to być adres ostateczny, bez przekierowań |
+| `kind` | wymagany | `github`, `gitea` albo `local` |
+| `repo` | wymagany | `owner/name`. Dla `local` służy tylko jako nazwa stanu Projectu |
+| `url` | brak | Adres `https://` instancji: wymagany dla `gitea`, zakazany dla `github` i `local`. Musi to być adres ostateczny, bez przekierowań |
+| `dir` | `.scratch` | Tylko `local`: katalog ticketów w repo, ścieżka względna bez `..` |
 
 Gitea nie ma sub-issues ani draftów. Dzieci Spec to linie `- [ ] #M` w treści, a draft PR to tytuł z prefiksem `WIP:`.
 
+`local` to Forge bez API (ADR-0016). Tickety są plikami w repo: `<dir>/<cecha>/spec.md` i `<dir>/<cecha>/issues/NN-slug.md`. Każdy ma linię `Status:` z nazwą z `[labels]` albo `resolved`, opcjonalnie `Blocked by: NN, NN`, a komentarze są pod `## Comments`. Remote to `origin` repozytorium. Agent w Chat publikuje zmiany ticketów prosto na gałąź bazową przez `afk-ai tickets publish`. `afk` bierze wtedy tylko zmiany w `<dir>/`, waliduje cały branch jak przy pushu i odrzuca nadanie `ready_for_agent`. Resztę brancha wypycha `afk-ai push`, a merge robisz Ty. `afk factory` jeszcze nie obsługuje `local` (faza B).
+
 ### `[labels]`
 
-Nazwy labeli w Forge. Muszą istnieć w repo, `afk` ich nie tworzy.
+Nazwy labeli w Forge. Muszą istnieć w repo, `afk` ich nie tworzy. Przy `local` to wartości linii `Status:` ticketu (`spec` nieużywany).
 
 | Klucz | Domyślnie |
 |---|---|

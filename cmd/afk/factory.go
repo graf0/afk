@@ -11,12 +11,17 @@ import (
 	"golang.org/x/term"
 
 	"github.com/graf0/afk/agent"
+	"github.com/graf0/afk/config"
 	"github.com/graf0/afk/forge"
 	"github.com/graf0/afk/run"
 	"github.com/graf0/afk/stack"
 )
 
 const factoryUsage = "usage: afk factory ['*' | '#N' ...] (every ready ticket by default, or the listed ones in order)"
+
+// errLocalFactory refuses the Factory of a Project with a local forge: its
+// tickets are files, which the Factory does not read yet (ADR-0016).
+var errLocalFactory = errors.New("forge local: Factory jeszcze nieobsługiwana (faza B)")
 
 // runFactory executes `afk factory [selector]`: the Factory loop of the
 // Project, which ends when nothing is left to take, or on the first failed Run.
@@ -29,15 +34,19 @@ func runFactory(ctx context.Context, args []string, dir string, stdout io.Writer
 	if err != nil {
 		return
 	}
-	claudeToken, err := agent.OAuthToken(stateDir)
-	if err != nil {
-		return
-	}
 	base, err := run.ReadBase(ctx, dir)
 	if err != nil {
 		return
 	}
-	gitForge, err := forge.New(ctx, base.Config, stateDir)
+	if base.Config.Forge.Kind == config.ForgeLocal {
+		err = errLocalFactory
+		return
+	}
+	claudeToken, err := agent.OAuthToken(stateDir)
+	if err != nil {
+		return
+	}
+	gitForge, err := forge.New(ctx, base.Config, stateDir, base.Repo)
 	if err != nil {
 		return
 	}

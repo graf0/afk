@@ -54,3 +54,22 @@ func TestRunCLIHelp(t *testing.T) {
 		check(args, err.Error())
 	}
 }
+
+// A Chat on a local forge has push and tickets publish instead of the issue
+// and pr commands.
+func TestCLIHelpLocal(t *testing.T) {
+	help := cliHelp(capabilities{TicketsDir: ".scratch"})
+	for _, want := range []string{"afk-ai push\n", "afk-ai tickets publish -m <message>", "afk-ai stack logs"} {
+		if !strings.Contains(help, want) {
+			t.Errorf("help lacks %q:\n%s", want, help)
+		}
+	}
+	for _, gone := range []string{"afk-ai issue", "afk-ai pr"} {
+		if strings.Contains(help, gone) {
+			t.Errorf("help of a local forge has %q:\n%s", gone, help)
+		}
+	}
+	if help = cliHelp(capabilities{}); strings.Contains(help, "afk-ai push") || strings.Contains(help, "tickets publish") {
+		t.Errorf("help of a Forge with an API has the commands of a local one:\n%s", help)
+	}
+}
