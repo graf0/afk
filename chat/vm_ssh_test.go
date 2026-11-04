@@ -1,6 +1,8 @@
 package chat
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"os/exec"
 	"strings"
@@ -14,6 +16,9 @@ func TestEnsureVMKey(t *testing.T) {
 		t.Skip("no ssh-keygen")
 	}
 	dir := t.TempDir()
+	if _, err := ReadVMKey(dir); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("ReadVMKey before any key: err = %v, want fs.ErrNotExist", err)
+	}
 	first, err := EnsureVMKey(dir)
 	if err != nil || !strings.HasPrefix(first, "ssh-ed25519 ") {
 		t.Fatalf("EnsureVMKey = %q, %v", first, err)
@@ -26,6 +31,9 @@ func TestEnsureVMKey(t *testing.T) {
 	second, err := EnsureVMKey(dir)
 	if err != nil || second != first {
 		t.Errorf("second call = %q, %v; want the same key", second, err)
+	}
+	if read, err := ReadVMKey(dir); err != nil || read != first {
+		t.Errorf("ReadVMKey = %q, %v; want the made key", read, err)
 	}
 	entries, _ := os.ReadDir(dir)
 	if len(entries) != 1 {

@@ -40,7 +40,7 @@ func TestClaudeProjectKey(t *testing.T) {
 }
 
 func TestSystemPrompt(t *testing.T) {
-	got := systemPrompt("plan", "main", "/s/repo", capabilities{VMs: true, Reseed: true})
+	got := systemPrompt("plan", "main", "/s/repo", capabilities{VMs: true, Reseed: true}, config.Labels{})
 	for _, want := range []string{`"plan"`, "origin/main", "chat-plan", "/s/repo", "afk-ai issue create", "afk-ai pr create", "afk-ai stack logs", "afk-ai stack reseed", "afk-ai vm click", "afk-ai vm release", "ready-for-agent"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("prompt lacks %q:\n%s", want, got)
@@ -48,7 +48,7 @@ func TestSystemPrompt(t *testing.T) {
 	}
 
 	// A Chat without test VMs and without afk-setup is not told about them.
-	got = systemPrompt("plan", "main", "/s/repo", capabilities{})
+	got = systemPrompt("plan", "main", "/s/repo", capabilities{}, config.Labels{})
 	for _, gone := range []string{"afk-ai vm", "vm list", "VM", "stack reseed", "afk-setup"} {
 		if strings.Contains(got, gone) {
 			t.Errorf("prompt without VMs and afk-setup has %q:\n%s", gone, got)
@@ -57,6 +57,33 @@ func TestSystemPrompt(t *testing.T) {
 	for _, want := range []string{"afk-ai issue view", "afk-ai stack restart"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("prompt lacks %q:\n%s", want, got)
+		}
+	}
+}
+
+// A Chat on a local forge has no issue and pr commands, but push, tickets
+// publish and the section on the ticket files, with the Project's labels.
+func TestSystemPromptLocal(t *testing.T) {
+	labels := config.Labels{NeedsTriage: "triage", NeedsInfo: "info", ReadyForAgent: "go-agent", ReadyForHuman: "human", Wontfix: "never"}
+	got := systemPrompt("plan", "main", "/s/repo", capabilities{TicketsDir: "tickets"}, labels)
+	for _, want := range []string{
+		"## Tickety", "`tickets/<cecha>/spec.md`", "`tickets/<cecha>/issues/NN-<slug>.md`", "triage, info, go-agent, human, never, resolved",
+		"`Status: go-agent` nadaje wyłącznie człowiek", "jako `triage`", "Blocked by: NN, NN", "## Comments", "origin/main",
+		"afk-ai push", "afk-ai tickets publish -m", "Nie masz poświadczeń do origin", "migawka",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("prompt lacks %q:\n%s", want, got)
+		}
+	}
+	for _, gone := range []string{"afk-ai issue", "afk-ai pr create", "`gh`", "ready-for-agent"} {
+		if strings.Contains(got, gone) {
+			t.Errorf("prompt of a local forge has %q:\n%s", gone, got)
+		}
+	}
+	got = systemPrompt("plan", "main", "/s/repo", capabilities{}, labels)
+	for _, gone := range []string{"## Tickety", "afk-ai push", "tickets publish"} {
+		if strings.Contains(got, gone) {
+			t.Errorf("prompt of a Forge with an API has %q:\n%s", gone, got)
 		}
 	}
 }
@@ -394,7 +421,7 @@ func TestEnterExposePortBusy(t *testing.T) {
 
 	l := newLifecycle(t)
 	l.opts.Expose = true
-	l.opts.Base.Config.Expose = map[string]string{"web": port + ":80"}
+	l.opts.Base.Config.Expose = map[string]config.Ports{"web": {port + ":80"}}
 	if _, err = l.enter(t.Context()); err == nil || !strings.Contains(err.Error(), port) {
 		t.Fatalf("err = %v, want the busy port", err)
 	}
@@ -413,7 +440,7 @@ func TestEnterExposeHoldsPortsUntilDown(t *testing.T) {
 
 	l := newLifecycle(t)
 	l.opts.Expose = true
-	l.opts.Base.Config.Expose = map[string]string{"web": port + ":80"}
+	l.opts.Base.Config.Expose = map[string]config.Ports{"web": {port + ":80"}}
 	other := newClaims(filepath.Join(l.opts.StateDir, exposeLocksName), claimPort, "o-r/other")
 	var ownerAtDown string
 	l.stack.onDown = func() { ownerAtDown, _ = other.ownerOf(port) }

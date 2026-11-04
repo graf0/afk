@@ -3,10 +3,12 @@ package config
 
 import (
 	"bytes"
+	"cmp"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
 
@@ -17,9 +19,15 @@ import (
 const FileName = ".afk.toml"
 
 const (
-	// ForgeGitHub and ForgeGitea are the values of forge.kind.
+	// ForgeGitHub, ForgeGitea and ForgeLocal are the values of forge.kind.
+	// A local forge has no API: tickets are files in the repository, under
+	// forge.dir, and git pushes to the origin of the user's clone (ADR-0016).
 	ForgeGitHub = "github"
 	ForgeGitea  = "gitea"
+	ForgeLocal  = "local"
+
+	// defaultTicketsDir is forge.dir of a local forge by default.
+	defaultTicketsDir = ".scratch"
 
 	// defaultMaxFixes is the default number of fix attempts after a failed gate.
 	defaultMaxFixes = 3
@@ -37,20 +45,21 @@ var (
 
 // Config is the effective Project config, with defaults applied.
 type Config struct {
-	Forge   Forge             `toml:"forge"`
-	Labels  Labels            `toml:"labels"`
-	Agent   Agent             `toml:"agent"`
-	Gate    Gate              `toml:"gate"`
-	Protect Protect           `toml:"protect"`
-	Expose  map[string]string `toml:"expose"` // compose service -> [address:]host_port:container_port
-	VM      []VM              `toml:"vm"`
+	Forge   Forge            `toml:"forge"`
+	Labels  Labels           `toml:"labels"`
+	Agent   Agent            `toml:"agent"`
+	Gate    Gate             `toml:"gate"`
+	Protect Protect          `toml:"protect"`
+	Expose  map[string]Ports `toml:"expose"` // compose service -> its ports
+	VM      []VM             `toml:"vm"`
 }
 
 // Forge describes the system hosting the repository and tickets.
 type Forge struct {
-	Kind string `toml:"kind"` // github | gitea
-	Repo string `toml:"repo"`
+	Kind string `toml:"kind"` // github | gitea | local
+	Repo string `toml:"repo"` // owner/name; for local only the name of the Project's state
 	URL  string `toml:"url"`
+	Dir  string `toml:"dir"` // local: the directory of the tickets in the repository
 }
 
 // Labels maps triage roles to label names in the tracker.
@@ -84,6 +93,11 @@ type Protect struct {
 	Paths []string `toml:"paths"`
 }
 
+// Ports are the ports of one service in [expose], each
+// [address:]host_port:container_port. The file gives one as a string or
+// several as an array of strings.
+type Ports []string
+
 // VM is a test VM: an existing libvirt domain the Agent in a Chat drives.
 type VM struct {
 	Name string `toml:"name"` // libvirt domain
@@ -96,6 +110,35 @@ type VM struct {
 // Names returns the names of all labels, in the order of the fields.
 func (l Labels) Names() (names []string) {
 	return []string{l.NeedsTriage, l.NeedsInfo, l.ReadyForAgent, l.ReadyForHuman, l.Wontfix, l.Spec}
+}
+
+// --- decoding ---
+
+// UnmarshalTOML takes a string or an array of strings. Any other value leaves
+// p empty, for validation to report with its position: an error here would
+// have none.
+func (p *Ports) UnmarshalTOML(data []byte) (err error) {
+	var value struct{ V any }
+	if err = toml.Unmarshal(append([]byte("V = "), data...), &value); err != nil {
+		err = fmt.Errorf("decoding ports: %w", err)
+		return
+	}
+	*p = nil
+	switch v := value.V.(type) {
+	case string:
+		*p = Ports{v}
+	case []any:
+		ports := make(Ports, 0, len(v))
+		for _, element := range v {
+			spec, ok := element.(string)
+			if !ok {
+				return
+			}
+			ports = append(ports, spec)
+		}
+		*p = ports
+	}
+	return
 }
 
 // --- loading ---
@@ -137,7 +180,7 @@ func ParseNamed(name string, data []byte) (cfg Config, err error) {
 func parse(prefix string, data []byte) (cfg Config, err error) {
 	cfg = defaults()
 	v := validator{data: data}
-	decoder := toml.NewDecoder(bytes.NewReader(data)).DisallowUnknownFields()
+	decoder := toml.NewDecoder(bytes.NewReader(data)).DisallowUnknownFields().EnableUnmarshalerInterface()
 	if decodeErr := decoder.Decode(&cfg); decodeErr != nil {
 		strictErr, ok := errors.AsType[*toml.StrictMissingError](decodeErr)
 		if !ok {
@@ -155,6 +198,9 @@ func parse(prefix string, data []byte) (cfg Config, err error) {
 		return
 	}
 	cfg.Protect.Paths = mergeProtectPaths(cfg.Protect.Paths)
+	if cfg.Forge.Kind == ForgeLocal {
+		cfg.Forge.Dir = path.Clean(cmp.Or(cfg.Forge.Dir, defaultTicketsDir))
+	}
 	return
 }
 

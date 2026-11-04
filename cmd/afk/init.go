@@ -28,6 +28,7 @@ const configExample = `
 #
 # [expose]
 # web = "8080:5173"
+# api = ["192.168.122.1:8081:8080", "2222:22"]
 #
 # [[vm]]
 # name = "win11"

@@ -16,9 +16,11 @@ import (
 
 // Refs of a Run in the Quarantine repo, per ticket branch.
 const (
-	baseRefPrefix     = "refs/afk/base/"     // the base of the Run
-	incomingRefPrefix = "refs/afk/incoming/" // raw result from the guest
-	resultRefPrefix   = "refs/heads/"        // validated result
+	baseRefPrefix      = "refs/afk/base/"      // the base of the Run
+	incomingRefPrefix  = "refs/afk/incoming/"  // raw result from the guest
+	resultRefPrefix    = "refs/heads/"         // validated result
+	upstreamRefPrefix  = "refs/afk/upstream/"  // a branch of the remote, as PublishDir fetched it
+	publishedRefPrefix = "refs/afk/published/" // the head PublishDir published last
 )
 
 // quarantineConfig hardens every git call on the Quarantine repo, which holds
@@ -95,9 +97,9 @@ func (q Quarantine) Base(ctx context.Context, branch string) (commit string, err
 }
 
 // Drop deletes every ref of branch in the Quarantine repo: the base, the
-// raw and the validated result. Missing ones are skipped.
+// raw and the validated result, the last publication. Missing ones are skipped.
 func (q Quarantine) Drop(ctx context.Context, branch string) (err error) {
-	for _, ref := range []string{baseRef(branch), incomingRef(branch), resultRef(branch)} {
+	for _, ref := range []string{baseRef(branch), incomingRef(branch), resultRef(branch), publishedRef(branch)} {
 		if _, err = q.git(ctx, "update-ref", "-d", ref); err != nil {
 			err = fmt.Errorf("deleting %s: %w", ref, err)
 			return
@@ -326,9 +328,138 @@ func (q Quarantine) Push(ctx context.Context, remote forge.Remote, branch, old s
 	return
 }
 
+// --- publishing a directory ---
+
+// PublishDir puts the changes head of branch made under dir on onto, a
+// branch of remote, and pushes it there: one commit, authored and committed by
+// ident, on top of onto as it is on remote now (fetched fresh), with
+// the changes merged three-way. Changes elsewhere are left out. The changes
+// are those since the head of the last publication of branch, or since the
+// merge base with onto when that is newer or there was none. check sees the
+// patch before anything is pushed and may refuse it. The push is a plain
+// one: onto moved meanwhile fails it. Nothing is checked out (ADR-0002).
+// commit is empty when onto has every change already; a conflict is an error.
+func (q Quarantine) PublishDir(ctx context.Context, remote forge.Remote, onto, branch, head, dir, message string, ident Ident, check func(patch string) (err error)) (commit string, err error) {
+	ref := upstreamRefPrefix + onto
+	if _, err = q.gitWith(ctx, remote.Env, "", "fetch", "--quiet", "--no-tags", "--no-write-fetch-head", "--end-of-options", remote.URL, "+"+resultRef(onto)+":"+ref); err != nil {
+		err = fmt.Errorf("fetching %s from %s: %w", onto, remote.URL, err)
+		return
+	}
+	tip, err := q.git(ctx, "rev-parse", "--verify", "--end-of-options", ref+"^{commit}")
+	if err != nil {
+		return
+	}
+	since, err := q.git(ctx, "merge-base", tip, head)
+	if err != nil {
+		err = fmt.Errorf("%s on %s has no common history with %s: %w", onto, remote.URL, head, err)
+		return
+	}
+	// The last publication is in onto, but as a commit of its own: the changes
+	// before it would conflict with themselves.
+	if published, refErr := q.git(ctx, "rev-parse", "--quiet", "--verify", publishedRef(branch)+"^{commit}"); refErr == nil {
+		if _, olderErr := q.git(ctx, "merge-base", "--is-ancestor", since, published); olderErr == nil {
+			since = published
+		}
+	}
+	temp, err := os.MkdirTemp("", "afk-publish-")
+	if err != nil {
+		err = fmt.Errorf("creating a temporary directory: %w", err)
+		return
+	}
+	defer func() { _ = os.RemoveAll(temp) }()
+	tree, patch, err := q.overlay(ctx, temp, tip, since, head, dir)
+	if err != nil {
+		err = fmt.Errorf("the changes of %s/ on %s on %s: %w", dir, onto, remote.URL, err)
+		return
+	}
+	if tree == "" {
+		return
+	}
+	if err = check(patch); err != nil {
+		return
+	}
+	if commit, err = q.Squash(ctx, tip, tree, message, ident); err != nil {
+		return
+	}
+	if _, err = q.gitWith(ctx, remote.Env, "", "push", "--quiet", "--no-verify", "--end-of-options", remote.URL, commit+":"+resultRef(onto)); err != nil {
+		err = fmt.Errorf("pushing to %s on %s (moved meanwhile? call again): %w", onto, remote.URL, err)
+		return
+	}
+	if _, err = q.git(ctx, "update-ref", publishedRef(branch), head); err != nil {
+		err = fmt.Errorf("pushed %s, but not noted: %w", commit, err)
+	}
+	return
+}
+
+// overlay merges the changes from..head under dir into tip three-way and
+// returns the tree and the patch of the changes; the tree is empty when tip
+// has them already. The other side of the merge is from with dir as in head:
+// nothing outside dir changes. merge-tree, as git apply --3way writes
+// conflicts to the working directory even in a bare repository.
+func (q Quarantine) overlay(ctx context.Context, temp, tip, from, head, dir string) (tree, patch string, err error) {
+	// Into a file: git's output comes trimmed, which breaks a patch.
+	// Prefixes and renames spelled out: the user's diff config must not shape it.
+	patchFile := filepath.Join(temp, "patch")
+	if _, err = q.git(ctx, "diff", "--binary", "--full-index", "--no-renames", "--no-color", "--no-ext-diff", "--no-textconv",
+		"--src-prefix=a/", "--dst-prefix=b/", "--output="+patchFile, from, head, "--", ":(literal)"+dir); err != nil {
+		return
+	}
+	data, err := os.ReadFile(patchFile)
+	if err != nil {
+		err = fmt.Errorf("reading the patch: %w", err)
+		return
+	}
+	if len(data) == 0 {
+		return
+	}
+	// from outside dir, head inside it, as entries of a temporary index.
+	outside, err := q.git(ctx, "ls-tree", "-r", "-z", "--full-tree", from)
+	if err != nil {
+		return
+	}
+	inside, err := q.git(ctx, "ls-tree", "-r", "-z", "--full-tree", head, "--", ":(literal)"+dir)
+	if err != nil {
+		return
+	}
+	var entries strings.Builder
+	for entry := range strings.SplitSeq(outside, "\x00") {
+		if _, path, _ := strings.Cut(entry, "\t"); entry != "" && !strings.HasPrefix(path, dir+"/") {
+			entries.WriteString(entry + "\x00")
+		}
+	}
+	entries.WriteString(inside) // each entry ends with NUL already
+	index := []string{"GIT_INDEX_FILE=" + filepath.Join(temp, "index")}
+	if _, err = q.gitWith(ctx, index, entries.String(), "update-index", "-z", "--index-info"); err != nil {
+		return
+	}
+	theirs, err := q.gitWith(ctx, index, "", "write-tree")
+	if err != nil {
+		return
+	}
+	merged, err := q.git(ctx, "merge-tree", "--write-tree", "--no-messages", "--merge-base="+from, tip, theirs)
+	if err != nil {
+		err = fmt.Errorf("conflict (changed on both sides since the last publication or the start of the Chat): %w", err)
+		return
+	}
+	changed, err := q.git(ctx, "diff-tree", "-r", "--no-renames", "--name-only", "-z", tip, merged)
+	if err != nil || changed == "" {
+		return
+	}
+	for path := range strings.SplitSeq(strings.TrimRight(changed, "\x00"), "\x00") {
+		if !strings.HasPrefix(path, dir+"/") {
+			err = fmt.Errorf("the merge changes %q, outside", path)
+			return
+		}
+	}
+	tree, patch = merged, string(data)
+	return
+}
+
 func baseRef(branch string) (ref string)     { return baseRefPrefix + branch }
 func incomingRef(branch string) (ref string) { return incomingRefPrefix + branch }
 func resultRef(branch string) (ref string)   { return resultRefPrefix + branch }
+
+func publishedRef(branch string) (ref string) { return publishedRefPrefix + branch }
 
 // protectedChanges returns the changed paths that touch a protected entry:
 // the entry itself, anything under it, or one of its parent directories

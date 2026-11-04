@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"maps"
 	"net/url"
+	"path"
 	"regexp"
 	"slices"
 	"strings"
@@ -23,7 +24,7 @@ var removedSections = map[string]string{
 }
 
 var (
-	forgeKinds = []string{ForgeGitHub, ForgeGitea}
+	forgeKinds = []string{ForgeGitHub, ForgeGitea, ForgeLocal}
 
 	vmOSes = []string{"windows", "linux"}
 
@@ -158,13 +159,25 @@ func (c Config) validateForge(v *validator) {
 	switch {
 	case c.Forge.Kind == ForgeGitea && c.Forge.URL == "":
 		v.report("forge.url", "required for gitea")
-	case c.Forge.Kind == ForgeGitHub && c.Forge.URL != "":
-		v.report("forge.url", "not allowed for github")
+	case (c.Forge.Kind == ForgeGitHub || c.Forge.Kind == ForgeLocal) && c.Forge.URL != "":
+		v.report("forge.url", "not allowed for %s", c.Forge.Kind)
 	case c.Forge.URL != "":
 		// https only: the forge token is sent in a header.
 		if u, err := url.Parse(c.Forge.URL); err != nil || u.Scheme != "https" || u.Host == "" {
 			v.report("forge.url", "want an https URL, got %q", c.Forge.URL)
 		}
+	}
+	dir := c.Forge.Dir
+	switch {
+	case dir != "" && c.Forge.Kind != ForgeLocal:
+		v.report("forge.dir", "only for local")
+	case strings.HasPrefix(dir, "/"):
+		v.report("forge.dir", "must be relative, got %q", dir)
+	case slices.Contains(strings.Split(dir, "/"), ".."):
+		v.report("forge.dir", `must not contain "..", got %q`, dir)
+	case dir != "" && path.Clean(dir) == ".":
+		// The whole repository would go to the base branch by `afk-ai tickets publish`.
+		v.report("forge.dir", "must name a directory below the root, got %q", dir)
 	}
 }
 
@@ -239,22 +252,33 @@ func (c Config) validateProtect(v *validator) {
 	}
 }
 
-// validateExpose checks every spec, and that no two services take one host
-// port: a Chat claims its ports by number, whatever the address.
+// validateExpose checks every spec, and that no two specs take one host port:
+// a Chat claims its ports by number, whatever the address.
 func (c Config) validateExpose(v *validator) {
-	owners := make(map[string]string) // host port -> service
+	owners := make(map[string]string) // host port -> path of its spec
 	for _, service := range slices.Sorted(maps.Keys(c.Expose)) {
-		port, err := stack.ParseExpose(c.Expose[service])
-		if err != nil {
-			v.report("expose."+service, "%v", err)
+		path := "expose." + service
+		if len(c.Expose[service]) == 0 {
+			v.report(path, "want a string or a non-empty array of strings")
 			continue
 		}
-		hostPort := strings.Split(port, ":")[1] // address:host_port:container_port
-		if other, ok := owners[hostPort]; ok {
-			v.report("expose."+service, "host port %s same as expose.%s", hostPort, other)
-			continue
+		for i, spec := range c.Expose[service] {
+			specPath := path // one spec: the key, a string or an array of one
+			if len(c.Expose[service]) > 1 {
+				specPath = fmt.Sprintf("%s[%d]", path, i)
+			}
+			port, err := stack.ParseExpose(spec)
+			if err != nil {
+				v.report(specPath, "%v", err)
+				continue
+			}
+			hostPort := strings.Split(port, ":")[1] // address:host_port:container_port
+			if other, ok := owners[hostPort]; ok {
+				v.report(specPath, "host port %s same as %s", hostPort, other)
+				continue
+			}
+			owners[hostPort] = specPath
 		}
-		owners[hostPort] = service
 	}
 }
 

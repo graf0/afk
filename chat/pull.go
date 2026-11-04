@@ -37,10 +37,18 @@ type pullChannel struct {
 	// Protected is every path the result must not change; asked per call, as
 	// the Stack's Dockerfiles are known only once it is up.
 	Protected func() (paths []string)
+
+	// TicketsDir is forge.dir of a local forge: the routes are push and
+	// tickets publish instead of pull requests. ReadyLabel is the status
+	// a publication must not give a ticket; Ident authors its commit.
+	TicketsDir string
+	ReadyLabel string
+	Ident      run.Ident
 }
 
-// pullServer answers the Sandbox's `afk-ai pr` calls. Calls go one at a
-// time: they move the same branch.
+// pullServer answers the Sandbox's `afk-ai pr` calls, or on a local forge
+// `afk-ai push` and `afk-ai tickets publish`. Calls go one at a time: they
+// move the same branch.
 type pullServer struct {
 	responder
 	ch pullChannel
@@ -51,6 +59,11 @@ type pullServer struct {
 func pullRoutes(ch pullChannel) (group routeGroup) {
 	return func(mux *http.ServeMux, logger *log.Logger) {
 		s := &pullServer{responder: responder{log: logger}, ch: ch}
+		if ch.TicketsDir != "" {
+			mux.HandleFunc("POST /push", s.pushBranch)
+			mux.HandleFunc("POST /tickets/publish", s.publishTickets)
+			return
+		}
 		mux.HandleFunc("POST /pulls", s.create)
 	}
 }
@@ -82,35 +95,11 @@ func (s *pullServer) create(w http.ResponseWriter, r *http.Request) {
 
 // open does what create says. The warning is for the Sandbox's stderr.
 func (s *pullServer) open(ctx context.Context, title, body string) (pull forge.PullRequest, warning string, err error) {
-	q, branch := s.ch.Quarantine, s.ch.Branch
-	base, err := q.Base(ctx, branch)
+	head, prev, warning, err := s.export(ctx)
 	if err != nil {
 		return
 	}
-	guest := run.GuestBranch{Quarantine: q, Name: branch, TempDir: s.ch.TempDir}
-	head, err := guest.Fetch(ctx, s.ch.Exec, base, s.ch.Protected(), io.Discard)
-	if err != nil {
-		return
-	}
-	if head == base {
-		err = fmt.Errorf("no commits on top of origin/%s as this Chat started (%s): commit your work first", s.ch.BaseBranch, base[:12])
-		return
-	}
-	dirty, err := run.Dirty(ctx, s.ch.Exec)
-	if err != nil {
-		return
-	}
-	if dirty != "" {
-		warning = "uncommitted changes are not in the pull request: commit them and call again"
-	}
-	prev, err := q.Result(ctx, branch)
-	if err != nil {
-		return
-	}
-	if err = s.push(ctx, prev, head); err != nil {
-		return
-	}
-	pull, found, err := s.ch.Forge.FindPull(ctx, branch)
+	pull, found, err := s.ch.Forge.FindPull(ctx, s.ch.Branch)
 	if err != nil {
 		return
 	}
@@ -123,7 +112,50 @@ func (s *pullServer) open(ctx context.Context, title, body string) (pull forge.P
 		warning = strings.TrimSpace(warning + "\n" + note)
 		return
 	}
-	pull, err = s.ch.Forge.CreatePull(ctx, branch, s.ch.BaseBranch, title, withFooter(s.ch.Chat, body), false)
+	pull, err = s.ch.Forge.CreatePull(ctx, s.ch.Branch, s.ch.BaseBranch, title, withFooter(s.ch.Chat, body), false)
+	return
+}
+
+// export brings the commits of the Sandbox's clone into the Quarantine repo,
+// validates them and pushes them to the Chat's branch on the Forge. It returns
+// the head pushed and the commit the branch was at before (empty for the
+// first push); the warning is for the Sandbox's stderr.
+func (s *pullServer) export(ctx context.Context) (head, prev, warning string, err error) {
+	base, head, warning, err := s.fetch(ctx)
+	if err != nil {
+		return
+	}
+	if head == base {
+		err = fmt.Errorf("no commits on top of origin/%s as this Chat started (%s): commit your work first", s.ch.BaseBranch, base[:12])
+		return
+	}
+	if prev, err = s.ch.Quarantine.Result(ctx, s.ch.Branch); err != nil {
+		return
+	}
+	err = s.push(ctx, prev, head)
+	return
+}
+
+// fetch brings HEAD of the Sandbox's clone into the Quarantine repo and
+// validates it against the base of the Chat, protected paths included; with
+// uncommitted changes in the clone it warns that they stay out. Without new
+// commits, head is base.
+func (s *pullServer) fetch(ctx context.Context) (base, head, warning string, err error) {
+	q, branch := s.ch.Quarantine, s.ch.Branch
+	if base, err = q.Base(ctx, branch); err != nil {
+		return
+	}
+	guest := run.GuestBranch{Quarantine: q, Name: branch, TempDir: s.ch.TempDir}
+	if head, err = guest.Fetch(ctx, s.ch.Exec, base, s.ch.Protected(), io.Discard); err != nil {
+		return
+	}
+	dirty, err := run.Dirty(ctx, s.ch.Exec)
+	if err != nil {
+		return
+	}
+	if dirty != "" {
+		warning = "uncommitted changes stay out: commit them and call again"
+	}
 	return
 }
 

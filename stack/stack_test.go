@@ -134,7 +134,7 @@ func TestWriteOverrideExpose(t *testing.T) {
 	opts := testOptions(t)
 	var out bytes.Buffer
 	opts.Out = &out
-	opts.Expose = map[string][]string{"web": {"0.0.0.0:8080:80"}}
+	opts.Expose = map[string][]string{"web": {"0.0.0.0:8080:80", "2222:22"}}
 	s, err := New(opts)
 	if err != nil {
 		t.Fatal(err)
@@ -147,6 +147,11 @@ func TestWriteOverrideExpose(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "warning: 0.0.0.0:8080:80 is published on all addresses") {
 		t.Errorf("out = %q, want the 0.0.0.0 warning", out.String())
+	}
+	// Every spec of a service is published.
+	override, err := os.ReadFile(s.overridePath())
+	if err != nil || !strings.Contains(string(override), `ports: !override ["0.0.0.0:8080:80","127.0.0.1:2222:22"]`) {
+		t.Errorf("override = %s, %v; want both ports of web", override, err)
 	}
 
 	// A service of [expose] the Stack does not have fails the start.

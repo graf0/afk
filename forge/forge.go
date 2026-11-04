@@ -1,6 +1,7 @@
 // Package forge talks to the Forge (GitHub, Gitea) over REST with the
-// host's credentials. Only afk on the host does that; the Agent never has
-// Forge access (ADR-0003).
+// host's credentials, or stands for a local one, which has only a git remote
+// (ADR-0016). Only afk on the host does that; the Agent never has Forge
+// access (ADR-0003).
 package forge
 
 import (
@@ -176,8 +177,9 @@ func tokenRemote(repo, gitURL, user, token string) (remote Remote) {
 // New returns the Forge of the Project's config, with the host's credentials.
 // [labels].spec: Gitea has no sub-issues, so it is the label that
 // makes a task list the children of a Spec. stateDir (~/.local/state/afk)
-// holds the Gitea token file.
-func New(ctx context.Context, cfg config.Config, stateDir string) (f Forge, err error) {
+// holds the Gitea token file; repo is the root of the user's clone, whose
+// origin is the remote of a local forge.
+func New(ctx context.Context, cfg config.Config, stateDir, repo string) (f Forge, err error) {
 	switch cfg.Forge.Kind {
 	case config.ForgeGitHub:
 		var token string
@@ -191,6 +193,8 @@ func New(ctx context.Context, cfg config.Config, stateDir string) (f Forge, err 
 			return
 		}
 		f, err = NewGitea(cfg.Forge, token, cfg.Labels.Spec)
+	case config.ForgeLocal:
+		f, err = NewLocal(ctx, cfg.Forge, repo)
 	default:
 		err = fmt.Errorf("forge.kind %q is not supported yet", cfg.Forge.Kind)
 	}
