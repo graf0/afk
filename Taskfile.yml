@@ -1,6 +1,14 @@
 # https://taskfile.dev
 version: "3"
 tasks:
+  default:
+    deps: [build]
+
+  build:
+    desc: build bin/afk
+    cmds:
+      - go build -o bin/afk ./cmd/afk
+
   lint:
     desc: golangci-lint
     cmds:
