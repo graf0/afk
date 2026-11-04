@@ -22,7 +22,19 @@ const (
 // VMKeyPath is the private ssh key of the test VMs of the Project whose state
 // directory is projectDir.
 func VMKeyPath(projectDir string) (path string) {
-	return filepath.Join(projectDir, vmKeyDir, vmKeyName)
+	return filepath.Join(VMKeyDir(projectDir), vmKeyName)
+}
+
+// VMKeyDir is the directory with the ssh key of the test VMs of the Project
+// whose state directory is projectDir.
+func VMKeyDir(projectDir string) (dir string) {
+	return filepath.Join(projectDir, vmKeyDir)
+}
+
+// ReadVMKey returns the public ssh key of the Project's test VMs, without
+// making it: fs.ErrNotExist when no Chat made it yet.
+func ReadVMKey(projectDir string) (public string, err error) {
+	return readPublicKey(VMKeyDir(projectDir))
 }
 
 // EnsureVMKey makes the ssh key of the Project's test VMs once (ssh-keygen,
@@ -30,7 +42,7 @@ func VMKeyPath(projectDir string) (path string) {
 // may race: the key is made in a directory of its own and renamed into place,
 // and the loser uses the winner's.
 func EnsureVMKey(projectDir string) (public string, err error) {
-	final := filepath.Join(projectDir, vmKeyDir)
+	final := VMKeyDir(projectDir)
 	if public, err = readPublicKey(final); err == nil || !errors.Is(err, fs.ErrNotExist) {
 		return
 	}

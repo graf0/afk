@@ -9,6 +9,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/graf0/afk/chat"
 )
 
 func TestRun(t *testing.T) {
@@ -48,27 +50,43 @@ func TestRun(t *testing.T) {
 		}
 	})
 
-	t.Run("config prints the public ssh key of the test VMs", func(t *testing.T) {
+	t.Run("config prints the public ssh key of the test VMs, never makes it", func(t *testing.T) {
 		if _, err := exec.LookPath("ssh-keygen"); err != nil {
 			t.Skip("no ssh-keygen")
 		}
-		t.Setenv("HOME", t.TempDir())
+		home := t.TempDir()
+		t.Setenv("HOME", home)
 		withVM := t.TempDir()
 		_ = os.Mkdir(filepath.Join(withVM, ".git"), 0o755)
 		toml := "[forge]\nkind = \"github\"\nrepo = \"o/r\"\n[gate]\ncmd = \"true\"\n[[vm]]\nname = \"win11\"\nuser = \"admin\"\nos = \"windows\"\n"
 		if err := os.WriteFile(filepath.Join(withVM, ".afk.toml"), []byte(toml), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		var first, second, none bytes.Buffer
-		for _, out := range []*bytes.Buffer{&first, &second} {
-			if err := runCommand(t.Context(), []string{"config"}, withVM, out); err != nil {
-				t.Fatal(err)
-			}
+		projectDir := filepath.Join(home, ".local", "state", "afk", "o-r")
+
+		var before bytes.Buffer
+		if err := runCommand(t.Context(), []string{"config"}, withVM, &before); err != nil {
+			t.Fatal(err)
 		}
-		if !strings.Contains(first.String(), "# ssh-ed25519 ") || first.String() != second.String() {
-			t.Errorf("config twice = %q, %q: want the same public key", first.String(), second.String())
+		if want := "the first `afk chat` makes it in " + filepath.Join(projectDir, "vm-ssh"); !strings.Contains(before.String(), want) {
+			t.Errorf("without a key = %q, want %q", before.String(), want)
 		}
-		if err := runCommand(t.Context(), []string{"config"}, root, &none); err != nil || strings.Contains(none.String(), "ssh-ed25519") {
+		if _, err := os.Stat(filepath.Join(home, ".local")); err == nil {
+			t.Error("afk config made state")
+		}
+
+		public, err := chat.EnsureVMKey(projectDir) // what a Chat does
+		if err != nil {
+			t.Fatal(err)
+		}
+		var after, none bytes.Buffer
+		if err := runCommand(t.Context(), []string{"config"}, withVM, &after); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(after.String(), "# "+public+"\n") {
+			t.Errorf("with a key = %q, want %q", after.String(), public)
+		}
+		if err := runCommand(t.Context(), []string{"config"}, root, &none); err != nil || strings.Contains(none.String(), "ssh") {
 			t.Errorf("a Project without [[vm]]: %q, %v", none.String(), err)
 		}
 	})

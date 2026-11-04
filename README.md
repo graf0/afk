@@ -144,7 +144,7 @@ Porty Stacku publikowane tylko przy `afk chat --expose`. Porty są stałe, więc
 
 ### `[[vm]]`
 
-VM testowe dostępne dla Agenta w Chat (Factory ich nie dostaje). `afk` ich nie tworzy. Klucz ssh generuje `afk`, a jego publiczną część wypisuje `afk config`.
+VM testowe dostępne dla Agenta w Chat (Factory ich nie dostaje). `afk` ich nie tworzy. Klucz ssh generuje pierwszy `afk chat` Projectu (w `~/.local/state/afk/<owner>-<repo>/vm-ssh/`), a jego publiczną część wypisuje `afk config`. Samo `afk config` klucza nie tworzy: zanim powstanie, wypisuje tylko, gdzie się pojawi.
 
 | Klucz | Opis |
 |---|---|
