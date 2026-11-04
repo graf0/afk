@@ -9,6 +9,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/graf0/afk/config"
 	"github.com/graf0/afk/stack"
 )
 
@@ -18,14 +19,14 @@ const exposeLocksName = "expose-locks"
 
 // exposeSpecs is [expose] as the Stack takes it. A Chat started with
 // --expose and nothing to expose is a mistake worth saying.
-func exposeSpecs(expose map[string]string) (specs map[string][]string, err error) {
+func exposeSpecs(expose map[string]config.Ports) (specs map[string][]string, err error) {
 	if len(expose) == 0 {
 		err = errors.New("--expose: .afk.toml on the base branch has no [expose]")
 		return
 	}
 	specs = make(map[string][]string, len(expose))
-	for service, spec := range expose {
-		specs[service] = []string{spec}
+	for service, ports := range expose {
+		specs[service] = ports
 	}
 	return
 }
@@ -34,16 +35,18 @@ func exposeSpecs(expose map[string]string) (specs map[string][]string, err error
 // nothing else listens on them. A port another Chat holds is an error naming
 // that Chat. A claim is keyed by the port alone, whatever the address: the
 // ports of a Project are fixed, so one Chat at a time publishes them.
-func claimPorts(locks *claims, expose map[string]string) (err error) {
+func claimPorts(locks *claims, expose map[string]config.Ports) (err error) {
 	type endpoint struct{ address, port string }
-	var endpoints []endpoint // a host port is in one service (config.Parse)
+	var endpoints []endpoint // a host port is in one spec (config.Parse)
 	for _, service := range slices.Sorted(maps.Keys(expose)) {
-		var published string
-		if published, err = stack.ParseExpose(expose[service]); err != nil {
-			return
+		for _, spec := range expose[service] {
+			var published string
+			if published, err = stack.ParseExpose(spec); err != nil {
+				return
+			}
+			parts := strings.Split(published, ":") // address:host_port:container_port
+			endpoints = append(endpoints, endpoint{parts[0], parts[1]})
 		}
-		parts := strings.Split(published, ":") // address:host_port:container_port
-		endpoints = append(endpoints, endpoint{parts[0], parts[1]})
 	}
 	for _, e := range endpoints {
 		if claimErr := locks.claim(e.port); claimErr != nil {

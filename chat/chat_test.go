@@ -394,7 +394,7 @@ func TestEnterExposePortBusy(t *testing.T) {
 
 	l := newLifecycle(t)
 	l.opts.Expose = true
-	l.opts.Base.Config.Expose = map[string]string{"web": port + ":80"}
+	l.opts.Base.Config.Expose = map[string]config.Ports{"web": {port + ":80"}}
 	if _, err = l.enter(t.Context()); err == nil || !strings.Contains(err.Error(), port) {
 		t.Fatalf("err = %v, want the busy port", err)
 	}
@@ -413,7 +413,7 @@ func TestEnterExposeHoldsPortsUntilDown(t *testing.T) {
 
 	l := newLifecycle(t)
 	l.opts.Expose = true
-	l.opts.Base.Config.Expose = map[string]string{"web": port + ":80"}
+	l.opts.Base.Config.Expose = map[string]config.Ports{"web": {port + ":80"}}
 	other := newClaims(filepath.Join(l.opts.StateDir, exposeLocksName), claimPort, "o-r/other")
 	var ownerAtDown string
 	l.stack.onDown = func() { ownerAtDown, _ = other.ownerOf(port) }

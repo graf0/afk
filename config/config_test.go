@@ -1,6 +1,7 @@
 package config
 
 import (
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -141,7 +142,7 @@ func TestLoad(t *testing.T) {
 }
 
 func TestMarshalRoundTrip(t *testing.T) {
-	cfg, err := Parse([]byte(minimalConfig + "[protect]\npaths = [\"x/\"]\n"))
+	cfg, err := Parse([]byte(minimalConfig + "[protect]\npaths = [\"x/\"]\n[expose]\nweb = \"8080:80\"\napi = [\"8081:80\", \"2222:22\"]\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,7 +154,8 @@ func TestMarshalRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reparsing %q: %v", out, err)
 	}
-	if !slices.Equal(again.Protect.Paths, cfg.Protect.Paths) || again.Gate != cfg.Gate {
+	if !slices.Equal(again.Protect.Paths, cfg.Protect.Paths) || again.Gate != cfg.Gate ||
+		!maps.EqualFunc(again.Expose, cfg.Expose, slices.Equal) || len(again.Expose["api"]) != 2 {
 		t.Errorf("round trip mismatch:\n%s", out)
 	}
 }
@@ -180,7 +182,7 @@ func TestParseReadmeExamples(t *testing.T) {
 	if err != nil {
 		t.Fatalf("README example: %v", err)
 	}
-	if cfg.Expose["web"] == "" || len(cfg.VM) != 1 || cfg.VM[0].OS != "windows" {
+	if len(cfg.Expose["web"]) == 0 || len(cfg.VM) != 1 || cfg.VM[0].OS != "windows" {
 		t.Errorf("expose = %v, vm = %+v", cfg.Expose, cfg.VM)
 	}
 }
@@ -191,6 +193,8 @@ func TestParseExposeAndVM(t *testing.T) {
 	}{
 		{"expose ok", "[expose]\nweb = \"192.168.122.1:8080:80\"\n", ""},
 		{"expose bad", "[expose]\nweb = \"80\"\n", "expose.web"},
+		{"expose array", "[expose]\nweb = [\"192.168.122.1:4000:4000\", \"192.168.122.1:2222:2222\"]\n", ""},
+		{"expose array of one", "[expose]\nweb = [\"8080:80\"]\n", ""},
 		{"vm ok", "[[vm]]\nname = \"win11\"\nuser = \"admin\"\nos = \"windows\"\n", ""},
 		{"vm no user", "[[vm]]\nname = \"win11\"\nos = \"linux\"\n", "vm[0].user"},
 		{"vm bad os", "[[vm]]\nname = \"win11\"\nuser = \"a\"\nos = \"mac\"\n", "vm[0].os"},

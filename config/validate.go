@@ -239,22 +239,33 @@ func (c Config) validateProtect(v *validator) {
 	}
 }
 
-// validateExpose checks every spec, and that no two services take one host
-// port: a Chat claims its ports by number, whatever the address.
+// validateExpose checks every spec, and that no two specs take one host port:
+// a Chat claims its ports by number, whatever the address.
 func (c Config) validateExpose(v *validator) {
-	owners := make(map[string]string) // host port -> service
+	owners := make(map[string]string) // host port -> path of its spec
 	for _, service := range slices.Sorted(maps.Keys(c.Expose)) {
-		port, err := stack.ParseExpose(c.Expose[service])
-		if err != nil {
-			v.report("expose."+service, "%v", err)
+		path := "expose." + service
+		if len(c.Expose[service]) == 0 {
+			v.report(path, "want a string or a non-empty array of strings")
 			continue
 		}
-		hostPort := strings.Split(port, ":")[1] // address:host_port:container_port
-		if other, ok := owners[hostPort]; ok {
-			v.report("expose."+service, "host port %s same as expose.%s", hostPort, other)
-			continue
+		for i, spec := range c.Expose[service] {
+			specPath := path // one spec: the key, a string or an array of one
+			if len(c.Expose[service]) > 1 {
+				specPath = fmt.Sprintf("%s[%d]", path, i)
+			}
+			port, err := stack.ParseExpose(spec)
+			if err != nil {
+				v.report(specPath, "%v", err)
+				continue
+			}
+			hostPort := strings.Split(port, ":")[1] // address:host_port:container_port
+			if other, ok := owners[hostPort]; ok {
+				v.report(specPath, "host port %s same as %s", hostPort, other)
+				continue
+			}
+			owners[hostPort] = specPath
 		}
-		owners[hostPort] = service
 	}
 }
 

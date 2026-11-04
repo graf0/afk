@@ -88,8 +88,7 @@ cmd = "go build ./... && go vet ./... && go test ./..."
 
 [expose]
 web = "8080:5173"
-api = "192.168.122.1:8081:8080"
-ssh = "2222:22"
+api = ["192.168.122.1:8081:8080", "192.168.122.1:2222:22"]
 
 [[vm]]
 name = "win11"
@@ -141,7 +140,7 @@ Nazwy labeli w Forge. Muszą istnieć w repo, `afk` ich nie tworzy.
 
 ### `[expose]`
 
-Porty Stacku publikowane tylko przy `afk chat --expose`. Porty są stałe, więc w danej chwili wystawiony może być jeden Chat. Klucz to nazwa serwisu compose, wartość to `[adres:]port_hosta:port_kontenera`. Domyślny adres to `127.0.0.1`. Do VM testowej użyj adresu mostka libvirt (np. `192.168.122.1`). Przy `0.0.0.0` `afk` ostrzega.
+Porty Stacku publikowane tylko przy `afk chat --expose`. Porty są stałe, więc w danej chwili wystawiony może być jeden Chat. Klucz to nazwa serwisu compose, wartość to `[adres:]port_hosta:port_kontenera` albo niepusta tablica takich wpisów, gdy serwis wystawia kilka portów. Port hosta może wystąpić tylko raz w całym `[expose]`, niezależnie od adresu. Domyślny adres to `127.0.0.1`. Do VM testowej użyj adresu mostka libvirt (np. `192.168.122.1`). Przy `0.0.0.0` `afk` ostrzega.
 
 ### `[[vm]]`
 
